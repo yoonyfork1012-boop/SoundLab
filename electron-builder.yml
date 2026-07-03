@@ -1,0 +1,17 @@
+appId: com.soundlib.app
+productName: SoundLib
+directories:
+  output: release
+files:
+  - out/**
+  - package.json
+# sql.js WASM 파일은 asar 안에서 읽으면 문제가 생길 수 있어 압축 해제
+asarUnpack:
+  - node_modules/sql.js/dist/sql-wasm.wasm
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: SoundLib-${version}-portable.exe

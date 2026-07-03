@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "description": "SoundLib — 개인용 로컬 사운드 라이브러리 데스크탑 앱",
   "main": "./out/main/index.js",
-  "author": "",
+  "author": "SoundLib",
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "start": "electron-vite preview"
+    "start": "electron-vite preview",
+    "pack:win": "electron-vite build && electron-builder --win --config electron-builder.yml"
   },
   "dependencies": {
     "music-metadata": "^10.6.4",
@@ -20,6 +21,7 @@
     "wavesurfer.js": "^7.8.11"
   },
   "devDependencies": {
+    "electron-builder": "^25.1.8",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/react-virtualized-auto-sizer": "^1.0.4",
