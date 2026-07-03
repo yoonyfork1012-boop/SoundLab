@@ -6,8 +6,6 @@ interface FolderTreeProps {
   depth: number
   selectedPath: string | null
   onSelectFolder: (path: string) => void
-  excluded: Set<string>
-  onToggleExclude: (path: string) => void
   defaultExpanded?: boolean
 }
 
@@ -29,20 +27,17 @@ export default function FolderTree({
   depth,
   selectedPath,
   onSelectFolder,
-  excluded,
-  onToggleExclude,
   defaultExpanded = false
 }: FolderTreeProps): JSX.Element {
   const [expanded, setExpanded] = useState(defaultExpanded || depth === 0)
   const hasChildren = node.children.length > 0
   const isSelected = selectedPath === node.path
-  const isChecked = !excluded.has(node.path)
 
   return (
     <div className="ftree__node">
       <div
         className={`ftree__row${isSelected ? ' ftree__row--active' : ''}`}
-        style={{ paddingLeft: 8 + depth * 14 }}
+        style={{ paddingLeft: 10 + depth * 14 }}
         onClick={() => onSelectFolder(node.path)}
       >
         <span
@@ -53,19 +48,6 @@ export default function FolderTree({
           }}
         >
           {hasChildren ? <Chevron open={expanded} /> : <span style={{ width: 9, display: 'inline-block' }} />}
-        </span>
-        <span
-          className={`ftree__check${isChecked ? ' ftree__check--on' : ''}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            onToggleExclude(node.path)
-          }}
-        >
-          {isChecked && (
-            <svg width="8" height="8" viewBox="0 0 10 10">
-              <path d="M1.5 5L4 7.5L8.5 2.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          )}
         </span>
         <span className="ftree__name">{node.name}</span>
         <span className="ftree__count">{node.trackCount}</span>
@@ -79,8 +61,6 @@ export default function FolderTree({
             depth={depth + 1}
             selectedPath={selectedPath}
             onSelectFolder={onSelectFolder}
-            excluded={excluded}
-            onToggleExclude={onToggleExclude}
           />
         ))}
     </div>

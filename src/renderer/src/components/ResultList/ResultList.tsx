@@ -1,43 +1,40 @@
-import { memo, useEffect, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { FixedSizeList, ListChildComponentProps, areEqual } from 'react-window'
 import AutoSizer from 'react-virtualized-auto-sizer'
-import type { Track } from '@shared/types'
+import type { Library, Track } from '@shared/types'
 import { colorForCategory } from '@shared/ucsCategories'
+import { ALL_COLUMNS, DEFAULT_VISIBLE, type ColumnDef } from './columns'
+import ColumnMenu from './ColumnMenu'
 
 interface ResultListProps {
   tracks: Track[]
+  library: Library | null
   selectedTrackId: number | null
   onSelectTrack: (track: Track) => void
-  onToggleStar: (track: Track) => void
 }
 
 const ROW_HEIGHT = 30
-const SCROLLBAR_GUARD = 14 // 우측 스크롤바 클릭 오차 방지 px
-
-function formatDuration(ms: number | null): string {
-  if (ms === null) return '—'
-  const total = Math.round(ms / 1000)
-  const m = Math.floor(total / 60)
-  const s = total % 60
-  return `${m}:${s.toString().padStart(2, '0')}`
-}
-
-function formatSpec(track: Track): string {
-  if (!track.sampleRate) return '—'
-  const khz = (track.sampleRate / 1000).toFixed(1)
-  return track.bitDepth ? `${khz}k · ${track.bitDepth}bit` : `${khz}k`
-}
+const SCROLLBAR_GUARD = 14
 
 interface RowData {
   tracks: Track[]
   selectedTrackId: number | null
-  onToggleStar: (track: Track) => void
+  columns: ColumnDef[]
+  gridTemplate: string
+  library: Library | null
 }
 
-// 선택/hover는 좌표 기반(래퍼에서 처리)이라 Row 자체는 표시만 담당.
-// memo(areEqual)로 스크롤 중 불필요한 리렌더 방지.
+function SpeakerIcon({ color }: { color: string }): JSX.Element {
+  return (
+    <svg className="list-row__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 9v6h4l5 4V5L8 9H4z" />
+      <path d="M17 8a5 5 0 0 1 0 8" />
+    </svg>
+  )
+}
+
 const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX.Element => {
-  const { tracks, selectedTrackId, onToggleStar } = data
+  const { tracks, selectedTrackId, columns, gridTemplate, library } = data
   const track = tracks[index]
   const isSelected = track.id === selectedTrackId
   const isPreviewed = track.lastPlayedAt != null
@@ -45,44 +42,47 @@ const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX
 
   return (
     <div
-      style={style}
+      style={{ ...style, gridTemplateColumns: gridTemplate }}
       className={`list-row${isSelected ? ' list-row--selected' : ''}${isPreviewed ? ' list-row--previewed' : ''}`}
       draggable
       onDragStart={(e) => {
-        // 선택 여부와 무관하게 어떤 행이든 즉시 OS 네이티브 드래그 (Soundly 방식)
+        // 선택 여부와 무관하게 어떤 행이든 즉시 OS 네이티브 드래그(DAW/탐색기로 드롭)
         e.preventDefault()
         window.api?.startDrag(track.filePath)
       }}
     >
-      <div
-        className={`list-row__star${track.starred ? ' list-row__star--on' : ''}`}
-        onMouseDown={(e) => {
-          e.stopPropagation()
-          onToggleStar(track)
-        }}
-      >
-        {track.starred ? '★' : '☆'}
-      </div>
-      <div className="list-row__name">
-        <span className="list-row__cat-dot" style={{ background: color }} />
-        <span className="list-row__filename" title={track.filePath}>
-          {track.filename}
-        </span>
-      </div>
-      <div className="list-row__cell">
-        {track.category && (
-          <span className="list-row__cat-pill" style={{ color, borderColor: color }}>
-            {track.category}
-          </span>
-        )}
-      </div>
-      <div className="list-row__cell list-row__cell--sub">{track.subcategory ?? '—'}</div>
-      <div className="list-row__cell" style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-        {formatDuration(track.durationMs)}
-      </div>
-      <div className="list-row__cell list-row__cell--sub" style={{ textAlign: 'right' }}>
-        {formatSpec(track)}
-      </div>
+      {columns.map((col) => {
+        if (col.key === 'name') {
+          return (
+            <div className="list-row__cell list-row__name" key={col.key}>
+              <SpeakerIcon color={color} />
+              <span className="list-row__filename" title={track.filePath}>
+                {track.filename}
+              </span>
+            </div>
+          )
+        }
+        if (col.key === 'category') {
+          return (
+            <div className="list-row__cell" key={col.key}>
+              {track.category && (
+                <span className="list-row__cat-pill" style={{ color, borderColor: color }}>
+                  {track.category}
+                </span>
+              )}
+            </div>
+          )
+        }
+        return (
+          <div
+            className={`list-row__cell${col.key !== 'name' ? ' list-row__cell--sub' : ''}`}
+            style={col.align === 'right' ? { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } : undefined}
+            key={col.key}
+          >
+            {col.value(track, { library })}
+          </div>
+        )
+      })}
     </div>
   )
 }, areEqual)
@@ -90,9 +90,9 @@ Row.displayName = 'Row'
 
 export default function ResultList({
   tracks,
+  library,
   selectedTrackId,
-  onSelectTrack,
-  onToggleStar
+  onSelectTrack
 }: ResultListProps): JSX.Element {
   const listRef = useRef<FixedSizeList>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -102,13 +102,21 @@ export default function ResultList({
   const tracksRef = useRef(tracks)
   tracksRef.current = tracks
 
+  const [visibleCols, setVisibleCols] = useState<Set<string>>(new Set(DEFAULT_VISIBLE))
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+
+  const columns = useMemo(
+    () => ALL_COLUMNS.filter((c) => visibleCols.has(c.key)),
+    [visibleCols]
+  )
+  const gridTemplate = useMemo(() => columns.map((c) => c.width).join(' '), [columns])
+
   useEffect(() => {
     if (selectedTrackId == null) return
     const idx = tracks.findIndex((t) => t.id === selectedTrackId)
     if (idx >= 0) listRef.current?.scrollToItem(idx, 'smart')
   }, [selectedTrackId, tracks])
 
-  /** 현재 마우스 Y좌표 + 스크롤 오프셋 → 트랙 인덱스 */
   function indexAtY(clientY: number): number {
     const wrap = wrapRef.current
     if (!wrap) return -1
@@ -117,7 +125,6 @@ export default function ResultList({
     return idx >= 0 && idx < tracksRef.current.length ? idx : -1
   }
 
-  /** Soundly처럼 휠 스크롤 중에도 hover 박스가 커서 아래 행을 계속 따라감 */
   function updateHoverBox(): void {
     const box = hoverBoxRef.current
     if (!box) return
@@ -131,24 +138,41 @@ export default function ResultList({
     box.style.top = `${idx * ROW_HEIGHT - scrollOffsetRef.current}px`
   }
 
-  // 필터 변경 등으로 목록이 바뀌면 hover 박스 재계산
   useEffect(() => {
     updateHoverBox()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracks])
 
-  const itemData: RowData = { tracks, selectedTrackId, onToggleStar }
+  function toggleColumn(key: string): void {
+    setVisibleCols((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        if (key === 'name') return next // Name은 항상 유지
+        next.delete(key)
+      } else next.add(key)
+      return next
+    })
+  }
+
+  const itemData: RowData = { tracks, selectedTrackId, columns, gridTemplate, library }
 
   return (
     <div className="content">
-      <div className="list-header">
-        <div />
-        <div>Name</div>
-        <div>Category</div>
-        <div>Subcategory</div>
-        <div style={{ textAlign: 'right' }}>Dur</div>
-        <div style={{ textAlign: 'right' }}>SR/Bit</div>
+      <div
+        className="list-header"
+        style={{ gridTemplateColumns: gridTemplate }}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          setMenu({ x: e.clientX, y: e.clientY })
+        }}
+      >
+        {columns.map((col) => (
+          <div key={col.key} style={col.align === 'right' ? { textAlign: 'right' } : undefined}>
+            {col.label}
+          </div>
+        ))}
       </div>
+
       {tracks.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state__big">표시할 사운드가 없습니다</div>
@@ -159,10 +183,9 @@ export default function ResultList({
           ref={wrapRef}
           style={{ flex: 1, position: 'relative' }}
           onMouseDown={(e) => {
-            // 좌표 기반 선택: 빠른 휠 스크롤 직후/도중에도 클릭이 100% 등록됨
             if (e.button !== 0) return
             const rect = wrapRef.current!.getBoundingClientRect()
-            if (rect.right - e.clientX < SCROLLBAR_GUARD) return // 스크롤바 클릭 제외
+            if (rect.right - e.clientX < SCROLLBAR_GUARD) return
             const idx = indexAtY(e.clientY)
             if (idx >= 0) onSelectTrack(tracksRef.current[idx])
           }}
@@ -201,6 +224,18 @@ export default function ResultList({
             )}
           </AutoSizer>
         </div>
+      )}
+
+      {menu && (
+        <ColumnMenu
+          x={menu.x}
+          y={menu.y}
+          visible={visibleCols}
+          onToggle={toggleColumn}
+          onShuffle={() => {}}
+          onAutoResize={() => {}}
+          onClose={() => setMenu(null)}
+        />
       )}
     </div>
   )

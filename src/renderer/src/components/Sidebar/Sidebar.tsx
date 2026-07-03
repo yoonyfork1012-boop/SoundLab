@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { Library, Track } from '@shared/types'
 import { colorForCategory } from '@shared/ucsCategories'
 import type { FolderNode } from '../../lib/folderTree'
@@ -10,12 +11,18 @@ interface SidebarProps {
   onOpenFolder: () => void
   selectedFolder: string | null
   onSelectFolder: (path: string | null) => void
-  excluded: Set<string>
-  onToggleExclude: (path: string) => void
   showStarredOnly: boolean
   onToggleStarredView: () => void
   activeCategory: string | null
   onSelectCategory: (c: string | null) => void
+}
+
+function Chevron({ open }: { open: boolean }): JSX.Element {
+  return (
+    <svg className={`ftree__chevron${open ? ' ftree__chevron--open' : ''}`} width="9" height="9" viewBox="0 0 10 10">
+      <path d="M3 1.5L7 5L3 8.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
 }
 
 export default function Sidebar({
@@ -25,13 +32,12 @@ export default function Sidebar({
   onOpenFolder,
   selectedFolder,
   onSelectFolder,
-  excluded,
-  onToggleExclude,
   showStarredOnly,
   onToggleStarredView,
   activeCategory,
   onSelectCategory
 }: SidebarProps): JSX.Element {
+  const [localOpen, setLocalOpen] = useState(true)
   const starredCount = tracks.filter((t) => t.starred).length
   const categoryCounts = tracks.reduce<Record<string, number>>((acc, t) => {
     const key = t.category ?? 'OTHER'
@@ -49,23 +55,34 @@ export default function Sidebar({
           ＋
         </span>
       </div>
-      {tree && library ? (
-        <FolderTree
-          node={tree}
-          depth={0}
-          selectedPath={selectedFolder}
-          onSelectFolder={(p) => onSelectFolder(p)}
-          excluded={excluded}
-          onToggleExclude={onToggleExclude}
-          defaultExpanded
-        />
-      ) : (
-        <div className="sidebar__item" onClick={onOpenFolder}>
-          <span className="ftree__toggle" />
-          <span className="ftree__check" />
-          <span className="ftree__name" style={{ color: 'var(--accent)' }}>＋ 폴더 추가</span>
-        </div>
-      )}
+
+      {/* Soundly처럼 Local 상위 노드 (체크박스 없음) */}
+      <div
+        className="ftree__row"
+        style={{ paddingLeft: 10 }}
+        onClick={() => setLocalOpen((v) => !v)}
+      >
+        <span className="ftree__toggle">
+          <Chevron open={localOpen} />
+        </span>
+        <span className="ftree__name">Local</span>
+      </div>
+
+      {localOpen &&
+        (tree && library ? (
+          <FolderTree
+            node={tree}
+            depth={1}
+            selectedPath={selectedFolder}
+            onSelectFolder={(p) => onSelectFolder(p)}
+            defaultExpanded
+          />
+        ) : (
+          <div className="ftree__row" style={{ paddingLeft: 24 }} onClick={onOpenFolder}>
+            <span className="ftree__toggle" />
+            <span className="ftree__name" style={{ color: 'var(--accent)' }}>＋ 폴더 추가</span>
+          </div>
+        ))}
 
       {/* COLLECTIONS */}
       <div className="sidebar__section">

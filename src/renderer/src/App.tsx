@@ -29,7 +29,6 @@ export default function App(): JSX.Element {
   const [search, setSearch] = useState('')
   const [scanning, setScanning] = useState(false)
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null)
-  const [excluded, setExcluded] = useState<Set<string>>(new Set())
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [showStarredOnly, setShowStarredOnly] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
@@ -81,25 +80,8 @@ export default function App(): JSX.Element {
     if (window.api) await window.api.updateLastPlayed(track.id)
   }
 
-  function toggleExclude(path: string): void {
-    setExcluded((prev) => {
-      const next = new Set(prev)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
-  }
-
-  const excludedList = useMemo(() => Array.from(excluded).map((p) => norm(p) + '/'), [excluded])
-
   const visibleTracks = useMemo(() => {
     let base = selectedFolder ? tracksUnder(tracks, selectedFolder) : tracks
-    if (excludedList.length > 0) {
-      base = base.filter((t) => {
-        const fp = norm(t.filePath) + '/'
-        return !excludedList.some((ex) => fp.startsWith(ex))
-      })
-    }
     if (showStarredOnly) base = base.filter((t) => t.starred)
     if (activeCategory) base = base.filter((t) => t.category === activeCategory)
     if (search.trim()) {
@@ -114,7 +96,7 @@ export default function App(): JSX.Element {
       )
     }
     return base
-  }, [tracks, selectedFolder, excludedList, showStarredOnly, activeCategory, search])
+  }, [tracks, selectedFolder, showStarredOnly, activeCategory, search])
 
   const isFiltering = Boolean(search.trim() || showStarredOnly || activeCategory)
   const showGrid =
@@ -185,9 +167,7 @@ export default function App(): JSX.Element {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <button className="btn btn--accent" onClick={handleOpenFolder} disabled={scanning}>
-          {scanning ? '스캔 중…' : '＋ 폴더 추가'}
-        </button>
+        {scanning && <span className="topbar__scanning">스캔 중…</span>}
         <div className="topbar__viewtoggle">
           <button
             className={`icon-btn${view === 'list' ? ' icon-btn--active' : ''}`}
@@ -235,8 +215,6 @@ export default function App(): JSX.Element {
             setShowStarredOnly(false)
             setActiveCategory(null)
           }}
-          excluded={excluded}
-          onToggleExclude={toggleExclude}
           showStarredOnly={showStarredOnly}
           onToggleStarredView={() => {
             setShowStarredOnly((v) => !v)
@@ -273,9 +251,9 @@ export default function App(): JSX.Element {
           ) : (
             <ResultList
               tracks={visibleTracks}
+              library={library}
               selectedTrackId={selectedTrack?.id ?? null}
               onSelectTrack={handleSelectTrack}
-              onToggleStar={handleToggleStar}
             />
           )}
         </div>

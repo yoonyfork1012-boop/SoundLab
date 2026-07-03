@@ -540,9 +540,8 @@ button {
 .list-header,
 .list-row {
   display: grid;
-  grid-template-columns: 28px 1fr 104px 128px 56px 96px;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 0 14px;
 }
 .list-header {
@@ -606,8 +605,12 @@ button {
 .list-row__name {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
+}
+.list-row__icon {
+  flex-shrink: 0;
+  opacity: 0.85;
 }
 .list-row__cat-dot {
   width: 8px;
@@ -902,6 +905,84 @@ button {
 .player__chip--on {
   background: var(--accent);
   color: #fff;
+}
+
+/* topbar scanning label */
+.topbar__scanning {
+  color: var(--accent-bright);
+  font-size: 12px;
+}
+
+/* ───────── Column context menu (헤더 우클릭) ───────── */
+.colmenu {
+  position: fixed;
+  z-index: 500;
+  min-width: 224px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+}
+.colmenu__scroll {
+  max-height: 420px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.colmenu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.colmenu__item:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.colmenu__item--action {
+  justify-content: space-between;
+}
+.colmenu__item--disabled {
+  color: var(--text-ghost);
+  cursor: default;
+}
+.colmenu__item--disabled:hover {
+  background: transparent;
+  color: var(--text-ghost);
+}
+.colmenu__shortcut {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.colmenu__item:hover .colmenu__shortcut {
+  color: rgba(255, 255, 255, 0.8);
+}
+.colmenu__check {
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-bright);
+  flex-shrink: 0;
+}
+.colmenu__item:hover .colmenu__check {
+  color: #fff;
+}
+.colmenu__sep {
+  height: 1px;
+  background: var(--border);
+  margin: 5px 6px;
 }
 
 /* scrollbars */
