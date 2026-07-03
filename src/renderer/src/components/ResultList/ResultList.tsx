@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { FixedSizeList, ListChildComponentProps } from 'react-window'
 import AutoSizer from 'react-virtualized-auto-sizer'
 import type { Track } from '@shared/types'
@@ -33,6 +34,15 @@ export default function ResultList({
   onSelectTrack,
   onToggleStar
 }: ResultListProps): JSX.Element {
+  const listRef = useRef<FixedSizeList>(null)
+
+  // 선택된 트랙(방향키 이동 포함)이 항상 화면 안에 보이도록 스크롤
+  useEffect(() => {
+    if (selectedTrackId == null) return
+    const idx = tracks.findIndex((t) => t.id === selectedTrackId)
+    if (idx >= 0) listRef.current?.scrollToItem(idx, 'smart')
+  }, [selectedTrackId, tracks])
+
   function Row({ index, style }: ListChildComponentProps): JSX.Element {
     const track = tracks[index]
     const isSelected = track.id === selectedTrackId
@@ -108,6 +118,7 @@ export default function ResultList({
           <AutoSizer>
             {({ height, width }: { height: number; width: number }) => (
               <FixedSizeList
+                ref={listRef}
                 height={height}
                 width={width}
                 itemCount={tracks.length}

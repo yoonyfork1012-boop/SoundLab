@@ -69,6 +69,35 @@ export default function App(): JSX.Element {
     return result
   }, [tracks, search, activeCategory, showStarredOnly])
 
+  // 방향키로 이전/다음 사운드 선택·재생 (↑/← 이전, ↓/→ 다음)
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+
+      const isNext = e.key === 'ArrowDown' || e.key === 'ArrowRight'
+      const isPrev = e.key === 'ArrowUp' || e.key === 'ArrowLeft'
+      if (!isNext && !isPrev) return
+      if (filteredTracks.length === 0) return
+
+      e.preventDefault()
+      const currentIdx = filteredTracks.findIndex((t) => t.id === selectedTrack?.id)
+      let nextIdx: number
+      if (currentIdx === -1) {
+        nextIdx = 0
+      } else {
+        nextIdx = currentIdx + (isNext ? 1 : -1)
+        nextIdx = Math.max(0, Math.min(filteredTracks.length - 1, nextIdx))
+      }
+      if (nextIdx !== currentIdx || currentIdx === -1) {
+        void handleSelectTrack(filteredTracks[nextIdx])
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [filteredTracks, selectedTrack])
+
   return (
     <div className="app">
       <div className="topbar">
