@@ -302,6 +302,9 @@ button {
 .sidebar__nav-item--muted {
   color: var(--text-faint);
 }
+.sidebar__section--top {
+  padding-top: 10px;
+}
 .sidebar__section {
   display: flex;
   justify-content: space-between;

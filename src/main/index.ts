@@ -3,6 +3,10 @@ import { join } from 'path'
 import { registerIpcHandlers } from './ipc'
 import { closeDb, initDb } from './db'
 
+// 클릭→IPC 파일읽기→디코딩 사이 비동기 대기로 사용자 제스처가 만료되어
+// Chromium 자동재생 정책이 재생을 막는 문제 해결
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1360,
