@@ -5,13 +5,13 @@ import { closeDb, initDb } from './db'
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 780,
-    minWidth: 900,
-    minHeight: 600,
+    width: 1360,
+    height: 860,
+    minWidth: 980,
+    minHeight: 640,
     show: false,
-    autoHideMenuBar: true,
-    backgroundColor: '#1a1b1e',
+    frame: false,
+    backgroundColor: '#0e0f11',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -21,6 +21,10 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
   })
+
+  // 커스텀 타이틀바 최대화 상태 동기화
+  mainWindow.on('maximize', () => mainWindow.webContents.send('window:maximized', true))
+  mainWindow.on('unmaximize', () => mainWindow.webContents.send('window:maximized', false))
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)

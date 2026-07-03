@@ -1,10 +1,26 @@
 import { useEffect, useMemo, useState } from 'react'
+import MenuBar from './components/MenuBar/MenuBar'
 import Sidebar from './components/Sidebar/Sidebar'
 import ResultList from './components/ResultList/ResultList'
+import FolderGrid from './components/FolderGrid/FolderGrid'
 import PlayerBar from './components/PlayerBar/PlayerBar'
 import MetadataPanel from './components/MetadataPanel/MetadataPanel'
 import type { Library, Track } from '@shared/types'
 import { isBrowserPreview, mockLibrary, mockTracks } from './mockData'
+import { buildFolderTree, tracksUnder, type FolderNode } from './lib/folderTree'
+
+function norm(p: string): string {
+  return p.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function findNode(root: FolderNode, path: string): FolderNode | null {
+  if (root.path === path) return root
+  for (const child of root.children) {
+    const found = findNode(child, path)
+    if (found) return found
+  }
+  return null
+}
 
 export default function App(): JSX.Element {
   const [library, setLibrary] = useState<Library | null>(null)
@@ -12,30 +28,40 @@ export default function App(): JSX.Element {
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null)
   const [search, setSearch] = useState('')
   const [scanning, setScanning] = useState(false)
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null)
+  const [excluded, setExcluded] = useState<Set<string>>(new Set())
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [showStarredOnly, setShowStarredOnly] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
+  const [view, setView] = useState<'grid' | 'list'>('grid')
 
-  // 브라우저 프리뷰에서는 목업 데이터로 채워 UI를 확인할 수 있게 함
   useEffect(() => {
     if (isBrowserPreview) {
       setLibrary(mockLibrary)
       setTracks(mockTracks)
-      setSelectedTrack(mockTracks[0] ?? null)
     }
   }, [])
+
+  const tree = useMemo(
+    () => (library ? buildFolderTree(tracks, library.rootPath) : null),
+    [tracks, library]
+  )
+  const currentNode = useMemo(() => {
+    if (!tree) return null
+    if (!selectedFolder) return tree
+    return findNode(tree, selectedFolder) ?? tree
+  }, [tree, selectedFolder])
 
   async function handleOpenFolder(): Promise<void> {
     if (!window.api) return
     const folder = await window.api.selectFolder()
     if (!folder) return
-
     setScanning(true)
     try {
-      const { library: scannedLibrary, tracks: scannedTracks } =
-        await window.api.scanLibrary(folder)
-      setLibrary(scannedLibrary)
-      setTracks(scannedTracks)
+      const { library: lib, tracks: scanned } = await window.api.scanLibrary(folder)
+      setLibrary(lib)
+      setTracks(scanned)
+      setSelectedFolder(null)
     } finally {
       setScanning(false)
     }
@@ -52,59 +78,98 @@ export default function App(): JSX.Element {
     if (window.api) await window.api.updateLastPlayed(track.id)
   }
 
-  const filteredTracks = useMemo(() => {
-    let result = tracks
-    if (showStarredOnly) result = result.filter((t) => t.starred)
-    if (activeCategory) result = result.filter((t) => t.category === activeCategory)
+  function toggleExclude(path: string): void {
+    setExcluded((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  const excludedList = useMemo(() => Array.from(excluded).map((p) => norm(p) + '/'), [excluded])
+
+  const visibleTracks = useMemo(() => {
+    let base = selectedFolder ? tracksUnder(tracks, selectedFolder) : tracks
+    if (excludedList.length > 0) {
+      base = base.filter((t) => {
+        const fp = norm(t.filePath) + '/'
+        return !excludedList.some((ex) => fp.startsWith(ex))
+      })
+    }
+    if (showStarredOnly) base = base.filter((t) => t.starred)
+    if (activeCategory) base = base.filter((t) => t.category === activeCategory)
     if (search.trim()) {
       const q = search.toLowerCase()
-      result = result.filter(
+      base = base.filter(
         (t) =>
           t.filename.toLowerCase().includes(q) ||
           (t.category ?? '').toLowerCase().includes(q) ||
+          (t.subcategory ?? '').toLowerCase().includes(q) ||
           (t.description ?? '').toLowerCase().includes(q) ||
           t.tags.some((tag) => tag.toLowerCase().includes(q))
       )
     }
-    return result
-  }, [tracks, search, activeCategory, showStarredOnly])
+    return base
+  }, [tracks, selectedFolder, excludedList, showStarredOnly, activeCategory, search])
 
-  // 방향키로 이전/다음 사운드 선택·재생 (↑/← 이전, ↓/→ 다음)
+  const isFiltering = Boolean(search.trim() || showStarredOnly || activeCategory)
+  const showGrid =
+    view === 'grid' && !isFiltering && currentNode !== null && currentNode.children.length > 0
+
+  function selectRelative(delta: number): void {
+    if (visibleTracks.length === 0) return
+    const idx = visibleTracks.findIndex((t) => t.id === selectedTrack?.id)
+    let next = idx === -1 ? 0 : idx + delta
+    next = Math.max(0, Math.min(visibleTracks.length - 1, next))
+    void handleSelectTrack(visibleTracks[next])
+  }
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       const tag = (e.target as HTMLElement | null)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
-
       const isNext = e.key === 'ArrowDown' || e.key === 'ArrowRight'
       const isPrev = e.key === 'ArrowUp' || e.key === 'ArrowLeft'
-      if (!isNext && !isPrev) return
-      if (filteredTracks.length === 0) return
-
-      e.preventDefault()
-      const currentIdx = filteredTracks.findIndex((t) => t.id === selectedTrack?.id)
-      let nextIdx: number
-      if (currentIdx === -1) {
-        nextIdx = 0
-      } else {
-        nextIdx = currentIdx + (isNext ? 1 : -1)
-        nextIdx = Math.max(0, Math.min(filteredTracks.length - 1, nextIdx))
-      }
-      if (nextIdx !== currentIdx || currentIdx === -1) {
-        void handleSelectTrack(filteredTracks[nextIdx])
+      if (isNext || isPrev) {
+        e.preventDefault()
+        selectRelative(isNext ? 1 : -1)
+      } else if (e.key === 'f' || e.key === 'F') {
+        if (selectedTrack) void handleToggleStar(selectedTrack)
       }
     }
-
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [filteredTracks, selectedTrack])
+  }, [visibleTracks, selectedTrack])
+
+  // 브레드크럼: 루트(Home/라이브러리) + 선택 폴더 세그먼트
+  const crumbs = useMemo(() => {
+    if (!library) return []
+    const root = norm(library.rootPath)
+    const list: Array<{ label: string; path: string | null }> = [
+      { label: library.name, path: null }
+    ]
+    if (selectedFolder) {
+      const rel = norm(selectedFolder).slice(root.length).replace(/^\/+/, '')
+      let acc = root
+      rel.split('/').filter(Boolean).forEach((seg) => {
+        acc = `${acc}/${seg}`
+        list.push({ label: seg, path: acc })
+      })
+    }
+    return list
+  }, [library, selectedFolder])
 
   return (
     <div className="app">
+      <MenuBar
+        onAddFolder={handleOpenFolder}
+        onToggleMeta={() => setShowMeta((v) => !v)}
+        view={view}
+        onSetView={setView}
+      />
+
       <div className="topbar">
-        <div className="topbar__brand">
-          <span className="topbar__brand-dot" />
-          SoundLib
-        </div>
         <div className="topbar__search-wrap">
           <svg className="topbar__search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <circle cx="11" cy="11" r="7" />
@@ -112,21 +177,42 @@ export default function App(): JSX.Element {
           </svg>
           <input
             className="topbar__search"
-            placeholder="사운드 검색 — 파일명, 카테고리, 태그"
+            placeholder="Search sounds"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <div className="topbar__actions">
-          <button className="btn btn--accent" onClick={handleOpenFolder} disabled={scanning}>
-            {scanning ? '스캔 중…' : '폴더 추가'}
+        <button className="btn btn--accent" onClick={handleOpenFolder} disabled={scanning}>
+          {scanning ? '스캔 중…' : '＋ 폴더 추가'}
+        </button>
+        <div className="topbar__viewtoggle">
+          <button
+            className={`icon-btn${view === 'list' ? ' icon-btn--active' : ''}`}
+            title="리스트"
+            onClick={() => setView('list')}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+            </svg>
+          </button>
+          <button
+            className={`icon-btn${view === 'grid' ? ' icon-btn--active' : ''}`}
+            title="폴더 카드"
+            onClick={() => setView('grid')}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="3" width="7" height="7" rx="1" />
+              <rect x="3" y="14" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="7" height="7" rx="1" />
+            </svg>
           </button>
           <button
             className={`icon-btn${showMeta ? ' icon-btn--active' : ''}`}
             title="메타데이터 패널"
             onClick={() => setShowMeta((v) => !v)}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
               <rect x="3" y="4" width="18" height="16" rx="2" />
               <path d="M15 4v16" />
             </svg>
@@ -138,22 +224,67 @@ export default function App(): JSX.Element {
         <Sidebar
           library={library}
           tracks={tracks}
+          tree={tree}
           onOpenFolder={handleOpenFolder}
-          activeCategory={activeCategory}
-          onSelectCategory={setActiveCategory}
+          selectedFolder={selectedFolder}
+          onSelectFolder={(p) => {
+            setSelectedFolder(p)
+            setShowStarredOnly(false)
+            setActiveCategory(null)
+          }}
+          excluded={excluded}
+          onToggleExclude={toggleExclude}
           showStarredOnly={showStarredOnly}
-          onToggleStarredView={() => setShowStarredOnly((v) => !v)}
+          onToggleStarredView={() => {
+            setShowStarredOnly((v) => !v)
+            setActiveCategory(null)
+          }}
+          activeCategory={activeCategory}
+          onSelectCategory={(c) => {
+            setActiveCategory(c)
+            setShowStarredOnly(false)
+          }}
         />
-        <ResultList
-          tracks={filteredTracks}
-          selectedTrackId={selectedTrack?.id ?? null}
-          onSelectTrack={handleSelectTrack}
-          onToggleStar={handleToggleStar}
-        />
+
+        <div className="content-wrap">
+          <div className="breadcrumb">
+            <span className="breadcrumb__home">Home</span>
+            {crumbs.map((c, i) => (
+              <span key={i} className="breadcrumb__seg">
+                <span className="breadcrumb__sep">/</span>
+                <span
+                  className={`breadcrumb__link${i === crumbs.length - 1 ? ' breadcrumb__link--current' : ''}`}
+                  onClick={() => setSelectedFolder(c.path)}
+                >
+                  {c.label}
+                </span>
+              </span>
+            ))}
+            <span className="breadcrumb__count">
+              {showGrid ? `${currentNode?.children.length ?? 0} folders` : `${visibleTracks.length} sounds`}
+            </span>
+          </div>
+
+          {showGrid && currentNode ? (
+            <FolderGrid folders={currentNode.children} onOpenFolder={(p) => setSelectedFolder(p)} />
+          ) : (
+            <ResultList
+              tracks={visibleTracks}
+              selectedTrackId={selectedTrack?.id ?? null}
+              onSelectTrack={handleSelectTrack}
+              onToggleStar={handleToggleStar}
+            />
+          )}
+        </div>
+
         {showMeta && <MetadataPanel track={selectedTrack} onToggleStar={handleToggleStar} />}
       </div>
 
-      <PlayerBar track={selectedTrack} />
+      <PlayerBar
+        track={selectedTrack}
+        onPrev={() => selectRelative(-1)}
+        onNext={() => selectRelative(1)}
+      />
     </div>
   )
 }

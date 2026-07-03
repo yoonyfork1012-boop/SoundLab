@@ -24,7 +24,19 @@ const api = {
     ipcRenderer.invoke('track:updateLastPlayed', trackId),
 
   readAudioFile: (filePath: string): Promise<Uint8Array> =>
-    ipcRenderer.invoke('file:readAudio', filePath)
+    ipcRenderer.invoke('file:readAudio', filePath),
+
+  // 창 제어 (커스텀 타이틀바)
+  windowMinimize: (): void => ipcRenderer.send('window:minimize'),
+  windowToggleMaximize: (): void => ipcRenderer.send('window:toggleMaximize'),
+  windowClose: (): void => ipcRenderer.send('window:close'),
+  windowIsMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:isMaximized'),
+  onWindowMaximized: (callback: (maximized: boolean) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, maximized: boolean): void =>
+      callback(maximized)
+    ipcRenderer.on('window:maximized', listener)
+    return () => ipcRenderer.removeListener('window:maximized', listener)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)

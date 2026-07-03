@@ -37,4 +37,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const buffer = await readFile(filePath)
     return new Uint8Array(buffer)
   })
+
+  // 커스텀 타이틀바 창 제어
+  ipcMain.on('window:minimize', () => mainWindow.minimize())
+  ipcMain.on('window:toggleMaximize', () => {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    else mainWindow.maximize()
+  })
+  ipcMain.on('window:close', () => mainWindow.close())
+  ipcMain.handle('window:isMaximized', () => mainWindow.isMaximized())
 }

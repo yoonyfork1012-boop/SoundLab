@@ -1,6 +1,5 @@
 import type { Track } from '@shared/types'
 import { colorForCategory } from '@shared/ucsCategories'
-import MiniWaveform from '../MiniWaveform/MiniWaveform'
 
 interface MetadataPanelProps {
   track: Track | null
@@ -31,14 +30,14 @@ export default function MetadataPanel({ track, onToggleStar }: MetadataPanelProp
     <aside className="meta">
       <div
         className="meta__artwork"
-        style={{ background: `linear-gradient(150deg, ${color}33, ${color}14)` }}
+        style={{ background: `linear-gradient(150deg, ${color}44, ${color}12)` }}
       >
-        <div className="meta__artwork-wave">
-          <MiniWaveform seed={track.filename} color={color} bars={44} width={200} height={120} />
-        </div>
-        {track.artworkSource && (
-          <span className="meta__artwork-badge">{track.artworkSource}</span>
-        )}
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" opacity="0.9">
+          <path d="M9 18V5l12-2v13" />
+          <circle cx="6" cy="18" r="3" />
+          <circle cx="18" cy="16" r="3" />
+        </svg>
+        {track.artworkSource && <span className="meta__artwork-badge">{track.artworkSource}</span>}
       </div>
 
       <div className="meta__title-row">
