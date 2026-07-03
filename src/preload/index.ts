@@ -26,6 +26,9 @@ const api = {
   readAudioFile: (filePath: string): Promise<Uint8Array> =>
     ipcRenderer.invoke('file:readAudio', filePath),
 
+  // 리스트 행을 OS 네이티브 드래그로 내보내기 (DAW/탐색기로 드롭)
+  startDrag: (filePath: string): void => ipcRenderer.send('drag:start', filePath),
+
   // 창 제어 (커스텀 타이틀바)
   windowMinimize: (): void => ipcRenderer.send('window:minimize'),
   windowToggleMaximize: (): void => ipcRenderer.send('window:toggleMaximize'),

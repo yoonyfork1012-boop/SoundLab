@@ -569,6 +569,24 @@ button {
   color: #fff;
   box-shadow: inset 2px 0 0 var(--accent-bright);
 }
+/* Soundly처럼 한 번 미리듣기한 사운드는 회색으로 비활성화 표시 */
+.list-row--previewed .list-row__filename,
+.list-row--previewed .list-row__cell {
+  color: var(--text-ghost);
+}
+.list-row--previewed .list-row__cat-dot {
+  opacity: 0.45;
+}
+.list-row--previewed .list-row__cat-pill {
+  opacity: 0.5;
+}
+.list-row--previewed:hover .list-row__filename {
+  color: var(--text-dim);
+}
+.list-row--selected.list-row--previewed .list-row__filename,
+.list-row--selected.list-row--previewed .list-row__cell {
+  color: #fff;
+}
 .list-row__star {
   color: var(--text-ghost);
   cursor: pointer;

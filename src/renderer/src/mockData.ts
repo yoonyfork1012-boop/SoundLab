@@ -69,5 +69,6 @@ export const mockTracks: Track[] = DEFS.map(([base, category, subcategory, folde
   artworkPath: null,
   artworkSource: 'generated',
   addedAt: Date.now() - i * 3600_000,
-  lastPlayedAt: null
+  // 일부는 미리듣기한 상태(previewed → 회색)로 표시해 프리뷰에서 확인
+  lastPlayedAt: i % 4 === 1 ? Date.now() - i * 60_000 : null
 }))

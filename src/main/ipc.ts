@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { ipcMain, dialog, BrowserWindow, nativeImage } from 'electron'
 import { readFile } from 'fs/promises'
 import { scanLibrary } from './scanner'
 import { getTracksByLibrary, toggleStarred, updateLastPlayed } from './db/queries'
@@ -36,6 +36,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle('file:readAudio', async (_event, filePath: string) => {
     const buffer = await readFile(filePath)
     return new Uint8Array(buffer)
+  })
+
+  // 리스트에서 바로 끌어다 DAW/탐색기로 놓는 네이티브 드래그아웃 (Soundly 방식)
+  // 16x16 반투명 사각형 PNG (Windows는 드래그 아이콘이 필수)
+  const dragIcon = nativeImage.createFromDataURL(
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAOElEQVR4nGNgGAWjYBSMglEwCkbBKBgFo2AUjIJRMApGwSgYBaNgFIyCUTAKRsEoGAWjYBSMAgAWWAABlXHW4QAAAABJRU5ErkJggg=='
+  )
+  ipcMain.on('drag:start', (event, filePath: string) => {
+    event.sender.startDrag({ file: filePath, icon: dragIcon })
   })
 
   // 커스텀 타이틀바 창 제어

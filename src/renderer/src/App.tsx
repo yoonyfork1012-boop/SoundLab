@@ -75,6 +75,9 @@ export default function App(): JSX.Element {
 
   async function handleSelectTrack(track: Track): Promise<void> {
     setSelectedTrack(track)
+    // Soundly처럼 미리듣기한 사운드는 회색(previewed) 처리 — 로컬 상태 즉시 반영
+    const now = Date.now()
+    setTracks((prev) => prev.map((t) => (t.id === track.id ? { ...t, lastPlayedAt: now } : t)))
     if (window.api) await window.api.updateLastPlayed(track.id)
   }
 

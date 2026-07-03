@@ -41,13 +41,23 @@ const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX
   const { tracks, selectedTrackId, onSelectTrack, onToggleStar } = data
   const track = tracks[index]
   const isSelected = track.id === selectedTrackId
+  const isPreviewed = track.lastPlayedAt != null
   const color = colorForCategory(track.category)
 
   return (
     <div
       style={style}
-      className={`list-row${isSelected ? ' list-row--selected' : ''}`}
-      onMouseDown={() => onSelectTrack(track)}
+      className={`list-row${isSelected ? ' list-row--selected' : ''}${isPreviewed ? ' list-row--previewed' : ''}`}
+      onMouseDown={(e) => {
+        // 좌클릭만 선택 (드래그 시작도 mousedown에서 선택됨 — Soundly와 동일)
+        if (e.button === 0) onSelectTrack(track)
+      }}
+      draggable
+      onDragStart={(e) => {
+        // 선택 여부와 무관하게 어떤 행이든 즉시 OS 네이티브 드래그 시작
+        e.preventDefault()
+        window.api?.startDrag(track.filePath)
+      }}
     >
       <div
         className={`list-row__star${track.starred ? ' list-row__star--on' : ''}`}
