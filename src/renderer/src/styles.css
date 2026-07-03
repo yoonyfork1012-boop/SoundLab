@@ -560,9 +560,13 @@ button {
   cursor: pointer;
   color: var(--text-dim);
 }
-.list-row:hover {
+/* Soundly처럼 휠 스크롤 중에도 커서를 따라다니는 hover 박스 (좌표 기반, JS 제어) */
+.list-hoverbox {
+  position: absolute;
+  left: 0;
+  right: 0;
   background: var(--row-hover);
-  color: var(--text);
+  pointer-events: none;
 }
 .list-row--selected {
   background: var(--row-selected);

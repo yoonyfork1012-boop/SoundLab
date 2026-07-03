@@ -51,7 +51,15 @@ const SR = [48000, 44100, 96000]
 const BITS = [16, 24]
 const CH = [1, 2]
 
-export const mockTracks: Track[] = DEFS.map(([base, category, subcategory, folder], i) => ({
+// 3벌 변형으로 늘려 실제 규모(스크롤 필요)에 가깝게
+const VARIANTS = ['', '_v2', '_v3']
+const EXPANDED = VARIANTS.flatMap((suffix) =>
+  DEFS.map(([base, category, subcategory, folder]) =>
+    [`${base}${suffix}`, category, subcategory, folder] as [string, string, string, string]
+  )
+)
+
+export const mockTracks: Track[] = EXPANDED.map(([base, category, subcategory, folder], i) => ({
   id: i + 1,
   libraryId: 1,
   filePath: `${ROOT}/${folder}/${base}.wav`,
