@@ -44,16 +44,30 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(async () => {
-  await initDb()
-  createWindow()
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+// 중복 실행 방지 — 두 인스턴스가 동시에 DB 파일을 덮어써 손상되는 것을 막음
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win) {
+      if (win.isMinimized()) win.restore()
+      win.focus()
+    }
   })
-})
 
-app.on('window-all-closed', () => {
-  closeDb()
-  if (process.platform !== 'darwin') app.quit()
-})
+  app.whenReady().then(async () => {
+    await initDb()
+    createWindow()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  })
+
+  app.on('window-all-closed', () => {
+    closeDb()
+    if (process.platform !== 'darwin') app.quit()
+  })
+}

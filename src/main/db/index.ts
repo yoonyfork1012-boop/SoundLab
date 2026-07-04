@@ -1,5 +1,5 @@
 import initSqlJs, { Database, SqlJsStatic } from 'sql.js'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
@@ -21,7 +21,23 @@ export async function initDb(): Promise<void> {
   const wasmPath = require.resolve('sql.js/dist/sql-wasm.wasm')
   const SQL: SqlJsStatic = await initSqlJs({ locateFile: () => wasmPath })
 
-  db = existsSync(DB_PATH) ? new SQL.Database(readFileSync(DB_PATH)) : new SQL.Database()
+  // 손상된 DB(예: 비정상 종료/동시 쓰기)로 앱이 아예 안 켜지는 것을 방지 —
+  // 로드 실패 시 손상 파일을 백업으로 옮기고 새 DB로 시작
+  if (existsSync(DB_PATH)) {
+    try {
+      db = new SQL.Database(readFileSync(DB_PATH))
+    } catch (err) {
+      try {
+        renameSync(DB_PATH, `${DB_PATH}.corrupt-${Date.now()}`)
+      } catch {
+        /* noop */
+      }
+      console.error('손상된 DB 감지 → 새 DB로 시작:', (err as Error)?.message)
+      db = new SQL.Database()
+    }
+  } else {
+    db = new SQL.Database()
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS libraries (
