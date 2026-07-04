@@ -5,9 +5,11 @@ import ResultList from './components/ResultList/ResultList'
 import FolderGrid from './components/FolderGrid/FolderGrid'
 import PlayerBar from './components/PlayerBar/PlayerBar'
 import MetadataPanel from './components/MetadataPanel/MetadataPanel'
+import AccentPicker from './components/AccentPicker/AccentPicker'
 import type { Library, Track } from '@shared/types'
 import { isBrowserPreview, mockLibrary, mockTracks } from './mockData'
 import { buildFolderTree, tracksUnder, type FolderNode } from './lib/folderTree'
+import { applyAccent, loadAccent, saveAccent } from './lib/theme'
 
 function norm(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -33,6 +35,16 @@ export default function App(): JSX.Element {
   const [showStarredOnly, setShowStarredOnly] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
   const [view, setView] = useState<'grid' | 'list'>('grid')
+  const [accent, setAccentState] = useState<string>(loadAccent())
+
+  useEffect(() => {
+    applyAccent(accent)
+  }, [accent])
+
+  function setAccent(hex: string): void {
+    setAccentState(hex)
+    saveAccent(hex)
+  }
 
   useEffect(() => {
     if (isBrowserPreview) {
@@ -174,28 +186,8 @@ export default function App(): JSX.Element {
           />
         </div>
         {scanning && <span className="topbar__scanning">스캔 중…</span>}
-        <div className="topbar__viewtoggle">
-          <button
-            className={`icon-btn${view === 'list' ? ' icon-btn--active' : ''}`}
-            title="리스트"
-            onClick={() => setView('list')}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
-            </svg>
-          </button>
-          <button
-            className={`icon-btn${view === 'grid' ? ' icon-btn--active' : ''}`}
-            title="폴더 카드"
-            onClick={() => setView('grid')}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="3" width="7" height="7" rx="1" />
-              <rect x="14" y="3" width="7" height="7" rx="1" />
-              <rect x="3" y="14" width="7" height="7" rx="1" />
-              <rect x="14" y="14" width="7" height="7" rx="1" />
-            </svg>
-          </button>
+        <div className="topbar__actions">
+          <AccentPicker accent={accent} onChange={setAccent} />
           <button
             className={`icon-btn${showMeta ? ' icon-btn--active' : ''}`}
             title="메타데이터 패널"
@@ -269,6 +261,7 @@ export default function App(): JSX.Element {
 
       <PlayerBar
         track={selectedTrack}
+        accent={accent}
         onPrev={() => selectRelative(-1)}
         onNext={() => selectRelative(1)}
       />

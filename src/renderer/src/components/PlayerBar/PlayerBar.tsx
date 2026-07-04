@@ -4,6 +4,7 @@ import type { Track } from '@shared/types'
 
 interface PlayerBarProps {
   track: Track | null
+  accent: string
   onPrev: () => void
   onNext: () => void
 }
@@ -37,15 +38,26 @@ function fmt(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`
 }
 
-export default function PlayerBar({ track, onPrev, onNext }: PlayerBarProps): JSX.Element {
+interface Route {
+  ctx: AudioContext
+  g0: GainNode
+  g1: GainNode
+  merger: ChannelMergerNode
+}
+
+export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const wavesurferRef = useRef<WaveSurfer | null>(null)
   const loadTokenRef = useRef(0)
+  const routeRef = useRef<Route | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [loop, setLoop] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(0.85)
+  const [ch1, setCh1] = useState(true)
+  const [ch2, setCh2] = useState(true)
+  const [mode, setMode] = useState<'stereo' | 'mono'>('stereo')
   const loopRef = useRef(loop)
   loopRef.current = loop
 
@@ -55,7 +67,7 @@ export default function PlayerBar({ track, onPrev, onNext }: PlayerBarProps): JS
     const ws = WaveSurfer.create({
       container: containerRef.current,
       waveColor: '#3a4048',
-      progressColor: '#4c8dff',
+      progressColor: accent,
       cursorColor: '#eceef2',
       cursorWidth: 1,
       height: 70,
@@ -81,9 +93,73 @@ export default function PlayerBar({ track, onPrev, onNext }: PlayerBarProps): JS
     }
   }, [])
 
+  // 액센트 변경 시 웨이브폼 진행색 갱신
+  useEffect(() => {
+    wavesurferRef.current?.setOptions({ progressColor: accent })
+  }, [accent])
+
   useEffect(() => {
     wavesurferRef.current?.setVolume(volume)
   }, [volume])
+
+  // ── Web Audio 채널 라우팅 (실제 채널 solo / Mono·Stereo) ──
+  // 기본 재생을 건드리지 않도록, 사용자가 채널 컨트롤을 처음 만질 때만 라우팅 생성.
+  function ensureRoute(): Route | null {
+    if (routeRef.current) return routeRef.current
+    const media = wavesurferRef.current?.getMediaElement()
+    if (!media) return null
+    try {
+      const ctx = new AudioContext()
+      const src = ctx.createMediaElementSource(media)
+      const splitter = ctx.createChannelSplitter(2)
+      const g0 = ctx.createGain()
+      const g1 = ctx.createGain()
+      const merger = ctx.createChannelMerger(2)
+      src.connect(splitter)
+      splitter.connect(g0, 0)
+      splitter.connect(g1, 1)
+      merger.connect(ctx.destination)
+      routeRef.current = { ctx, g0, g1, merger }
+      return routeRef.current
+    } catch {
+      return null // 실패 시 미디어 요소가 그대로 소리 출력 (안전)
+    }
+  }
+
+  function applyRoute(nCh1: boolean, nCh2: boolean, nMode: 'stereo' | 'mono'): void {
+    const r = ensureRoute()
+    if (!r) return
+    void r.ctx.resume()
+    r.g0.disconnect()
+    r.g1.disconnect()
+    r.g0.gain.value = nCh1 ? 1 : 0
+    r.g1.gain.value = nCh2 ? 1 : 0
+    if (nMode === 'mono') {
+      // 두 채널을 양쪽 출력으로 합침
+      r.g0.connect(r.merger, 0, 0)
+      r.g0.connect(r.merger, 0, 1)
+      r.g1.connect(r.merger, 0, 0)
+      r.g1.connect(r.merger, 0, 1)
+    } else {
+      r.g0.connect(r.merger, 0, 0)
+      r.g1.connect(r.merger, 0, 1)
+    }
+  }
+
+  function toggleCh1(): void {
+    const v = !ch1
+    setCh1(v)
+    applyRoute(v, ch2, mode)
+  }
+  function toggleCh2(): void {
+    const v = !ch2
+    setCh2(v)
+    applyRoute(ch1, v, mode)
+  }
+  function changeMode(next: 'stereo' | 'mono'): void {
+    setMode(next)
+    applyRoute(ch1, ch2, next)
+  }
 
   useEffect(() => {
     const ws = wavesurferRef.current
@@ -114,7 +190,6 @@ export default function PlayerBar({ track, onPrev, onNext }: PlayerBarProps): JS
         ws.setVolume(volume)
         await ws.play()
       } catch (err) {
-        // 빠르게 다음 트랙으로 넘어가면서 발생하는 abort는 무시
         if (token === loadTokenRef.current) {
           const msg = (err as Error)?.message ?? ''
           if (!/abort/i.test(msg)) console.warn('audio load failed:', msg)
@@ -130,6 +205,7 @@ export default function PlayerBar({ track, onPrev, onNext }: PlayerBarProps): JS
 
   const sr = track?.sampleRate ? `${(track.sampleRate / 1000).toFixed(0)}k` : '—'
   const bit = track?.bitDepth ? `${track.bitDepth}` : '—'
+  const stereoTrack = (track?.channels ?? 2) >= 2
 
   return (
     <div className="player">
@@ -192,13 +268,33 @@ export default function PlayerBar({ track, onPrev, onNext }: PlayerBarProps): JS
             />
             <span className="player__vol-val">{Math.round(volume * 100)}%</span>
           </div>
+
+          <select
+            className="player__mode"
+            value={mode}
+            onChange={(e) => changeMode(e.target.value as 'stereo' | 'mono')}
+            title="Mono / Stereo"
+          >
+            <option value="stereo">Stereo</option>
+            <option value="mono">Mono</option>
+          </select>
+
           <div className="player__channels">
-            <span className={`player__chip${(track?.channels ?? 2) >= 1 ? ' player__chip--on' : ''}`}>
+            <button
+              className={`player__chip${ch1 ? ' player__chip--on' : ''}`}
+              onClick={toggleCh1}
+              title="채널 1 켜기/끄기"
+            >
               Channel 1
-            </span>
-            <span className={`player__chip${(track?.channels ?? 0) >= 2 ? ' player__chip--on' : ''}`}>
+            </button>
+            <button
+              className={`player__chip${ch2 && stereoTrack ? ' player__chip--on' : ''}`}
+              onClick={toggleCh2}
+              disabled={!stereoTrack}
+              title={stereoTrack ? '채널 2 켜기/끄기' : '모노 파일 (채널 2 없음)'}
+            >
               Channel 2
-            </span>
+            </button>
           </div>
         </div>
       </div>
