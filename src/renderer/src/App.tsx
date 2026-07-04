@@ -99,8 +99,14 @@ export default function App(): JSX.Element {
   }, [tracks, selectedFolder, showStarredOnly, activeCategory, search])
 
   const isFiltering = Boolean(search.trim() || showStarredOnly || activeCategory)
+  // 폴더를 선택하면(=selectedFolder 있음) 하위 폴더가 있어도 사운드를 재귀로 보여줌 (Soundly 방식).
+  // 폴더 카드 그리드는 최상위 진입 화면(아무 폴더도 선택 안 함)에서만 표시.
   const showGrid =
-    view === 'grid' && !isFiltering && currentNode !== null && currentNode.children.length > 0
+    view === 'grid' &&
+    !isFiltering &&
+    !selectedFolder &&
+    currentNode !== null &&
+    currentNode.children.length > 0
 
   function selectRelative(delta: number): void {
     if (visibleTracks.length === 0) return
