@@ -54,13 +54,14 @@ export default function PlayerBar({ track, onPrev, onNext }: PlayerBarProps): JS
 
     const ws = WaveSurfer.create({
       container: containerRef.current,
-      waveColor: '#6b7280',
-      progressColor: '#3b82f6',
-      cursorColor: '#e5e7eb',
+      waveColor: '#3a4048',
+      progressColor: '#4c8dff',
+      cursorColor: '#eceef2',
       cursorWidth: 1,
-      height: 72,
-      barWidth: 1,
+      height: 70,
+      barWidth: 2,
       barGap: 1,
+      barRadius: 3,
       normalize: true
     })
 
