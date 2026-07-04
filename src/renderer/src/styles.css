@@ -19,11 +19,12 @@
   --text-faint: #616874;
   --text-ghost: #454b55;
 
-  /* 기본 액센트: 연한 그린 (상단 색 선택기에서 변경 가능, JS가 오버라이드) */
-  --accent: #57cc8b;
-  --accent-bright: #82dba8;
-  --accent-dim: rgba(87, 204, 139, 0.16);
-  --accent-glow: rgba(87, 204, 139, 0.4);
+  /* 기본 액센트: 파스텔 그린 (상단 색 선택기에서 변경 가능, JS가 오버라이드) */
+  --accent: #7fd6a6;
+  --accent-bright: #a3e3c1;
+  --accent-dim: rgba(127, 214, 166, 0.17);
+  --accent-glow: rgba(127, 214, 166, 0.35);
+  --on-accent: #0c1410; /* 파스텔 액센트 위 텍스트/아이콘 (어둡게) */
   --star: #f2c14e;
   --close: #e5484d;
 
@@ -256,7 +257,7 @@ button {
   color: var(--text);
 }
 .icon-btn--active {
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent);
   box-shadow: 0 1px 6px var(--accent-glow);
 }
@@ -775,11 +776,13 @@ button {
 .player__wave-band {
   flex: 1;
   position: relative;
-  padding: 10px 18px 0;
+  padding: 8px 18px 0;
   min-height: 0;
+  display: flex;
+  align-items: center;
 }
 .player__waveform {
-  height: 70px;
+  width: 100%;
 }
 .player__wave-empty {
   position: absolute;
@@ -856,16 +859,15 @@ button {
 }
 .player__tbtn--play {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   width: 42px;
   height: 42px;
-  font-size: 14px;
   box-shadow: 0 2px 10px var(--accent-glow);
   transition: transform 0.12s var(--ease), background 0.12s var(--ease);
 }
 .player__tbtn--play:hover {
   background: var(--accent-bright);
-  color: #fff;
+  color: var(--on-accent);
   transform: scale(1.05);
 }
 .player__tbtn:disabled {
@@ -944,12 +946,13 @@ button {
 }
 .player__chip--on {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border-color: transparent;
+  font-weight: 600;
 }
 .player__chip--on:hover {
   background: var(--accent-bright);
-  color: #fff;
+  color: var(--on-accent);
 }
 .player__chip:disabled {
   opacity: 0.4;

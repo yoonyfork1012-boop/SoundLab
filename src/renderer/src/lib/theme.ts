@@ -3,15 +3,15 @@ export interface AccentPreset {
   color: string
 }
 
-// 기본은 연한 그린. 사용자가 상단 색 선택기로 변경 가능(로컬 저장).
+// 기본은 파스텔 그린. 사용자가 상단 색 선택기로 변경 가능(로컬 저장).
 export const ACCENT_PRESETS: AccentPreset[] = [
-  { name: 'Green', color: '#57cc8b' },
-  { name: 'Mint', color: '#35d0a5' },
-  { name: 'Teal', color: '#2dd4bf' },
-  { name: 'Blue', color: '#4c8dff' },
-  { name: 'Violet', color: '#a78bfa' },
-  { name: 'Amber', color: '#f0b44e' },
-  { name: 'Rose', color: '#fb7185' }
+  { name: 'Green', color: '#7fd6a6' },
+  { name: 'Mint', color: '#8fe3c6' },
+  { name: 'Teal', color: '#83d6cf' },
+  { name: 'Blue', color: '#8fb8f2' },
+  { name: 'Violet', color: '#c0aeec' },
+  { name: 'Amber', color: '#f2d29a' },
+  { name: 'Rose', color: '#f2a8b8' }
 ]
 
 const STORAGE_KEY = 'soundlib.accent'

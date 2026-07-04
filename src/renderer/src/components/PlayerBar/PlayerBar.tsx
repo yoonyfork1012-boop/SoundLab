@@ -45,6 +45,44 @@ interface Route {
   merger: ChannelMergerNode
 }
 
+// 통일된 트랜스포트 아이콘 (동일 viewBox / 스트로크)
+const IconLoop = (): JSX.Element => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17 2l4 4-4 4" />
+    <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+    <path d="M7 22l-4-4 4-4" />
+    <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+  </svg>
+)
+const IconPrev = (): JSX.Element => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1" strokeLinejoin="round">
+    <path d="M18 5v14l-11-7z" />
+    <rect x="5" y="5" width="2" height="14" rx="1" />
+  </svg>
+)
+const IconNext = (): JSX.Element => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1" strokeLinejoin="round">
+    <path d="M6 5v14l11-7z" />
+    <rect x="17" y="5" width="2" height="14" rx="1" />
+  </svg>
+)
+const IconPlay = (): JSX.Element => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M7 4v16l13-8z" />
+  </svg>
+)
+const IconPause = (): JSX.Element => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+    <rect x="6" y="4" width="4.5" height="16" rx="1.2" />
+    <rect x="13.5" y="4" width="4.5" height="16" rx="1.2" />
+  </svg>
+)
+const IconStop = (): JSX.Element => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+    <rect x="5" y="5" width="14" height="14" rx="2.5" />
+  </svg>
+)
+
 export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const wavesurferRef = useRef<WaveSurfer | null>(null)
@@ -70,11 +108,16 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       progressColor: accent,
       cursorColor: '#eceef2',
       cursorWidth: 1,
-      height: 70,
+      height: 30,
       barWidth: 2,
       barGap: 1,
       barRadius: 3,
-      normalize: true
+      normalize: true,
+      // Soundly처럼 스테레오 파일은 좌/우 채널을 위아래로 분리 표시
+      splitChannels: [
+        { height: 30 },
+        { height: 30 }
+      ]
     })
 
     ws.on('play', () => setIsPlaying(true))
@@ -227,13 +270,13 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
         <div className="player__transport">
           <button
             className={`player__tbtn${loop ? ' player__tbtn--on' : ''}`}
-            title="Loop"
+            title="반복"
             onClick={() => setLoop((v) => !v)}
           >
-            ↻
+            <IconLoop />
           </button>
           <button className="player__tbtn" title="이전 (↑)" onClick={onPrev}>
-            ⏮
+            <IconPrev />
           </button>
           <button
             className="player__tbtn player__tbtn--play"
@@ -241,13 +284,13 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
             disabled={!track}
             onClick={() => wavesurferRef.current?.playPause()}
           >
-            {isPlaying ? '❚❚' : '▶'}
+            {isPlaying ? <IconPause /> : <IconPlay />}
           </button>
           <button className="player__tbtn" title="다음 (↓)" onClick={onNext}>
-            ⏭
+            <IconNext />
           </button>
-          <button className="player__tbtn" title="Stop" onClick={() => wavesurferRef.current?.stop()}>
-            ◼
+          <button className="player__tbtn" title="정지" onClick={() => wavesurferRef.current?.stop()}>
+            <IconStop />
           </button>
         </div>
 
