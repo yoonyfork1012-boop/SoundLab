@@ -4,8 +4,14 @@ import type { Library, ScanProgress, Track } from '../shared/types'
 const api = {
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:selectFolder'),
 
-  scanLibrary: (rootPath: string): Promise<{ library: Library; tracks: Track[] }> =>
+  scanLibrary: (rootPath: string): Promise<{ libraries: Library[]; tracks: Track[] }> =>
     ipcRenderer.invoke('library:scan', rootPath),
+
+  loadAll: (): Promise<{ libraries: Library[]; tracks: Track[] }> =>
+    ipcRenderer.invoke('app:loadAll'),
+
+  removeLibrary: (libraryId: number): Promise<{ libraries: Library[]; tracks: Track[] }> =>
+    ipcRenderer.invoke('library:remove', libraryId),
 
   onScanProgress: (callback: (progress: ScanProgress) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: ScanProgress): void =>
@@ -13,9 +19,6 @@ const api = {
     ipcRenderer.on('library:scanProgress', listener)
     return () => ipcRenderer.removeListener('library:scanProgress', listener)
   },
-
-  getTracksByLibrary: (libraryId: number): Promise<Track[]> =>
-    ipcRenderer.invoke('tracks:getByLibrary', libraryId),
 
   toggleStar: (trackId: number): Promise<boolean> =>
     ipcRenderer.invoke('track:toggleStar', trackId),

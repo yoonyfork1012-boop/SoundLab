@@ -4,11 +4,16 @@ import { colorForCategory } from '@shared/ucsCategories'
 import type { FolderNode } from '../../lib/folderTree'
 import FolderTree from './FolderTree'
 
+export interface LibraryTree {
+  library: Library
+  node: FolderNode
+}
+
 interface SidebarProps {
-  library: Library | null
+  trees: LibraryTree[]
   tracks: Track[]
-  tree: FolderNode | null
   onOpenFolder: () => void
+  onRemoveLibrary: (id: number) => void
   selectedFolder: string | null
   onSelectFolder: (path: string | null) => void
   showStarredOnly: boolean
@@ -26,10 +31,10 @@ function Chevron({ open }: { open: boolean }): JSX.Element {
 }
 
 export default function Sidebar({
-  library,
+  trees,
   tracks,
-  tree,
   onOpenFolder,
+  onRemoveLibrary,
   selectedFolder,
   onSelectFolder,
   showStarredOnly,
@@ -56,12 +61,8 @@ export default function Sidebar({
         </span>
       </div>
 
-      {/* Soundly처럼 Local 상위 노드 (체크박스 없음) */}
-      <div
-        className="ftree__row"
-        style={{ paddingLeft: 10 }}
-        onClick={() => setLocalOpen((v) => !v)}
-      >
+      {/* Soundly처럼 Local 상위 노드 아래에 여러 라이브러리 폴더가 누적 */}
+      <div className="ftree__row" style={{ paddingLeft: 10 }} onClick={() => setLocalOpen((v) => !v)}>
         <span className="ftree__toggle">
           <Chevron open={localOpen} />
         </span>
@@ -69,14 +70,19 @@ export default function Sidebar({
       </div>
 
       {localOpen &&
-        (tree && library ? (
-          <FolderTree
-            node={tree}
-            depth={1}
-            selectedPath={selectedFolder}
-            onSelectFolder={(p) => onSelectFolder(p)}
-            defaultExpanded
-          />
+        (trees.length > 0 ? (
+          trees.map(({ library, node }) => (
+            <div key={library.id} className="ftree__lib">
+              <FolderTree
+                node={node}
+                depth={1}
+                selectedPath={selectedFolder}
+                onSelectFolder={(p) => onSelectFolder(p)}
+                defaultExpanded={trees.length === 1}
+                onRemove={() => onRemoveLibrary(library.id)}
+              />
+            </div>
+          ))
         ) : (
           <div className="ftree__row" style={{ paddingLeft: 24 }} onClick={onOpenFolder}>
             <span className="ftree__toggle" />

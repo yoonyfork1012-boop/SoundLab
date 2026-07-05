@@ -8,7 +8,7 @@ import ColumnMenu from './ColumnMenu'
 
 interface ResultListProps {
   tracks: Track[]
-  library: Library | null
+  libraries: Library[]
   selectedTrackId: number | null
   onSelectTrack: (track: Track) => void
 }
@@ -21,7 +21,7 @@ interface RowData {
   selectedTrackId: number | null
   columns: ColumnDef[]
   gridTemplate: string
-  library: Library | null
+  libraries: Library[]
 }
 
 function SpeakerIcon({ color }: { color: string }): JSX.Element {
@@ -34,7 +34,7 @@ function SpeakerIcon({ color }: { color: string }): JSX.Element {
 }
 
 const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX.Element => {
-  const { tracks, selectedTrackId, columns, gridTemplate, library } = data
+  const { tracks, selectedTrackId, columns, gridTemplate, libraries } = data
   const track = tracks[index]
   const isSelected = track.id === selectedTrackId
   const isPreviewed = track.lastPlayedAt != null
@@ -79,7 +79,7 @@ const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX
             style={col.align === 'right' ? { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } : undefined}
             key={col.key}
           >
-            {col.value(track, { library })}
+            {col.value(track, { libraries })}
           </div>
         )
       })}
@@ -90,7 +90,7 @@ Row.displayName = 'Row'
 
 export default function ResultList({
   tracks,
-  library,
+  libraries,
   selectedTrackId,
   onSelectTrack
 }: ResultListProps): JSX.Element {
@@ -154,7 +154,7 @@ export default function ResultList({
     })
   }
 
-  const itemData: RowData = { tracks, selectedTrackId, columns, gridTemplate, library }
+  const itemData: RowData = { tracks, selectedTrackId, columns, gridTemplate, libraries }
 
   return (
     <div className="content">

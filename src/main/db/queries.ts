@@ -108,6 +108,26 @@ export function getTracksByLibrary(libraryId: number): Track[] {
   ]).map(rowToTrack)
 }
 
+export function getAllTracks(): Track[] {
+  return selectRows('SELECT * FROM tracks ORDER BY filename').map(rowToTrack)
+}
+
+export function getAllLibraries(): Library[] {
+  return selectRows('SELECT * FROM libraries ORDER BY created_at').map((row) => ({
+    id: row.id as number,
+    rootPath: row.root_path as string,
+    name: row.name as string,
+    createdAt: row.created_at as number
+  }))
+}
+
+export function deleteLibrary(libraryId: number): void {
+  const db = getDb()
+  db.run('DELETE FROM tracks WHERE library_id = ?', [libraryId])
+  db.run('DELETE FROM libraries WHERE id = ?', [libraryId])
+  persistDb()
+}
+
 export function toggleStarred(trackId: number): boolean {
   const rows = selectRows('SELECT starred FROM tracks WHERE id = ?', [trackId])
   const next = rows[0]?.starred === 1 ? 0 : 1

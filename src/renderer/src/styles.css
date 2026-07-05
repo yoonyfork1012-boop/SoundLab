@@ -379,6 +379,20 @@ button {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+.ftree__remove {
+  display: none;
+  color: var(--text-faint);
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.ftree__row:hover .ftree__remove {
+  display: inline;
+}
+.ftree__remove:hover {
+  color: var(--close);
+  background: rgba(229, 72, 77, 0.12);
+}
 
 /* collections */
 .sidebar__coll {

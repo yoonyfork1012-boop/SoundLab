@@ -1,7 +1,13 @@
 import { ipcMain, dialog, BrowserWindow, nativeImage } from 'electron'
 import { readFile } from 'fs/promises'
 import { scanLibrary } from './scanner'
-import { getTracksByLibrary, toggleStarred, updateLastPlayed } from './db/queries'
+import {
+  getAllLibraries,
+  getAllTracks,
+  deleteLibrary,
+  toggleStarred,
+  updateLastPlayed
+} from './db/queries'
 import type { ScanProgress } from '../shared/types'
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
@@ -13,16 +19,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return result.filePaths[0]
   })
 
+  // 폴더 추가 = 라이브러리 누적. 스캔 후 전체(모든 라이브러리/트랙)를 반환.
   ipcMain.handle('library:scan', async (_event, rootPath: string) => {
-    const library = await scanLibrary(rootPath, (progress: ScanProgress) => {
+    await scanLibrary(rootPath, (progress: ScanProgress) => {
       mainWindow.webContents.send('library:scanProgress', progress)
     })
-    const tracks = getTracksByLibrary(library.id)
-    return { library, tracks }
+    return { libraries: getAllLibraries(), tracks: getAllTracks() }
   })
 
-  ipcMain.handle('tracks:getByLibrary', (_event, libraryId: number) => {
-    return getTracksByLibrary(libraryId)
+  // 앱 시작 시 저장돼 있던 전체 라이브러리/트랙 로드
+  ipcMain.handle('app:loadAll', () => {
+    return { libraries: getAllLibraries(), tracks: getAllTracks() }
+  })
+
+  ipcMain.handle('library:remove', (_event, libraryId: number) => {
+    deleteLibrary(libraryId)
+    return { libraries: getAllLibraries(), tracks: getAllTracks() }
   })
 
   ipcMain.handle('track:toggleStar', (_event, trackId: number) => {

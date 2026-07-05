@@ -1,7 +1,7 @@
 import type { Library, Track } from '@shared/types'
 
 export interface ColumnCtx {
-  library: Library | null
+  libraries: Library[]
 }
 
 export interface ColumnDef {
@@ -34,11 +34,12 @@ function fmtFormat(t: Track): string {
 }
 
 function libraryPath(t: Track, ctx: ColumnCtx): string {
-  if (!ctx.library) return ''
-  const root = norm(ctx.library.rootPath)
+  const lib = ctx.libraries.find((l) => l.id === t.libraryId)
+  if (!lib) return ''
+  const root = norm(lib.rootPath)
   const rel = norm(t.filePath).slice(root.length).replace(/^\/+/, '')
   const folder = rel.split('/').slice(0, -1).join('/')
-  return folder ? `${ctx.library.name}/${folder}` : ctx.library.name
+  return folder ? `${lib.name}/${folder}` : lib.name
 }
 
 function fmtDate(ms: number | null): string {

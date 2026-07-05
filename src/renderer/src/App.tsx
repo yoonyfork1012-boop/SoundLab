@@ -15,17 +15,8 @@ function norm(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '')
 }
 
-function findNode(root: FolderNode, path: string): FolderNode | null {
-  if (root.path === path) return root
-  for (const child of root.children) {
-    const found = findNode(child, path)
-    if (found) return found
-  }
-  return null
-}
-
 export default function App(): JSX.Element {
-  const [library, setLibrary] = useState<Library | null>(null)
+  const [libraries, setLibraries] = useState<Library[]>([])
   const [tracks, setTracks] = useState<Track[]>([])
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null)
   const [search, setSearch] = useState('')
@@ -46,22 +37,38 @@ export default function App(): JSX.Element {
     saveAccent(hex)
   }
 
+  // 시작 시 저장돼 있던 전체 라이브러리/트랙 로드 (누적 유지)
   useEffect(() => {
     if (isBrowserPreview) {
-      setLibrary(mockLibrary)
+      setLibraries([mockLibrary])
       setTracks(mockTracks)
+      return
     }
+    window.api?.loadAll().then(({ libraries, tracks }) => {
+      setLibraries(libraries)
+      setTracks(tracks)
+    })
   }, [])
 
-  const tree = useMemo(
-    () => (library ? buildFolderTree(tracks, library.rootPath) : null),
-    [tracks, library]
+  // 라이브러리별 폴더 트리
+  const trees = useMemo(
+    () =>
+      libraries.map((lib) => ({
+        library: lib,
+        node: buildFolderTree(
+          tracks.filter((t) => t.libraryId === lib.id),
+          lib.rootPath
+        )
+      })),
+    [libraries, tracks]
   )
-  const currentNode = useMemo(() => {
-    if (!tree) return null
-    if (!selectedFolder) return tree
-    return findNode(tree, selectedFolder) ?? tree
-  }, [tree, selectedFolder])
+  // 루트(진입) 화면 그리드에 보일 폴더 = 모든 라이브러리의 최상위 폴더
+  const rootFolders = useMemo(() => trees.flatMap((t) => t.node.children), [trees])
+  // 현재 선택 폴더가 속한 라이브러리
+  const currentLibrary = useMemo(() => {
+    if (!selectedFolder) return null
+    return libraries.find((l) => norm(selectedFolder).startsWith(norm(l.rootPath))) ?? null
+  }, [selectedFolder, libraries])
 
   async function handleOpenFolder(): Promise<void> {
     if (!window.api) return
@@ -69,13 +76,23 @@ export default function App(): JSX.Element {
     if (!folder) return
     setScanning(true)
     try {
-      const { library: lib, tracks: scanned } = await window.api.scanLibrary(folder)
-      setLibrary(lib)
-      setTracks(scanned)
+      // 폴더 추가 = 누적. 스캔 후 전체를 다시 받아 반영(기존 라이브러리 유지)
+      const { libraries: allLibs, tracks: allTracks } = await window.api.scanLibrary(folder)
+      setLibraries(allLibs)
+      setTracks(allTracks)
       setSelectedFolder(null)
     } finally {
       setScanning(false)
     }
+  }
+
+  async function handleRemoveLibrary(id: number): Promise<void> {
+    if (!window.api) return
+    const { libraries: allLibs, tracks: allTracks } = await window.api.removeLibrary(id)
+    setLibraries(allLibs)
+    setTracks(allTracks)
+    setSelectedFolder(null)
+    setSelectedTrack((prev) => (prev && prev.libraryId === id ? null : prev))
   }
 
   async function handleToggleStar(track: Track): Promise<void> {
@@ -113,12 +130,7 @@ export default function App(): JSX.Element {
   const isFiltering = Boolean(search.trim() || showStarredOnly || activeCategory)
   // 폴더를 선택하면(=selectedFolder 있음) 하위 폴더가 있어도 사운드를 재귀로 보여줌 (Soundly 방식).
   // 폴더 카드 그리드는 최상위 진입 화면(아무 폴더도 선택 안 함)에서만 표시.
-  const showGrid =
-    view === 'grid' &&
-    !isFiltering &&
-    !selectedFolder &&
-    currentNode !== null &&
-    currentNode.children.length > 0
+  const showGrid = view === 'grid' && !isFiltering && !selectedFolder && rootFolders.length > 0
 
   function selectRelative(delta: number): void {
     if (visibleTracks.length === 0) return
@@ -145,23 +157,24 @@ export default function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [visibleTracks, selectedTrack])
 
-  // 브레드크럼: 루트(Home/라이브러리) + 선택 폴더 세그먼트
+  // 브레드크럼: 라이브러리명 + 선택 폴더 세그먼트 (Home = 루트 그리드)
   const crumbs = useMemo(() => {
-    if (!library) return []
-    const root = norm(library.rootPath)
-    const list: Array<{ label: string; path: string | null }> = [
-      { label: library.name, path: null }
+    if (!currentLibrary || !selectedFolder) return []
+    const root = norm(currentLibrary.rootPath)
+    const list: Array<{ label: string; path: string }> = [
+      { label: currentLibrary.name, path: currentLibrary.rootPath }
     ]
-    if (selectedFolder) {
-      const rel = norm(selectedFolder).slice(root.length).replace(/^\/+/, '')
-      let acc = root
-      rel.split('/').filter(Boolean).forEach((seg) => {
+    const rel = norm(selectedFolder).slice(root.length).replace(/^\/+/, '')
+    let acc = root
+    rel
+      .split('/')
+      .filter(Boolean)
+      .forEach((seg) => {
         acc = `${acc}/${seg}`
         list.push({ label: seg, path: acc })
       })
-    }
     return list
-  }, [library, selectedFolder])
+  }, [currentLibrary, selectedFolder])
 
   return (
     <div className="app">
@@ -203,10 +216,10 @@ export default function App(): JSX.Element {
 
       <div className={`main${showMeta ? '' : ' main--no-meta'}`}>
         <Sidebar
-          library={library}
+          trees={trees}
           tracks={tracks}
-          tree={tree}
           onOpenFolder={handleOpenFolder}
+          onRemoveLibrary={handleRemoveLibrary}
           selectedFolder={selectedFolder}
           onSelectFolder={(p) => {
             setSelectedFolder(p)
@@ -227,7 +240,12 @@ export default function App(): JSX.Element {
 
         <div className="content-wrap">
           <div className="breadcrumb">
-            <span className="breadcrumb__home">Home</span>
+            <span
+              className={`breadcrumb__link${!selectedFolder ? ' breadcrumb__link--current' : ''}`}
+              onClick={() => setSelectedFolder(null)}
+            >
+              Home
+            </span>
             {crumbs.map((c, i) => (
               <span key={i} className="breadcrumb__seg">
                 <span className="breadcrumb__sep">/</span>
@@ -240,16 +258,16 @@ export default function App(): JSX.Element {
               </span>
             ))}
             <span className="breadcrumb__count">
-              {showGrid ? `${currentNode?.children.length ?? 0} folders` : `${visibleTracks.length} sounds`}
+              {showGrid ? `${rootFolders.length} folders` : `${visibleTracks.length} sounds`}
             </span>
           </div>
 
-          {showGrid && currentNode ? (
-            <FolderGrid folders={currentNode.children} onOpenFolder={(p) => setSelectedFolder(p)} />
+          {showGrid ? (
+            <FolderGrid folders={rootFolders} onOpenFolder={(p) => setSelectedFolder(p)} />
           ) : (
             <ResultList
               tracks={visibleTracks}
-              library={library}
+              libraries={libraries}
               selectedTrackId={selectedTrack?.id ?? null}
               onSelectTrack={handleSelectTrack}
             />
