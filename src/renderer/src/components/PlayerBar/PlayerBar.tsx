@@ -282,6 +282,18 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     void r.ctx.resume()
     r.g0.disconnect()
     r.g1.disconnect()
+
+    // 모노 파일: 채널 스플리터의 채널1은 무음이므로 채널0을 양쪽 출력으로 보내야
+    // 왼쪽만 들리는 문제가 없음
+    const isMonoFile = (trackRef.current?.channels ?? 2) < 2
+    if (isMonoFile) {
+      r.g0.gain.value = 1
+      r.g1.gain.value = 0
+      r.g0.connect(r.merger, 0, 0)
+      r.g0.connect(r.merger, 0, 1)
+      return
+    }
+
     r.g0.gain.value = nCh1 ? 1 : 0
     r.g1.gain.value = nCh2 ? 1 : 0
     const solo = nMode === 'mono' || (nCh1 && !nCh2) || (nCh2 && !nCh1)
@@ -394,6 +406,9 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
 
         if (cancelled || token !== loadTokenRef.current) return
         ws.setVolume(volume)
+        // 라우팅이 이미 생성돼 있으면 새 파일(모노/스테레오)에 맞춰 재적용
+        // (모노 파일이 이전 스테레오 라우팅 때문에 왼쪽만 들리는 문제 방지)
+        if (routeRef.current) applyRoute(ch1, ch2, mode)
         await ws.play()
       } catch (err) {
         if (!cancelled && token === loadTokenRef.current) {
