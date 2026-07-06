@@ -38,6 +38,48 @@ function fmt(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`
 }
 
+// 채널 데이터 → 다운샘플된 피크(막대 높이) 배열
+function channelPeaks(data: Float32Array, buckets: number): Float32Array {
+  const out = new Float32Array(buckets)
+  const size = Math.max(1, Math.floor(data.length / buckets))
+  for (let i = 0; i < buckets; i++) {
+    let max = 0
+    const start = i * size
+    const end = Math.min(start + size, data.length)
+    for (let j = start; j < end; j++) {
+      const a = Math.abs(data[j])
+      if (a > max) max = a
+    }
+    out[i] = max
+  }
+  return out
+}
+
+function monoPeaks(l: Float32Array, r: Float32Array, buckets: number): Float32Array {
+  const out = new Float32Array(buckets)
+  const len = Math.min(l.length, r.length)
+  const size = Math.max(1, Math.floor(len / buckets))
+  for (let i = 0; i < buckets; i++) {
+    let max = 0
+    const start = i * size
+    const end = Math.min(start + size, len)
+    for (let j = start; j < end; j++) {
+      const a = Math.abs((l[j] + r[j]) * 0.5)
+      if (a > max) max = a
+    }
+    out[i] = max
+  }
+  return out
+}
+
+interface Peaks {
+  l: Float32Array
+  r: Float32Array
+  mono: Float32Array
+  duration: number
+  numCh: number
+}
+
 interface Route {
   ctx: AudioContext
   g0: GainNode
@@ -45,7 +87,9 @@ interface Route {
   merger: ChannelMergerNode
 }
 
-// 통일된 트랜스포트 아이콘 (동일 viewBox / 스트로크)
+type WaveView = 'both' | 'left' | 'right' | 'mono'
+
+// 통일된 트랜스포트 아이콘
 const IconLoop = (): JSX.Element => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M17 2l4 4-4 4" />
@@ -55,13 +99,13 @@ const IconLoop = (): JSX.Element => (
   </svg>
 )
 const IconPrev = (): JSX.Element => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1" strokeLinejoin="round">
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor">
     <path d="M18 5v14l-11-7z" />
     <rect x="5" y="5" width="2" height="14" rx="1" />
   </svg>
 )
 const IconNext = (): JSX.Element => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1" strokeLinejoin="round">
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor">
     <path d="M6 5v14l11-7z" />
     <rect x="17" y="5" width="2" height="14" rx="1" />
   </svg>
@@ -88,6 +132,9 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
   const wavesurferRef = useRef<WaveSurfer | null>(null)
   const loadTokenRef = useRef(0)
   const routeRef = useRef<Route | null>(null)
+  const decodeCtxRef = useRef<AudioContext | null>(null)
+  const peaksRef = useRef<Peaks | null>(null)
+  const urlRef = useRef<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [loop, setLoop] = useState(false)
   const [current, setCurrent] = useState(0)
@@ -101,7 +148,6 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
 
   useEffect(() => {
     if (!containerRef.current) return
-
     const ws = WaveSurfer.create({
       container: containerRef.current,
       waveColor: '#3a4048',
@@ -113,13 +159,8 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       barGap: 1,
       barRadius: 3,
       normalize: true,
-      // Soundly처럼 스테레오 파일은 좌/우 채널을 위아래로 분리 표시
-      splitChannels: [
-        { height: 30 },
-        { height: 30 }
-      ]
+      splitChannels: [{ height: 30 }, { height: 30 }]
     })
-
     ws.on('play', () => setIsPlaying(true))
     ws.on('pause', () => setIsPlaying(false))
     ws.on('timeupdate', (t: number) => setCurrent(t))
@@ -128,7 +169,6 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       if (loopRef.current) ws.play()
       else setIsPlaying(false)
     })
-
     wavesurferRef.current = ws
     return () => {
       ws.destroy()
@@ -136,7 +176,6 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     }
   }, [])
 
-  // 액센트 변경 시 웨이브폼 진행색 갱신
   useEffect(() => {
     wavesurferRef.current?.setOptions({ progressColor: accent })
   }, [accent])
@@ -145,8 +184,45 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     wavesurferRef.current?.setVolume(volume)
   }, [volume])
 
-  // ── Web Audio 채널 라우팅 (실제 채널 solo / Mono·Stereo) ──
-  // 기본 재생을 건드리지 않도록, 사용자가 채널 컨트롤을 처음 만질 때만 라우팅 생성.
+  // 현재 채널/모드 → 웨이브폼 뷰
+  function viewFor(c1: boolean, c2: boolean, m: 'stereo' | 'mono', numCh: number): WaveView {
+    if (numCh < 2) return 'mono'
+    if (m === 'mono') return 'mono'
+    if (c1 && !c2) return 'left'
+    if (c2 && !c1) return 'right'
+    return 'both'
+  }
+
+  function peaksFor(pk: Peaks, v: WaveView): (Float32Array | number[])[] {
+    if (v === 'both') return [pk.l, pk.r]
+    if (v === 'left') return [pk.l]
+    if (v === 'right') return [pk.r]
+    return [pk.mono]
+  }
+
+  // 선택된 채널/모드에 맞춰 웨이브폼만 다시 그림 (재생 위치 유지)
+  async function renderView(): Promise<void> {
+    const ws = wavesurferRef.current
+    const pk = peaksRef.current
+    const url = urlRef.current
+    if (!ws || !pk || !url) return
+    const v = viewFor(ch1, ch2, mode, pk.numCh)
+    const wasPlaying = ws.isPlaying()
+    const t = ws.getCurrentTime()
+    ws.setOptions({
+      height: v === 'both' ? 30 : 58,
+      splitChannels: v === 'both' ? [{ height: 30 }, { height: 30 }] : [{ height: 58 }]
+    })
+    try {
+      await ws.load(url, peaksFor(pk, v), pk.duration)
+      if (t > 0) ws.setTime(t)
+      if (wasPlaying) await ws.play()
+    } catch {
+      /* noop */
+    }
+  }
+
+  // ── Web Audio 채널 라우팅 (실제 solo / Mono·Stereo 오디오) ──
   function ensureRoute(): Route | null {
     if (routeRef.current) return routeRef.current
     const media = wavesurferRef.current?.getMediaElement()
@@ -165,7 +241,7 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       routeRef.current = { ctx, g0, g1, merger }
       return routeRef.current
     } catch {
-      return null // 실패 시 미디어 요소가 그대로 소리 출력 (안전)
+      return null
     }
   }
 
@@ -177,42 +253,70 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     r.g1.disconnect()
     r.g0.gain.value = nCh1 ? 1 : 0
     r.g1.gain.value = nCh2 ? 1 : 0
-    if (nMode === 'mono') {
-      // 두 채널을 양쪽 출력으로 합침
-      r.g0.connect(r.merger, 0, 0)
-      r.g0.connect(r.merger, 0, 1)
-      r.g1.connect(r.merger, 0, 0)
-      r.g1.connect(r.merger, 0, 1)
+    const solo = nMode === 'mono' || (nCh1 && !nCh2) || (nCh2 && !nCh1)
+    if (solo) {
+      // 활성 채널을 양쪽 출력으로 (모노/솔로)
+      if (nCh1) {
+        r.g0.connect(r.merger, 0, 0)
+        r.g0.connect(r.merger, 0, 1)
+      }
+      if (nCh2) {
+        r.g1.connect(r.merger, 0, 0)
+        r.g1.connect(r.merger, 0, 1)
+      }
     } else {
       r.g0.connect(r.merger, 0, 0)
       r.g1.connect(r.merger, 0, 1)
     }
   }
 
+  function applyChannels(nCh1: boolean, nCh2: boolean, nMode: 'stereo' | 'mono'): void {
+    applyRoute(nCh1, nCh2, nMode) // 오디오
+    void renderView() // 웨이브폼(상태 반영 위해 다음 틱)
+  }
+
   function toggleCh1(): void {
     const v = !ch1
     setCh1(v)
-    applyRoute(v, ch2, mode)
+    setTimeout(() => applyChannels(v, ch2, mode), 0)
   }
   function toggleCh2(): void {
     const v = !ch2
     setCh2(v)
-    applyRoute(ch1, v, mode)
+    setTimeout(() => applyChannels(ch1, v, mode), 0)
   }
   function changeMode(next: 'stereo' | 'mono'): void {
     setMode(next)
-    applyRoute(ch1, ch2, next)
+    setTimeout(() => applyChannels(ch1, ch2, next), 0)
+  }
+
+  async function decodePeaks(bytes: Uint8Array): Promise<Peaks | null> {
+    try {
+      if (!decodeCtxRef.current) decodeCtxRef.current = new AudioContext()
+      const buf = await decodeCtxRef.current.decodeAudioData(new Uint8Array(bytes).buffer)
+      const buckets = Math.min(6000, Math.max(1200, Math.floor(buf.duration * 90)))
+      const l = channelPeaks(buf.getChannelData(0), buckets)
+      const r = buf.numberOfChannels > 1 ? channelPeaks(buf.getChannelData(1), buckets) : l
+      const mono =
+        buf.numberOfChannels > 1
+          ? monoPeaks(buf.getChannelData(0), buf.getChannelData(1), buckets)
+          : l
+      return { l, r, mono, duration: buf.duration, numCh: buf.numberOfChannels }
+    } catch {
+      return null
+    }
   }
 
   useEffect(() => {
     const ws = wavesurferRef.current
     if (!ws) return
-
     const token = ++loadTokenRef.current
     setCurrent(0)
     setDuration(0)
 
     if (!track || !window.api) {
+      peaksRef.current = null
+      urlRef.current = null
       try {
         ws.empty()
       } catch {
@@ -226,9 +330,22 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       try {
         const bytes = await window.api!.readAudioFile(track.filePath)
         if (token !== loadTokenRef.current) return
-        const blob = new Blob([new Uint8Array(bytes)], { type: mimeTypeFor(track.filename) })
-        objectUrl = URL.createObjectURL(blob)
-        await ws.load(objectUrl)
+        const arr = new Uint8Array(bytes)
+        objectUrl = URL.createObjectURL(new Blob([arr], { type: mimeTypeFor(track.filename) }))
+        urlRef.current = objectUrl
+        const pk = await decodePeaks(arr)
+        if (token !== loadTokenRef.current) return
+        peaksRef.current = pk
+        const v = viewFor(ch1, ch2, mode, pk?.numCh ?? 2)
+        if (pk) {
+          ws.setOptions({
+            height: v === 'both' ? 30 : 58,
+            splitChannels: v === 'both' ? [{ height: 30 }, { height: 30 }] : [{ height: 58 }]
+          })
+          await ws.load(objectUrl, peaksFor(pk, v), pk.duration)
+        } else {
+          await ws.load(objectUrl)
+        }
         if (token !== loadTokenRef.current) return
         ws.setVolume(volume)
         await ws.play()
@@ -326,15 +443,16 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
             <button
               className={`player__chip${ch1 ? ' player__chip--on' : ''}`}
               onClick={toggleCh1}
-              title="채널 1 켜기/끄기"
+              disabled={mode === 'mono'}
+              title="채널 1 (왼쪽)"
             >
               Channel 1
             </button>
             <button
               className={`player__chip${ch2 && stereoTrack ? ' player__chip--on' : ''}`}
               onClick={toggleCh2}
-              disabled={!stereoTrack}
-              title={stereoTrack ? '채널 2 켜기/끄기' : '모노 파일 (채널 2 없음)'}
+              disabled={!stereoTrack || mode === 'mono'}
+              title={stereoTrack ? '채널 2 (오른쪽)' : '모노 파일 (채널 2 없음)'}
             >
               Channel 2
             </button>
