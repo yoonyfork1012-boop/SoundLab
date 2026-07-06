@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import WaveSurfer from 'wavesurfer.js'
+import RegionsPlugin, { type Region } from 'wavesurfer.js/plugins/regions'
 import type { Track } from '@shared/types'
+import { encodeWavFloat32, sliceAudioBuffer } from '../../lib/wavEncoder'
+
+const MIN_REGION_SEC = 0.05
 
 interface PlayerBarProps {
   track: Track | null
@@ -135,6 +139,12 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
   const decodeCtxRef = useRef<AudioContext | null>(null)
   const peaksRef = useRef<Peaks | null>(null)
   const urlRef = useRef<string | null>(null)
+  const regionsPluginRef = useRef<RegionsPlugin | null>(null)
+  const activeRegionRef = useRef<Region | null>(null)
+  // 구간 드래그(DAW export)용 원본 해상도 디코딩 캐시 — peaksRef(다운샘플)와는 별개로 유지
+  const rawBufferRef = useRef<AudioBuffer | null>(null)
+  const rawBufferTrackIdRef = useRef<number | null>(null)
+  const [regionBounds, setRegionBounds] = useState<{ start: number; end: number } | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [loop, setLoop] = useState(false)
   const [current, setCurrent] = useState(0)
@@ -171,6 +181,31 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       if (loopRef.current) ws.play()
       else setIsPlaying(false)
     })
+
+    // Waveform 구간 선택(드래그로 생성/리사이즈) — 선택 구간만 DAW로 드래그 내보내기 위한 기반
+    const regions = ws.registerPlugin(RegionsPlugin.create())
+    regionsPluginRef.current = regions
+    regions.enableDragSelection({ color: 'rgba(163, 227, 193, 0.28)' })
+    regions.on('region-created', (region) => {
+      // 한 번에 하나의 구간만 유지 (새로 그리면 이전 선택은 제거)
+      for (const r of regions.getRegions()) {
+        if (r.id !== region.id) r.remove()
+      }
+      activeRegionRef.current = region
+      setRegionBounds({ start: region.start, end: region.end })
+      void ensureFullBuffer()
+    })
+    regions.on('region-update', (region) => {
+      activeRegionRef.current = region
+      setRegionBounds({ start: region.start, end: region.end })
+    })
+    regions.on('region-removed', (region) => {
+      if (activeRegionRef.current?.id === region.id) {
+        activeRegionRef.current = null
+        setRegionBounds(null)
+      }
+    })
+
     wavesurferRef.current = ws
     return () => {
       const route = routeRef.current
@@ -185,6 +220,7 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       }
       ws.destroy()
       wavesurferRef.current = null
+      regionsPluginRef.current = null
     }
   }, [])
 
@@ -350,12 +386,59 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     }
   }
 
+  // 구간 드래그 내보내기에 쓸 원본 해상도 AudioBuffer를 미리 디코딩해 캐시.
+  // 실제 드래그 시작 시점에는 이미 준비돼 있어야 OS 드래그 제스처가 끊기지 않음.
+  async function ensureFullBuffer(): Promise<AudioBuffer | null> {
+    const t = trackRef.current
+    if (!t || !window.api) return null
+    if (rawBufferRef.current && rawBufferTrackIdRef.current === t.id) return rawBufferRef.current
+    try {
+      const bytes = await window.api.readAudioFile(t.filePath)
+      if (!decodeCtxRef.current) decodeCtxRef.current = new AudioContext()
+      const buf = await decodeCtxRef.current.decodeAudioData(new Uint8Array(bytes).buffer)
+      if (trackRef.current?.id === t.id) {
+        rawBufferRef.current = buf
+        rawBufferTrackIdRef.current = t.id
+      }
+      return buf
+    } catch {
+      return null
+    }
+  }
+
+  // Waveform에서 선택 구간을 DAW로 드래그 — 구간이 없거나 너무 짧으면 아무 것도 하지 않음(안전 폴백)
+  function handleRegionDragStart(e: React.DragEvent): void {
+    e.preventDefault()
+    const t = trackRef.current
+    const bounds = regionBounds
+    if (!t || !window.api || !bounds) return
+    if (bounds.end - bounds.start < MIN_REGION_SEC) return
+    const buf = rawBufferRef.current
+    if (!buf || rawBufferTrackIdRef.current !== t.id) return
+    try {
+      const sliced = sliceAudioBuffer(buf, bounds.start, bounds.end)
+      if (!sliced[0] || sliced[0].length === 0) return
+      const wavBytes = encodeWavFloat32(sliced, buf.sampleRate)
+      const baseName = t.filename.replace(/\.[^.]+$/, '')
+      window.api.startDragFromBuffer(wavBytes, `${baseName}_selection.wav`)
+    } catch (err) {
+      console.warn('구간 추출 실패:', (err as Error)?.message)
+    }
+  }
+
   useEffect(() => {
     const ws = wavesurferRef.current
     if (!ws) return
     const token = ++loadTokenRef.current
     setCurrent(0)
     setDuration(0)
+
+    // 트랙이 바뀌면 이전 트랙의 구간 선택/캐시된 원본 버퍼는 더 이상 유효하지 않음
+    regionsPluginRef.current?.clearRegions()
+    activeRegionRef.current = null
+    setRegionBounds(null)
+    rawBufferRef.current = null
+    rawBufferTrackIdRef.current = null
 
     if (!track || !window.api) {
       peaksRef.current = null
@@ -435,6 +518,23 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       <div className="player__wave-band">
         <div className="player__waveform" ref={containerRef} />
         {!track && <div className="player__wave-empty">재생할 사운드를 선택하세요</div>}
+        {regionBounds && duration > 0 && regionBounds.end - regionBounds.start >= MIN_REGION_SEC && (
+          <div
+            className="player__region-drag"
+            style={{ left: `${((regionBounds.start + regionBounds.end) / 2 / duration) * 100}%` }}
+            draggable
+            onDragStart={handleRegionDragStart}
+            title="선택 구간을 DAW로 드래그"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 6h13M8 12h13M8 18h13" />
+              <circle cx="3" cy="6" r="1.5" fill="currentColor" stroke="none" />
+              <circle cx="3" cy="12" r="1.5" fill="currentColor" stroke="none" />
+              <circle cx="3" cy="18" r="1.5" fill="currentColor" stroke="none" />
+            </svg>
+            구간 드래그
+          </div>
+        )}
       </div>
 
       <div className="player__controls">

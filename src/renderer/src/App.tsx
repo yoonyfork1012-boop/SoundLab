@@ -32,8 +32,10 @@ export default function App(): JSX.Element {
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null)
   const [search, setSearch] = useState('')
   const [subSearch, setSubSearch] = useState('')
-  const [shuffleMode, setShuffleMode] = useState(() => loadJSON('soundlib.shuffle', false))
-  const [shuffleSeed, setShuffleSeed] = useState(() => Date.now())
+  // Shuffle은 토글이 아니라 "버튼 클릭 = 지금 즉시 새로 섞기" 동작. shuffled는 현재 리스트가
+  // 셔플된 순서로 보이는 중인지만 나타내며(컬럼 정렬을 클릭하면 다시 false), 영속 저장하지 않는다.
+  const [shuffled, setShuffled] = useState(false)
+  const [shuffleSeed, setShuffleSeed] = useState(0)
   const [scanning, setScanning] = useState(false)
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null)
   const [collections, setCollections] = useState<Collection[]>([])
@@ -71,11 +73,8 @@ export default function App(): JSX.Element {
   )
 
   function handleSort(key: string): void {
-    // Shuffle Mode 중 컬럼 정렬을 클릭하면 Shuffle은 자동으로 꺼지고 정렬이 적용됨
-    if (shuffleMode) {
-      setShuffleMode(false)
-      saveJSON('soundlib.shuffle', false)
-    }
+    // 셔플된 상태에서 컬럼 정렬을 클릭하면 셔플은 해제되고 정렬이 적용됨
+    if (shuffled) setShuffled(false)
     setSort((prev) => {
       const next: { key: string | null; dir: 'asc' | 'desc' } =
         prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }
@@ -376,8 +375,8 @@ export default function App(): JSX.Element {
           t.tags.some((tag) => tag.toLowerCase().includes(q))
       )
     }
-    // Shuffle Mode ON이면 리스트 표시 순서 자체를 섞고, OFF면 정렬 상태(또는 기본 순서)로 표시
-    base = shuffleMode ? shuffleTracks(base, shuffleSeed) : sortTracks(base, sort.key, sort.dir, { libraries })
+    // shuffled면 리스트 표시 순서 자체를 섞고, 아니면 정렬 상태(또는 기본 순서)로 표시
+    base = shuffled ? shuffleTracks(base, shuffleSeed) : sortTracks(base, sort.key, sort.dir, { libraries })
     return base
   }, [
     tracks,
@@ -388,7 +387,7 @@ export default function App(): JSX.Element {
     subSearch,
     sort,
     libraries,
-    shuffleMode,
+    shuffled,
     shuffleSeed
   ])
 
@@ -406,14 +405,10 @@ export default function App(): JSX.Element {
     void handleSelectTrack(visibleTracks[next])
   }
 
-  // Shuffle Mode 토글 — 켤 때마다 새 seed를 뽑아 리스트를 다시 섞음
-  function toggleShuffle(): void {
-    setShuffleMode((v: boolean) => {
-      const next = !v
-      if (next) setShuffleSeed(Date.now())
-      saveJSON('soundlib.shuffle', next)
-      return next
-    })
+  // Shuffle 버튼 클릭 = 토글이 아니라 "지금 리스트를 새 순서로 다시 섞기"
+  function handleShuffleClick(): void {
+    setShuffled(true)
+    setShuffleSeed(Date.now())
   }
 
   useEffect(() => {
@@ -508,9 +503,9 @@ export default function App(): JSX.Element {
         <div className="topbar__actions">
           <AccentPicker accent={accent} onChange={setAccent} />
           <button
-            className={`icon-btn${shuffleMode ? ' icon-btn--active' : ''}`}
-            title={shuffleMode ? 'Shuffle Mode 켜짐 (리스트 순서 무작위)' : 'Shuffle Mode 꺼짐'}
-            onClick={toggleShuffle}
+            className={`icon-btn${shuffled ? ' icon-btn--active' : ''}`}
+            title="Shuffle — 클릭할 때마다 리스트를 새 순서로 섞습니다"
+            onClick={handleShuffleClick}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M16 3h5v5" />

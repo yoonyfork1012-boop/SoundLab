@@ -1,5 +1,7 @@
-import { ipcMain, dialog, shell, clipboard, BrowserWindow, nativeImage } from 'electron'
+import { ipcMain, dialog, shell, clipboard, app, BrowserWindow, nativeImage } from 'electron'
 import { readFile } from 'fs/promises'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { scanLibrary, scanNewFilesOnly } from './scanner'
 import { startWatching, stopWatching } from './watcher'
 import {
@@ -152,6 +154,20 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       })
     } catch (err) {
       console.error('startDrag failed:', (err as Error)?.message)
+    }
+  })
+
+  // Waveform에서 선택한 구간만 잘라 만든 임시 오디오를 DAW로 드래그 아웃.
+  // 드래그 제스처가 끊기지 않도록 파일 쓰기부터 startDrag까지 전부 동기로 처리.
+  const dragExportDir = join(app.getPath('temp'), 'soundlib-dragexports')
+  ipcMain.on('drag:startFromBuffer', (event, bytes: Uint8Array, filename: string) => {
+    try {
+      if (!existsSync(dragExportDir)) mkdirSync(dragExportDir, { recursive: true })
+      const filePath = join(dragExportDir, filename)
+      writeFileSync(filePath, Buffer.from(bytes))
+      event.sender.startDrag({ file: filePath, icon: dragIcon })
+    } catch (err) {
+      console.error('drag:startFromBuffer failed:', (err as Error)?.message)
     }
   })
 

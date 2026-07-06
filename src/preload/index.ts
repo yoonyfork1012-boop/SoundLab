@@ -79,6 +79,10 @@ const api = {
   // 리스트 행을 OS 네이티브 드래그로 내보내기 (DAW/탐색기로 드롭)
   startDrag: (filePath: string): void => ipcRenderer.send('drag:start', filePath),
 
+  // Waveform에서 선택한 구간만 잘라 임시 오디오로 만든 뒤 그 파일을 네이티브 드래그로 내보내기
+  startDragFromBuffer: (bytes: Uint8Array, filename: string): void =>
+    ipcRenderer.send('drag:startFromBuffer', bytes, filename),
+
   // 창 제어 (커스텀 타이틀바)
   windowMinimize: (): void => ipcRenderer.send('window:minimize'),
   windowToggleMaximize: (): void => ipcRenderer.send('window:toggleMaximize'),

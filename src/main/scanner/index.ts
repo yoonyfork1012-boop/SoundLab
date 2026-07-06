@@ -10,6 +10,7 @@ import {
   upsertTrack
 } from '../db/queries'
 import { categoryFromFilename } from '../../shared/ucsCatId'
+import { classifySound } from '../../shared/soundTaxonomy'
 import type { Library, ScanProgress } from '../../shared/types'
 
 // music-metadata v10은 ESM 전용. 패키징된 CJS 빌드에서 static import은 parseFile이
@@ -64,13 +65,44 @@ async function collectAudioFiles(
   return results
 }
 
-async function parseAndUpsert(filePath: string, libraryId: number, loggedErrorRef: { v: boolean }): Promise<void> {
-  const filename = filePath.split(/[\\/]/).pop() ?? filePath
+// 기존 메타데이터(UCS 파일명 CatID, 오디오 태그의 genre)가 있으면 그것을 우선 사용하고,
+// 없을 때만 하이브리드 분류기로 자동 분류한다.
+function resolveCategory(
+  filename: string,
+  folderPath: string,
+  genre?: string
+): { category: string | null; subcategory: string | null } {
   const ucs = categoryFromFilename(filename)
+  if (ucs) return { category: ucs.category, subcategory: ucs.subcategory || null }
+  if (genre) return { category: genre, subcategory: null }
+  const guess = classifySound({ filename, folderPath })
+  return { category: guess.category, subcategory: guess.subcategory || null }
+}
+
+// 라이브러리 루트 폴더명(벤더/브랜드명인 경우가 많음, 예: "Blastwave FX", "Boom Library")은
+// 분류 입력에서 제외한다 — 브랜드명이 우연히 카테고리 키워드와 겹쳐(예: "Blastwave"의
+// "blast") 라이브러리 전체가 엉뚱하게 분류되는 것을 방지하기 위함. 실제 사운드 성격을
+// 나타내는 하위 폴더명만 분류에 사용한다.
+function relativeFolderPath(filePath: string, rootPath: string): string {
+  const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '')
+  const dir = norm(filePath.split(/[\\/]/).slice(0, -1).join('/'))
+  const root = norm(rootPath)
+  return dir.startsWith(root) ? dir.slice(root.length).replace(/^\/+/, '') : dir
+}
+
+async function parseAndUpsert(
+  filePath: string,
+  libraryId: number,
+  rootPath: string,
+  loggedErrorRef: { v: boolean }
+): Promise<void> {
+  const filename = filePath.split(/[\\/]/).pop() ?? filePath
+  const folderPath = relativeFolderPath(filePath, rootPath)
   const { parseFile } = await getMusicMetadata()
   try {
     const meta = await parseFile(filePath, { skipCovers: true, duration: true })
     const genre = meta.common?.genre?.[0]
+    const { category, subcategory } = resolveCategory(filename, folderPath, genre)
     upsertTrack({
       libraryId,
       filePath,
@@ -79,8 +111,8 @@ async function parseAndUpsert(filePath: string, libraryId: number, loggedErrorRe
       sampleRate: meta.format.sampleRate ?? null,
       bitDepth: meta.format.bitsPerSample ?? null,
       channels: meta.format.numberOfChannels ?? null,
-      category: ucs?.category ?? genre ?? null,
-      subcategory: ucs?.subcategory || null
+      category,
+      subcategory
     })
   } catch (err) {
     // 개별 파일 파싱 실패는 무시하되, 첫 오류만 진단용으로 기록
@@ -88,6 +120,7 @@ async function parseAndUpsert(filePath: string, libraryId: number, loggedErrorRe
       loggedErrorRef.v = true
       console.error('metadata parse failed:', filename, (err as Error)?.message)
     }
+    const { category, subcategory } = resolveCategory(filename, folderPath)
     upsertTrack({
       libraryId,
       filePath,
@@ -96,8 +129,8 @@ async function parseAndUpsert(filePath: string, libraryId: number, loggedErrorRe
       sampleRate: null,
       bitDepth: null,
       channels: null,
-      category: ucs?.category ?? null,
-      subcategory: ucs?.subcategory || null
+      category,
+      subcategory
     })
   }
 }
@@ -118,7 +151,7 @@ export async function scanLibrary(
     for (let i = 0; i < files.length; i++) {
       const filePath = files[i]
       presentFilePaths.add(filePath)
-      await parseAndUpsert(filePath, library.id, loggedErrorRef)
+      await parseAndUpsert(filePath, library.id, rootPath, loggedErrorRef)
       onProgress?.({
         phase: 'parsing',
         scanned: i + 1,
@@ -151,7 +184,7 @@ export async function scanNewFilesOnly(
   try {
     for (let i = 0; i < newFiles.length; i++) {
       const filePath = newFiles[i]
-      await parseAndUpsert(filePath, libraryId, loggedErrorRef)
+      await parseAndUpsert(filePath, libraryId, rootPath, loggedErrorRef)
       onProgress?.({
         phase: 'parsing',
         scanned: i + 1,

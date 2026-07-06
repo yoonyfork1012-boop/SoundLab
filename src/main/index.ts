@@ -1,5 +1,6 @@
 import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
+import { rm } from 'fs/promises'
 import { registerIpcHandlers } from './ipc'
 import { closeDb, initDb } from './db'
 import { getAllLibraries } from './db/queries'
@@ -76,6 +77,8 @@ if (!gotLock) {
   app.on('window-all-closed', () => {
     stopAllWatching()
     closeDb()
+    // Waveform 구간 드래그로 만든 임시 오디오 파일 정리 (실패해도 무시)
+    void rm(join(app.getPath('temp'), 'soundlib-dragexports'), { recursive: true, force: true }).catch(() => {})
     if (process.platform !== 'darwin') app.quit()
   })
 }

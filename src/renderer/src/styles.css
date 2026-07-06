@@ -402,6 +402,9 @@ button {
   width: 7px;
   cursor: col-resize;
   z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .resizer--left {
   margin-left: -3.5px;
@@ -409,9 +412,37 @@ button {
 .resizer--right {
   margin-right: -3.5px;
 }
+/* 항상 보이는 고정 경계선 — 리스트/패널이 이 선을 절대 넘지 않음 */
+.resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--border-strong);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+/* 드래그 가능함을 알려주는 작은 그립 표시 */
+.resizer::after {
+  content: '';
+  width: 3px;
+  height: 32px;
+  border-radius: 3px;
+  background: var(--text-ghost);
+  opacity: 0.55;
+  transition: opacity 0.12s var(--ease), background 0.12s var(--ease);
+  pointer-events: none;
+}
 .resizer:hover,
 .resizer:active {
   background: var(--accent-dim);
+}
+.resizer:hover::after,
+.resizer:active::after {
+  background: var(--accent);
+  opacity: 1;
 }
 
 /* ───────── Sidebar ───────── */
@@ -833,15 +864,20 @@ button {
 .list-row__cell--sub {
   color: var(--text-faint);
 }
+/* Soundly처럼 작고 절제된 태그 — 굵은 테두리/원색 배경 대신 옅게 틴트된 배경만 사용 */
 .list-row__cat-pill {
   display: inline-block;
-  padding: 2px 9px;
-  border: 1px solid;
-  border-radius: 20px;
+  vertical-align: middle;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 4px;
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  opacity: 0.92;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .empty-state {
   flex: 1;
@@ -1001,6 +1037,29 @@ button {
   color: var(--text-ghost);
   font-size: 12px;
   pointer-events: none;
+}
+/* Waveform 구간 선택 후 나타나는 DAW 드래그 핸들 */
+.player__region-drag {
+  position: absolute;
+  top: 4px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 20px;
+  cursor: grab;
+  box-shadow: 0 2px 10px var(--accent-glow);
+  z-index: 10;
+  white-space: nowrap;
+  user-select: none;
+}
+.player__region-drag:active {
+  cursor: grabbing;
 }
 .player__controls {
   height: 54px;

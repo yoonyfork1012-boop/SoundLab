@@ -107,7 +107,7 @@ const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX
           return (
             <div className="list-row__cell" key={col.key}>
               {track.category && (
-                <span className="list-row__cat-pill" style={{ color, borderColor: color }}>
+                <span className="list-row__cat-pill" style={{ color }}>
                   {track.category}
                 </span>
               )}

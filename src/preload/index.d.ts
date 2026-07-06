@@ -40,6 +40,7 @@ declare const api: {
     readAudioFile: (filePath: string) => Promise<Uint8Array>;
     writeClipboardText: (text: string) => Promise<void>;
     startDrag: (filePath: string) => void;
+    startDragFromBuffer: (bytes: Uint8Array, filename: string) => void;
     windowMinimize: () => void;
     windowToggleMaximize: () => void;
     windowClose: () => void;
