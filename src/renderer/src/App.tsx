@@ -15,7 +15,7 @@ import { isBrowserPreview, mockCollections, mockLibrary, mockTracks } from './mo
 import { buildFolderTree, tracksUnder, type FolderNode } from './lib/folderTree'
 import { applyAccent, loadAccent, saveAccent } from './lib/theme'
 import { loadJSON, loadNumber, saveJSON, saveNumber } from './lib/uiState'
-import { sortTracks } from './components/ResultList/columns'
+import { shuffleTracks, sortTracks } from './components/ResultList/columns'
 
 function norm(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -33,11 +33,11 @@ export default function App(): JSX.Element {
   const [search, setSearch] = useState('')
   const [subSearch, setSubSearch] = useState('')
   const [shuffleMode, setShuffleMode] = useState(() => loadJSON('soundlib.shuffle', false))
+  const [shuffleSeed, setShuffleSeed] = useState(() => Date.now())
   const [scanning, setScanning] = useState(false)
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null)
   const [collections, setCollections] = useState<Collection[]>([])
   const [selectedCollection, setSelectedCollection] = useState<number | null>(null)
-  const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [showStarredOnly, setShowStarredOnly] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
   const [namePrompt, setNamePrompt] = useState<{
@@ -71,6 +71,11 @@ export default function App(): JSX.Element {
   )
 
   function handleSort(key: string): void {
+    // Shuffle Mode 중 컬럼 정렬을 클릭하면 Shuffle은 자동으로 꺼지고 정렬이 적용됨
+    if (shuffleMode) {
+      setShuffleMode(false)
+      saveJSON('soundlib.shuffle', false)
+    }
     setSort((prev) => {
       const next: { key: string | null; dir: 'asc' | 'desc' } =
         prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }
@@ -214,7 +219,6 @@ export default function App(): JSX.Element {
     setSelectedCollection(collection.id)
     setSelectedFolder(null)
     setShowStarredOnly(false)
-    setActiveCategory(null)
     searchInputRef.current?.focus()
   }
 
@@ -222,7 +226,6 @@ export default function App(): JSX.Element {
     setSelectedFolder(library.rootPath)
     setSelectedCollection(null)
     setShowStarredOnly(false)
-    setActiveCategory(null)
     searchInputRef.current?.focus()
   }
 
@@ -230,7 +233,6 @@ export default function App(): JSX.Element {
     setSelectedFolder(library.rootPath)
     setSelectedCollection(null)
     setShowStarredOnly(false)
-    setActiveCategory(null)
   }
 
   async function handleScanNewFiles(library: Library): Promise<void> {
@@ -352,7 +354,6 @@ export default function App(): JSX.Element {
       base = selectedFolder ? tracksUnder(tracks, selectedFolder) : tracks
     }
     if (showStarredOnly) base = base.filter((t) => t.starred)
-    if (activeCategory) base = base.filter((t) => t.category === activeCategory)
     if (search.trim()) {
       const q = search.toLowerCase()
       base = base.filter(
@@ -375,33 +376,41 @@ export default function App(): JSX.Element {
           t.tags.some((tag) => tag.toLowerCase().includes(q))
       )
     }
-    base = sortTracks(base, sort.key, sort.dir, { libraries })
+    // Shuffle Mode ON이면 리스트 표시 순서 자체를 섞고, OFF면 정렬 상태(또는 기본 순서)로 표시
+    base = shuffleMode ? shuffleTracks(base, shuffleSeed) : sortTracks(base, sort.key, sort.dir, { libraries })
     return base
-  }, [tracks, selectedFolder, activeCollection, showStarredOnly, activeCategory, search, subSearch, sort, libraries])
+  }, [
+    tracks,
+    selectedFolder,
+    activeCollection,
+    showStarredOnly,
+    search,
+    subSearch,
+    sort,
+    libraries,
+    shuffleMode,
+    shuffleSeed
+  ])
 
-  const isFiltering = Boolean(search.trim() || showStarredOnly || activeCategory || activeCollection)
+  const isFiltering = Boolean(search.trim() || showStarredOnly || activeCollection)
   // 폴더를 선택하면(=selectedFolder 있음) 하위 폴더가 있어도 사운드를 재귀로 보여줌 (Soundly 방식).
   // 폴더 카드 그리드는 최상위 진입 화면(아무 폴더도 선택 안 함)에서만 표시.
   const showGrid = view === 'grid' && !isFiltering && !selectedFolder && rootFolders.length > 0
 
   function selectRelative(delta: number): void {
+    // Shuffle Mode에서는 visibleTracks 자체가 이미 섞인 순서이므로, 그 순서를 그대로 순차 탐색하면 됨
     if (visibleTracks.length === 0) return
-    if (shuffleMode && visibleTracks.length > 1) {
-      const idx = visibleTracks.findIndex((t) => t.id === selectedTrack?.id)
-      let next = idx
-      while (next === idx) next = Math.floor(Math.random() * visibleTracks.length)
-      void handleSelectTrack(visibleTracks[next])
-      return
-    }
     const idx = visibleTracks.findIndex((t) => t.id === selectedTrack?.id)
     let next = idx === -1 ? 0 : idx + delta
     next = Math.max(0, Math.min(visibleTracks.length - 1, next))
     void handleSelectTrack(visibleTracks[next])
   }
 
+  // Shuffle Mode 토글 — 켤 때마다 새 seed를 뽑아 리스트를 다시 섞음
   function toggleShuffle(): void {
     setShuffleMode((v: boolean) => {
       const next = !v
+      if (next) setShuffleSeed(Date.now())
       saveJSON('soundlib.shuffle', next)
       return next
     })
@@ -500,7 +509,7 @@ export default function App(): JSX.Element {
           <AccentPicker accent={accent} onChange={setAccent} />
           <button
             className={`icon-btn${shuffleMode ? ' icon-btn--active' : ''}`}
-            title={shuffleMode ? '랜덤 재생 켜짐' : '랜덤 재생 꺼짐'}
+            title={shuffleMode ? 'Shuffle Mode 켜짐 (리스트 순서 무작위)' : 'Shuffle Mode 꺼짐'}
             onClick={toggleShuffle}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -566,7 +575,6 @@ export default function App(): JSX.Element {
             setSelectedFolder(p)
             setSelectedCollection(null)
             setShowStarredOnly(false)
-            setActiveCategory(null)
           }}
           collections={collections}
           selectedCollection={selectedCollection}
@@ -574,7 +582,6 @@ export default function App(): JSX.Element {
             setSelectedCollection(id)
             setSelectedFolder(null)
             setShowStarredOnly(false)
-            setActiveCategory(null)
           }}
           onCreateCollection={handleCreateCollection}
           onDeleteCollection={handleDeleteCollection}
@@ -582,13 +589,6 @@ export default function App(): JSX.Element {
           onToggleStarredView={() => {
             setShowStarredOnly((v) => !v)
             setSelectedCollection(null)
-            setActiveCategory(null)
-          }}
-          activeCategory={activeCategory}
-          onSelectCategory={(c) => {
-            setActiveCategory(c)
-            setSelectedCollection(null)
-            setShowStarredOnly(false)
           }}
           onCollectionContextMenu={(e, collection) => setCollectionMenu({ x: e.clientX, y: e.clientY, collection })}
           onLibraryContextMenu={(e, library) => setLibraryMenu({ x: e.clientX, y: e.clientY, library })}

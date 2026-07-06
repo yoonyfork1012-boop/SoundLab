@@ -461,14 +461,6 @@ button {
   background: var(--surface-hover);
   color: var(--text);
 }
-/* Local 헤더처럼 접히지 않는 정적 행 */
-.ftree__row--static {
-  cursor: default;
-}
-.ftree__row--static:hover {
-  background: transparent;
-  color: var(--text-dim);
-}
 .ftree__row--active {
   background: var(--surface-active);
   color: var(--text);

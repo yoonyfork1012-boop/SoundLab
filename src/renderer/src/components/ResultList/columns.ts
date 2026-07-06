@@ -134,3 +134,21 @@ export function sortTracks(
     return 0
   })
 }
+
+// 트랙 id + seed로부터 안정적인 의사난수 가중치 생성 (동일 seed면 렌더마다 순서가 바뀌지 않음)
+function hashInt(n: number): number {
+  let x = n | 0
+  x = ((x >> 16) ^ x) * 0x45d9f3b
+  x = ((x >> 16) ^ x) * 0x45d9f3b
+  x = (x >> 16) ^ x
+  return x >>> 0
+}
+
+// Shuffle Mode — 현재 필터링된 리스트 자체의 표시 순서를 무작위로 섞는다 (재생 순서 전용이 아님).
+// seed가 같으면 필터가 바뀌어도(검색어 입력 등) 매번 다시 섞이지 않고 안정적인 순서를 유지.
+export function shuffleTracks(tracks: Track[], seed: number): Track[] {
+  return [...tracks]
+    .map((t) => ({ t, w: hashInt(t.id ^ seed) }))
+    .sort((a, b) => a.w - b.w)
+    .map((x) => x.t)
+}
