@@ -9,6 +9,9 @@ interface FolderTreeProps {
   onToggleExpand: (path: string, next: boolean) => void
   onRemove?: () => void // 라이브러리 루트에만 전달 (폴더 제거)
   onContextMenu?: (e: React.MouseEvent, node: FolderNode) => void
+  // 라이브러리 루트(depth===1)의 기본 펼침 여부 — 라이브러리가 하나뿐일 때만 기본 펼침
+  // (여러 개면 사이드바가 과도하게 길어지지 않도록 기본 접힘). 하위 폴더는 항상 기본 접힘.
+  defaultExpanded?: boolean
 }
 
 function Chevron({ open }: { open: boolean }): JSX.Element {
@@ -32,10 +35,11 @@ export default function FolderTree({
   expandedMap,
   onToggleExpand,
   onRemove,
-  onContextMenu
+  onContextMenu,
+  defaultExpanded = false
 }: FolderTreeProps): JSX.Element {
-  // 라이브러리 루트(depth<=1)는 기본 펼침, 하위 폴더는 기본 접힘 — 저장된 값이 있으면 그걸 우선
-  const expanded = expandedMap[node.path] ?? depth <= 1
+  // 저장된 펼침상태가 있으면 그걸 우선, 없으면 depth===1(라이브러리 루트)일 때만 defaultExpanded 적용
+  const expanded = expandedMap[node.path] ?? (depth === 1 ? defaultExpanded : false)
   const hasChildren = node.children.length > 0
   const isSelected = selectedPath === node.path
 

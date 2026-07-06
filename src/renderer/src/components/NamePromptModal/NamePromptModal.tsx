@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 interface NamePromptModalProps {
   title: string
   confirmLabel?: string
+  defaultValue?: string
   onSubmit: (name: string) => void
   onCancel: () => void
 }
@@ -10,14 +11,17 @@ interface NamePromptModalProps {
 export default function NamePromptModal({
   title,
   confirmLabel = '만들기',
+  defaultValue = '',
   onSubmit,
   onCancel
 }: NamePromptModalProps): JSX.Element {
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(defaultValue)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     inputRef.current?.focus()
+    inputRef.current?.select()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function submit(): void {

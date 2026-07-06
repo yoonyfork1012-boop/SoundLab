@@ -10,7 +10,9 @@ export const mockLibrary: Library = {
   id: 1,
   rootPath: ROOT,
   name: 'Slot Machine Pack',
-  createdAt: Date.now()
+  createdAt: Date.now(),
+  monitor: false,
+  analyzedAt: null
 }
 
 // [파일명 base, 카테고리, 서브카테고리, 하위폴더]
@@ -82,6 +84,6 @@ export const mockTracks: Track[] = EXPANDED.map(([base, category, subcategory, f
 }))
 
 export const mockCollections: Collection[] = [
-  { id: 1, name: 'Favorites', trackIds: [1, 5, 9, 12], createdAt: Date.now() },
-  { id: 2, name: 'Trailer Hits', trackIds: [2, 3], createdAt: Date.now() }
+  { id: 1, name: 'Favorites', trackIds: [1, 5, 9, 12], createdAt: Date.now(), color: null },
+  { id: 2, name: 'Trailer Hits', trackIds: [2, 3], createdAt: Date.now(), color: null }
 ]

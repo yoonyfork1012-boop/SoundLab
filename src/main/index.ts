@@ -2,6 +2,8 @@ import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { registerIpcHandlers } from './ipc'
 import { closeDb, initDb } from './db'
+import { getAllLibraries } from './db/queries'
+import { startWatching, stopAllWatching } from './watcher'
 
 // 클릭→IPC 파일읽기→디코딩 사이 비동기 대기로 사용자 제스처가 만료되어
 // Chromium 자동재생 정책이 재생을 막는 문제 해결
@@ -37,6 +39,11 @@ function createWindow(): void {
 
   registerIpcHandlers(mainWindow)
 
+  // 앱 시작 시 "Monitor for changes"가 켜져 있던 라이브러리는 감시 재개
+  for (const lib of getAllLibraries()) {
+    if (lib.monitor) startWatching(lib.id, lib.rootPath, mainWindow)
+  }
+
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
@@ -67,6 +74,7 @@ if (!gotLock) {
   })
 
   app.on('window-all-closed', () => {
+    stopAllWatching()
     closeDb()
     if (process.platform !== 'darwin') app.quit()
   })

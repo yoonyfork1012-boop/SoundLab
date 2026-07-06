@@ -23,9 +23,12 @@ export interface Library {
   rootPath: string
   name: string
   createdAt: number
+  monitor: boolean
+  analyzedAt: number | null
 }
 
 export interface ScanProgress {
+  phase: 'discovering' | 'parsing'
   scanned: number
   total: number
   currentFile: string
@@ -36,4 +39,5 @@ export interface Collection {
   name: string
   trackIds: number[]
   createdAt: number
+  color: string | null
 }

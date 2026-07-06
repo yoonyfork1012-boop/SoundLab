@@ -13,11 +13,39 @@ const api = {
   removeLibrary: (libraryId: number): Promise<{ libraries: Library[]; tracks: Track[] }> =>
     ipcRenderer.invoke('library:remove', libraryId),
 
+  renameLibrary: (libraryId: number, name: string): Promise<Library[]> =>
+    ipcRenderer.invoke('library:rename', libraryId, name),
+
+  scanNewFiles: (
+    libraryId: number,
+    rootPath: string
+  ): Promise<{ libraries: Library[]; tracks: Track[]; addedCount: number }> =>
+    ipcRenderer.invoke('library:scanNew', libraryId, rootPath),
+
+  showInExplorer: (rootPath: string): Promise<void> => ipcRenderer.invoke('library:showInExplorer', rootPath),
+
+  setLibraryMonitor: (libraryId: number, rootPath: string, on: boolean): Promise<Library[]> =>
+    ipcRenderer.invoke('library:setMonitor', libraryId, rootPath, on),
+
+  analyzeLibrary: (libraryId: number): Promise<{ libraries: Library[]; analyzedCount: number }> =>
+    ipcRenderer.invoke('library:analyze', libraryId),
+
   onScanProgress: (callback: (progress: ScanProgress) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: ScanProgress): void =>
       callback(progress)
     ipcRenderer.on('library:scanProgress', listener)
     return () => ipcRenderer.removeListener('library:scanProgress', listener)
+  },
+
+  onLibraryUpdated: (
+    callback: (data: { libraries: Library[]; tracks: Track[] }) => void
+  ): (() => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      data: { libraries: Library[]; tracks: Track[] }
+    ): void => callback(data)
+    ipcRenderer.on('library:updated', listener)
+    return () => ipcRenderer.removeListener('library:updated', listener)
   },
 
   toggleStar: (trackId: number): Promise<boolean> =>
@@ -32,13 +60,21 @@ const api = {
     ipcRenderer.invoke('collections:create', name),
   deleteCollection: (id: number): Promise<Collection[]> =>
     ipcRenderer.invoke('collections:delete', id),
+  renameCollection: (id: number, name: string): Promise<Collection[]> =>
+    ipcRenderer.invoke('collections:rename', id, name),
+  setCollectionColor: (id: number, color: string | null): Promise<Collection[]> =>
+    ipcRenderer.invoke('collections:setColor', id, color),
   addTrackToCollection: (collectionId: number, trackId: number): Promise<Collection[]> =>
     ipcRenderer.invoke('collections:addTrack', collectionId, trackId),
+  addTracksToCollection: (collectionId: number, trackIds: number[]): Promise<Collection[]> =>
+    ipcRenderer.invoke('collections:addTracks', collectionId, trackIds),
   removeTrackFromCollection: (collectionId: number, trackId: number): Promise<Collection[]> =>
     ipcRenderer.invoke('collections:removeTrack', collectionId, trackId),
 
   readAudioFile: (filePath: string): Promise<Uint8Array> =>
     ipcRenderer.invoke('file:readAudio', filePath),
+
+  writeClipboardText: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:writeText', text),
 
   // 리스트 행을 OS 네이티브 드래그로 내보내기 (DAW/탐색기로 드롭)
   startDrag: (filePath: string): void => ipcRenderer.send('drag:start', filePath),

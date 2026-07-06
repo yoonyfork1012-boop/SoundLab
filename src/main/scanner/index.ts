@@ -4,6 +4,7 @@ import {
   beginScanBatch,
   deleteMissingTracks,
   endScanBatch,
+  hasTrackFilePath,
   rollbackScanBatch,
   upsertLibrary,
   upsertTrack
@@ -29,7 +30,10 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.flac'
 ])
 
-async function collectAudioFiles(rootPath: string): Promise<string[]> {
+async function collectAudioFiles(
+  rootPath: string,
+  onProgress?: (progress: ScanProgress) => void
+): Promise<string[]> {
   const results: string[] = []
 
   async function walk(dir: string): Promise<void> {
@@ -46,12 +50,56 @@ async function collectAudioFiles(rootPath: string): Promise<string[]> {
         await walk(fullPath)
       } else if (SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
         results.push(fullPath)
+        // 파일 검색(discovering) 단계 — 폴더 트리를 도는 동안에도 진행 상황이 보이도록
+        // 25개 단위로만 알려 IPC 전송 빈도를 억제
+        if (onProgress && results.length % 25 === 0) {
+          onProgress({ phase: 'discovering', scanned: results.length, total: 0, currentFile: entry.name })
+        }
       }
     }
   }
 
   await walk(rootPath)
+  onProgress?.({ phase: 'discovering', scanned: results.length, total: 0, currentFile: '' })
   return results
+}
+
+async function parseAndUpsert(filePath: string, libraryId: number, loggedErrorRef: { v: boolean }): Promise<void> {
+  const filename = filePath.split(/[\\/]/).pop() ?? filePath
+  const ucs = categoryFromFilename(filename)
+  const { parseFile } = await getMusicMetadata()
+  try {
+    const meta = await parseFile(filePath, { skipCovers: true, duration: true })
+    const genre = meta.common?.genre?.[0]
+    upsertTrack({
+      libraryId,
+      filePath,
+      filename,
+      durationMs: meta.format.duration ? Math.round(meta.format.duration * 1000) : null,
+      sampleRate: meta.format.sampleRate ?? null,
+      bitDepth: meta.format.bitsPerSample ?? null,
+      channels: meta.format.numberOfChannels ?? null,
+      category: ucs?.category ?? genre ?? null,
+      subcategory: ucs?.subcategory || null
+    })
+  } catch (err) {
+    // 개별 파일 파싱 실패는 무시하되, 첫 오류만 진단용으로 기록
+    if (!loggedErrorRef.v) {
+      loggedErrorRef.v = true
+      console.error('metadata parse failed:', filename, (err as Error)?.message)
+    }
+    upsertTrack({
+      libraryId,
+      filePath,
+      filename,
+      durationMs: null,
+      sampleRate: null,
+      bitDepth: null,
+      channels: null,
+      category: ucs?.category ?? null,
+      subcategory: ucs?.subcategory || null
+    })
+  }
 }
 
 export async function scanLibrary(
@@ -61,54 +109,22 @@ export async function scanLibrary(
   const name = rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath
   const library = upsertLibrary(rootPath, name)
 
-  const files = await collectAudioFiles(rootPath)
-  const { parseFile } = await getMusicMetadata()
-  let loggedError = false
-
+  const files = await collectAudioFiles(rootPath, onProgress)
+  const loggedErrorRef = { v: false }
   const presentFilePaths = new Set<string>()
 
   beginScanBatch()
   try {
     for (let i = 0; i < files.length; i++) {
       const filePath = files[i]
-      const filename = filePath.split(/[\\/]/).pop() ?? filePath
       presentFilePaths.add(filePath)
-
-      const ucs = categoryFromFilename(filename)
-      try {
-        const meta = await parseFile(filePath, { skipCovers: true, duration: true })
-        const genre = meta.common?.genre?.[0]
-        upsertTrack({
-          libraryId: library.id,
-          filePath,
-          filename,
-          durationMs: meta.format.duration ? Math.round(meta.format.duration * 1000) : null,
-          sampleRate: meta.format.sampleRate ?? null,
-          bitDepth: meta.format.bitsPerSample ?? null,
-          channels: meta.format.numberOfChannels ?? null,
-          category: ucs?.category ?? genre ?? null,
-          subcategory: ucs?.subcategory || null
-        })
-      } catch (err) {
-        // 개별 파일 파싱 실패는 무시하되, 첫 오류만 진단용으로 기록
-        if (!loggedError) {
-          loggedError = true
-          console.error('metadata parse failed:', filename, (err as Error)?.message)
-        }
-        upsertTrack({
-          libraryId: library.id,
-          filePath,
-          filename,
-          durationMs: null,
-          sampleRate: null,
-          bitDepth: null,
-          channels: null,
-          category: ucs?.category ?? null,
-          subcategory: ucs?.subcategory || null
-        })
-      }
-
-      onProgress?.({ scanned: i + 1, total: files.length, currentFile: filename })
+      await parseAndUpsert(filePath, library.id, loggedErrorRef)
+      onProgress?.({
+        phase: 'parsing',
+        scanned: i + 1,
+        total: files.length,
+        currentFile: filePath.split(/[\\/]/).pop() ?? filePath
+      })
     }
     deleteMissingTracks(library.id, presentFilePaths)
     endScanBatch()
@@ -118,4 +134,36 @@ export async function scanLibrary(
   }
 
   return library
+}
+
+// "Scan for new files" — 기존에 등록된 파일은 건드리지 않고, DB에 없는 새 파일만 추가.
+// (삭제된 파일 정리는 하지 않는 non-destructive 스캔)
+export async function scanNewFilesOnly(
+  rootPath: string,
+  libraryId: number,
+  onProgress?: (progress: ScanProgress) => void
+): Promise<number> {
+  const files = await collectAudioFiles(rootPath, onProgress)
+  const newFiles = files.filter((f) => !hasTrackFilePath(f))
+  const loggedErrorRef = { v: false }
+
+  beginScanBatch()
+  try {
+    for (let i = 0; i < newFiles.length; i++) {
+      const filePath = newFiles[i]
+      await parseAndUpsert(filePath, libraryId, loggedErrorRef)
+      onProgress?.({
+        phase: 'parsing',
+        scanned: i + 1,
+        total: newFiles.length,
+        currentFile: filePath.split(/[\\/]/).pop() ?? filePath
+      })
+    }
+    endScanBatch()
+  } catch (err) {
+    rollbackScanBatch()
+    throw err
+  }
+
+  return newFiles.length
 }

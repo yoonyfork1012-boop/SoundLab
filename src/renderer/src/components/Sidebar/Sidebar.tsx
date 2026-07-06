@@ -104,6 +104,7 @@ export default function Sidebar({
               onSelectFolder={(p) => onSelectFolder(p)}
               expandedMap={expandedMap}
               onToggleExpand={toggleExpand}
+              defaultExpanded={trees.length === 1}
               onRemove={() => onRemoveLibrary(library.id)}
               onContextMenu={(e) => {
                 e.preventDefault()
@@ -145,7 +146,7 @@ export default function Sidebar({
             onCollectionContextMenu?.(e, col)
           }}
         >
-          <span className="sidebar__coll-icon">
+          <span className="sidebar__coll-icon" style={col.color ? { color: col.color } : undefined}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
             </svg>

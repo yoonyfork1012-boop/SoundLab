@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import MenuBar from './components/MenuBar/MenuBar'
 import Sidebar from './components/Sidebar/Sidebar'
 import ResultList from './components/ResultList/ResultList'
@@ -7,7 +7,10 @@ import PlayerBar from './components/PlayerBar/PlayerBar'
 import MetadataPanel from './components/MetadataPanel/MetadataPanel'
 import AccentPicker from './components/AccentPicker/AccentPicker'
 import NamePromptModal from './components/NamePromptModal/NamePromptModal'
-import type { Collection, Library, Track } from '@shared/types'
+import ContextMenu from './components/ContextMenu/ContextMenu'
+import ColorPickerPopover from './components/ColorPickerPopover/ColorPickerPopover'
+import Toast from './components/Toast/Toast'
+import type { Collection, Library, ScanProgress, Track } from '@shared/types'
 import { isBrowserPreview, mockCollections, mockLibrary, mockTracks } from './mockData'
 import { buildFolderTree, tracksUnder, type FolderNode } from './lib/folderTree'
 import { applyAccent, loadAccent, saveAccent } from './lib/theme'
@@ -37,7 +40,28 @@ export default function App(): JSX.Element {
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [showStarredOnly, setShowStarredOnly] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
-  const [namePrompt, setNamePrompt] = useState<{ title: string; onSubmit: (name: string) => void } | null>(null)
+  const [namePrompt, setNamePrompt] = useState<{
+    title: string
+    defaultValue?: string
+    confirmLabel?: string
+    onSubmit: (name: string) => void
+  } | null>(null)
+  const [collectionMenu, setCollectionMenu] = useState<{ x: number; y: number; collection: Collection } | null>(
+    null
+  )
+  const [libraryMenu, setLibraryMenu] = useState<{ x: number; y: number; library: Library } | null>(null)
+  const [colorPicker, setColorPicker] = useState<{ x: number; y: number; collectionId: number; color: string | null } | null>(
+    null
+  )
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimerRef = useRef<number | undefined>(undefined)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  function showToast(message: string): void {
+    setToast(message)
+    window.clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 2200)
+  }
   const [view, setView] = useState<'grid' | 'list'>('grid')
   const [accent, setAccentState] = useState<string>(loadAccent())
   const [sidebarWidth, setSidebarWidth] = useState(() => loadNumber('soundlib.sidebarWidth', 246))
@@ -54,15 +78,20 @@ export default function App(): JSX.Element {
       return next
     })
   }
-  const [scanProgress, setScanProgress] = useState<{
-    scanned: number
-    total: number
-    currentFile: string
-  } | null>(null)
+  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null)
 
   useEffect(() => {
     if (!window.api?.onScanProgress) return
     return window.api.onScanProgress((p) => setScanProgress(p))
+  }, [])
+
+  // "Monitor for changes"로 백그라운드에서 재스캔되면 최신 라이브러리/트랙을 반영
+  useEffect(() => {
+    if (!window.api?.onLibraryUpdated) return
+    return window.api.onLibraryUpdated(({ libraries, tracks }) => {
+      setLibraries(libraries)
+      setTracks(tracks)
+    })
   }, [])
 
   useEffect(() => {
@@ -137,6 +166,119 @@ export default function App(): JSX.Element {
   async function handleAddToCollection(collectionId: number, trackId: number): Promise<void> {
     if (!window.api) return
     setCollections(await window.api.addTrackToCollection(collectionId, trackId))
+  }
+
+  function handleRenameCollection(collection: Collection): void {
+    setNamePrompt({
+      title: '컬렉션 이름 변경',
+      defaultValue: collection.name,
+      confirmLabel: '변경',
+      onSubmit: async (name) => {
+        if (window.api) setCollections(await window.api.renameCollection(collection.id, name))
+        setNamePrompt(null)
+      }
+    })
+  }
+
+  async function handleSetCollectionColor(collectionId: number, color: string | null): Promise<void> {
+    if (!window.api) return
+    setCollections(await window.api.setCollectionColor(collectionId, color))
+  }
+
+  async function handleAddFolderToCollection(collectionId: number): Promise<void> {
+    if (!window.api) return
+    const folder = await window.api.selectFolder()
+    if (!folder) return
+    const matching = tracksUnder(tracks, folder)
+    if (matching.length === 0) {
+      showToast('선택한 폴더에 해당하는 사운드가 없습니다')
+      return
+    }
+    setCollections(await window.api.addTracksToCollection(collectionId, matching.map((t) => t.id)))
+    showToast(`${matching.length}개 사운드를 컬렉션에 추가했습니다`)
+  }
+
+  async function handleShareCollection(collection: Collection): Promise<void> {
+    if (!window.api) return
+    const byId = new Map(tracks.map((t) => [t.id, t]))
+    const paths = collection.trackIds.map((id) => byId.get(id)?.filePath).filter((p): p is string => !!p)
+    if (paths.length === 0) {
+      showToast('공유할 사운드가 없습니다')
+      return
+    }
+    await window.api.writeClipboardText(paths.join('\n'))
+    showToast(`${paths.length}개 파일 경로를 클립보드에 복사했습니다`)
+  }
+
+  function handleSearchInCollection(collection: Collection): void {
+    setSelectedCollection(collection.id)
+    setSelectedFolder(null)
+    setShowStarredOnly(false)
+    setActiveCategory(null)
+    searchInputRef.current?.focus()
+  }
+
+  function handleSearchInLibrary(library: Library): void {
+    setSelectedFolder(library.rootPath)
+    setSelectedCollection(null)
+    setShowStarredOnly(false)
+    setActiveCategory(null)
+    searchInputRef.current?.focus()
+  }
+
+  function handleCheckOnlyLibrary(library: Library): void {
+    setSelectedFolder(library.rootPath)
+    setSelectedCollection(null)
+    setShowStarredOnly(false)
+    setActiveCategory(null)
+  }
+
+  async function handleScanNewFiles(library: Library): Promise<void> {
+    if (!window.api) return
+    setScanning(true)
+    try {
+      const { libraries: allLibs, tracks: allTracks, addedCount } = await window.api.scanNewFiles(
+        library.id,
+        library.rootPath
+      )
+      setLibraries(allLibs)
+      setTracks(allTracks)
+      showToast(addedCount > 0 ? `새 파일 ${addedCount}개를 추가했습니다` : '새 파일이 없습니다')
+    } finally {
+      setScanning(false)
+      setScanProgress(null)
+    }
+  }
+
+  async function handleShowInExplorer(library: Library): Promise<void> {
+    await window.api?.showInExplorer(library.rootPath)
+  }
+
+  async function handleAnalyzeLibrary(library: Library): Promise<void> {
+    if (!window.api) return
+    showToast('유사 사운드 분석 중…')
+    const { libraries: allLibs, analyzedCount } = await window.api.analyzeLibrary(library.id)
+    setLibraries(allLibs)
+    showToast(`${analyzedCount}개 트랙 분석 완료`)
+  }
+
+  function handleRenameLibrary(library: Library): void {
+    setNamePrompt({
+      title: '라이브러리 이름 변경',
+      defaultValue: library.name,
+      confirmLabel: '변경',
+      onSubmit: async (name) => {
+        if (window.api) setLibraries(await window.api.renameLibrary(library.id, name))
+        setNamePrompt(null)
+      }
+    })
+  }
+
+  async function handleToggleMonitor(library: Library): Promise<void> {
+    if (!window.api) return
+    const next = !library.monitor
+    setLibraries(await window.api.setLibraryMonitor(library.id, library.rootPath, next))
+    showToast(next ? '변경 감시를 켰습니다' : '변경 감시를 껐습니다')
   }
 
   // 라이브러리별 폴더 트리
@@ -317,6 +459,7 @@ export default function App(): JSX.Element {
             <path d="M21 21l-4.3-4.3" />
           </svg>
           <input
+            ref={searchInputRef}
             className="topbar__search"
             placeholder="Search sounds"
             value={search}
@@ -327,19 +470,28 @@ export default function App(): JSX.Element {
           <div className="scanbar">
             <div className="scanbar__spinner" />
             <div className="scanbar__text">
+              <span className="scanbar__phase">
+                {!scanProgress || scanProgress.phase === 'discovering'
+                  ? '1/2  파일 검색 중'
+                  : '2/2  메타데이터 분석 중'}
+              </span>
               <span className="scanbar__count">
-                {scanProgress ? `${scanProgress.scanned.toLocaleString()} / ${scanProgress.total.toLocaleString()}` : '스캔 준비 중…'}
+                {!scanProgress
+                  ? '준비 중…'
+                  : scanProgress.phase === 'discovering'
+                    ? `${scanProgress.scanned.toLocaleString()}개 발견`
+                    : `${scanProgress.scanned.toLocaleString()} / ${scanProgress.total.toLocaleString()}`}
               </span>
               <span className="scanbar__file">{scanProgress?.currentFile ?? ''}</span>
             </div>
             <div className="scanbar__track">
               <div
-                className="scanbar__fill"
-                style={{
-                  width: scanProgress && scanProgress.total > 0
-                    ? `${(scanProgress.scanned / scanProgress.total) * 100}%`
-                    : '0%'
-                }}
+                className={`scanbar__fill${!scanProgress || scanProgress.phase === 'discovering' ? ' scanbar__fill--indeterminate' : ''}`}
+                style={
+                  scanProgress && scanProgress.phase === 'parsing' && scanProgress.total > 0
+                    ? { width: `${(scanProgress.scanned / scanProgress.total) * 100}%` }
+                    : undefined
+                }
               />
             </div>
           </div>
@@ -438,6 +590,8 @@ export default function App(): JSX.Element {
             setSelectedCollection(null)
             setShowStarredOnly(false)
           }}
+          onCollectionContextMenu={(e, collection) => setCollectionMenu({ x: e.clientX, y: e.clientY, collection })}
+          onLibraryContextMenu={(e, library) => setLibraryMenu({ x: e.clientX, y: e.clientY, library })}
         />
 
         <div className="content-wrap">
@@ -520,10 +674,110 @@ export default function App(): JSX.Element {
       {namePrompt && (
         <NamePromptModal
           title={namePrompt.title}
+          defaultValue={namePrompt.defaultValue}
+          confirmLabel={namePrompt.confirmLabel}
           onSubmit={namePrompt.onSubmit}
           onCancel={() => setNamePrompt(null)}
         />
       )}
+
+      {collectionMenu && (
+        <ContextMenu
+          x={collectionMenu.x}
+          y={collectionMenu.y}
+          onClose={() => setCollectionMenu(null)}
+          items={[
+            {
+              key: 'search',
+              label: 'Search in collection',
+              onClick: () => handleSearchInCollection(collectionMenu.collection)
+            },
+            {
+              key: 'addfolder',
+              label: 'Add folder',
+              onClick: () => void handleAddFolderToCollection(collectionMenu.collection.id)
+            },
+            { key: 'rename', label: 'Rename', onClick: () => handleRenameCollection(collectionMenu.collection) },
+            { key: 'share', label: 'Share', onClick: () => void handleShareCollection(collectionMenu.collection) },
+            {
+              key: 'setcolor',
+              label: 'Set color',
+              onClick: () =>
+                setColorPicker({
+                  x: collectionMenu.x,
+                  y: collectionMenu.y,
+                  collectionId: collectionMenu.collection.id,
+                  color: collectionMenu.collection.color
+                })
+            },
+            { key: 'sep1', separator: true },
+            {
+              key: 'delete',
+              label: 'Delete',
+              danger: true,
+              onClick: () => void handleDeleteCollection(collectionMenu.collection.id)
+            }
+          ]}
+        />
+      )}
+
+      {colorPicker && (
+        <ColorPickerPopover
+          x={colorPicker.x}
+          y={colorPicker.y}
+          color={colorPicker.color}
+          onPick={(color) => void handleSetCollectionColor(colorPicker.collectionId, color)}
+          onClose={() => setColorPicker(null)}
+        />
+      )}
+
+      {libraryMenu && (
+        <ContextMenu
+          x={libraryMenu.x}
+          y={libraryMenu.y}
+          onClose={() => setLibraryMenu(null)}
+          width={240}
+          items={[
+            { key: 'search', label: 'Search in library', onClick: () => handleSearchInLibrary(libraryMenu.library) },
+            {
+              key: 'checkonly',
+              label: 'Check only this library',
+              onClick: () => handleCheckOnlyLibrary(libraryMenu.library)
+            },
+            {
+              key: 'scannew',
+              label: 'Scan for new files',
+              onClick: () => void handleScanNewFiles(libraryMenu.library)
+            },
+            {
+              key: 'explorer',
+              label: 'Show in Explorer',
+              onClick: () => void handleShowInExplorer(libraryMenu.library)
+            },
+            {
+              key: 'analyze',
+              label: 'Analyze for Find Similar',
+              onClick: () => void handleAnalyzeLibrary(libraryMenu.library)
+            },
+            { key: 'rename', label: 'Rename', onClick: () => handleRenameLibrary(libraryMenu.library) },
+            {
+              key: 'monitor',
+              label: `Monitor for changes: ${libraryMenu.library.monitor ? 'On' : 'Off'}`,
+              checked: libraryMenu.library.monitor,
+              onClick: () => void handleToggleMonitor(libraryMenu.library)
+            },
+            { key: 'sep1', separator: true },
+            {
+              key: 'remove',
+              label: 'Remove',
+              danger: true,
+              onClick: () => void handleRemoveLibrary(libraryMenu.library.id)
+            }
+          ]}
+        />
+      )}
+
+      {toast && <Toast message={toast} />}
     </div>
   )
 }

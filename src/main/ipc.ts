@@ -1,6 +1,7 @@
-import { ipcMain, dialog, BrowserWindow, nativeImage } from 'electron'
+import { ipcMain, dialog, shell, clipboard, BrowserWindow, nativeImage } from 'electron'
 import { readFile } from 'fs/promises'
-import { scanLibrary } from './scanner'
+import { scanLibrary, scanNewFilesOnly } from './scanner'
+import { startWatching, stopWatching } from './watcher'
 import {
   getAllLibraries,
   getAllTracks,
@@ -10,9 +11,16 @@ import {
   getCollections,
   createCollection,
   deleteCollection,
+  renameCollection,
+  setCollectionColor,
   addTrackToCollection,
+  addTracksToCollection,
   removeTrackFromCollection,
-  hasTrackFilePath
+  hasTrackFilePath,
+  renameLibrary,
+  setLibraryMonitor,
+  markLibraryAnalyzed,
+  computeSimilarityKeys
 } from './db/queries'
 import type { ScanProgress } from '../shared/types'
 
@@ -39,8 +47,42 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   })
 
   ipcMain.handle('library:remove', (_event, libraryId: number) => {
+    stopWatching(libraryId)
     deleteLibrary(libraryId)
     return { libraries: getAllLibraries(), tracks: getAllTracks() }
+  })
+
+  ipcMain.handle('library:rename', (_event, libraryId: number, name: string) => {
+    renameLibrary(libraryId, name)
+    return getAllLibraries()
+  })
+
+  // "Scan for new files" — DB에 없는 새 파일만 추가 (기존 파일/삭제 정리는 건드리지 않음)
+  ipcMain.handle('library:scanNew', async (_event, libraryId: number, rootPath: string) => {
+    const addedCount = await scanNewFilesOnly(rootPath, libraryId, (progress: ScanProgress) => {
+      mainWindow.webContents.send('library:scanProgress', progress)
+    })
+    return { libraries: getAllLibraries(), tracks: getAllTracks(), addedCount }
+  })
+
+  ipcMain.handle('library:showInExplorer', async (_event, rootPath: string) => {
+    const err = await shell.openPath(rootPath)
+    if (err) console.error('openPath failed:', err)
+  })
+
+  // "Monitor for changes" On/Off — 켜면 폴더 변경 감시 시작, 끄면 감시 중단
+  ipcMain.handle('library:setMonitor', (_event, libraryId: number, rootPath: string, on: boolean) => {
+    setLibraryMonitor(libraryId, on)
+    if (on) startWatching(libraryId, rootPath, mainWindow)
+    else stopWatching(libraryId)
+    return getAllLibraries()
+  })
+
+  // "Analyze for Find Similar" — 메타데이터(길이/채널/샘플레이트/비트뎁스) 기반 근사 유사도 키 생성
+  ipcMain.handle('library:analyze', (_event, libraryId: number) => {
+    const analyzedCount = computeSimilarityKeys(libraryId)
+    markLibraryAnalyzed(libraryId, Date.now())
+    return { libraries: getAllLibraries(), analyzedCount }
   })
 
   ipcMain.handle('track:toggleStar', (_event, trackId: number) => {
@@ -61,13 +103,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     deleteCollection(id)
     return getCollections()
   })
+  ipcMain.handle('collections:rename', (_event, id: number, name: string) => {
+    renameCollection(id, name)
+    return getCollections()
+  })
+  ipcMain.handle('collections:setColor', (_event, id: number, color: string | null) => {
+    setCollectionColor(id, color)
+    return getCollections()
+  })
   ipcMain.handle('collections:addTrack', (_event, collectionId: number, trackId: number) => {
     addTrackToCollection(collectionId, trackId)
+    return getCollections()
+  })
+  ipcMain.handle('collections:addTracks', (_event, collectionId: number, trackIds: number[]) => {
+    addTracksToCollection(collectionId, trackIds)
     return getCollections()
   })
   ipcMain.handle('collections:removeTrack', (_event, collectionId: number, trackId: number) => {
     removeTrackFromCollection(collectionId, trackId)
     return getCollections()
+  })
+
+  ipcMain.handle('clipboard:writeText', (_event, text: string) => {
+    clipboard.writeText(text)
   })
 
   ipcMain.handle('file:readAudio', async (_event, filePath: string) => {

@@ -42,13 +42,7 @@ export function upsertLibrary(rootPath: string, name: string): Library {
   const existing = selectRows('SELECT * FROM libraries WHERE root_path = ?', [rootPath])
 
   if (existing.length > 0) {
-    const row = existing[0]
-    return {
-      id: row.id as number,
-      rootPath: row.root_path as string,
-      name: row.name as string,
-      createdAt: row.created_at as number
-    }
+    return rowToLibrary(existing[0])
   }
 
   const createdAt = Date.now()
@@ -60,7 +54,7 @@ export function upsertLibrary(rootPath: string, name: string): Library {
   const id = selectRows('SELECT last_insert_rowid() AS id')[0].id as number
   persistDb()
 
-  return { id, rootPath, name, createdAt }
+  return { id, rootPath, name, createdAt, monitor: false, analyzedAt: null }
 }
 
 export function beginScanBatch(): void {
@@ -143,13 +137,52 @@ export function getAllTracks(): Track[] {
   return selectRows('SELECT * FROM tracks ORDER BY filename').map(rowToTrack)
 }
 
-export function getAllLibraries(): Library[] {
-  return selectRows('SELECT * FROM libraries ORDER BY created_at').map((row) => ({
+function rowToLibrary(row: SqlRow): Library {
+  return {
     id: row.id as number,
     rootPath: row.root_path as string,
     name: row.name as string,
-    createdAt: row.created_at as number
-  }))
+    createdAt: row.created_at as number,
+    monitor: row.monitor === 1,
+    analyzedAt: (row.analyzed_at as number) ?? null
+  }
+}
+
+export function getAllLibraries(): Library[] {
+  return selectRows('SELECT * FROM libraries ORDER BY created_at').map(rowToLibrary)
+}
+
+export function renameLibrary(id: number, name: string): void {
+  getDb().run('UPDATE libraries SET name = ? WHERE id = ?', [name, id])
+  persistDb()
+}
+
+export function setLibraryMonitor(id: number, on: boolean): void {
+  getDb().run('UPDATE libraries SET monitor = ? WHERE id = ?', [on ? 1 : 0, id])
+  persistDb()
+}
+
+export function markLibraryAnalyzed(id: number, at: number): void {
+  getDb().run('UPDATE libraries SET analyzed_at = ? WHERE id = ?', [at, id])
+  persistDb()
+}
+
+// "Analyze for Find Similar" — 실제 오디오 콘텐츠 분석(핑거프린팅) 대신, 이미 갖고 있는
+// 메타데이터(길이/채널/샘플레이트/비트뎁스)로 근사 유사도 키를 만들어 저장한다.
+// 추후 진짜 오디오 지문 분석으로 교체 가능하도록 similarity_key 컬럼만 사용.
+export function computeSimilarityKeys(libraryId: number): number {
+  const tracks = selectRows(
+    'SELECT id, duration_ms, channels, sample_rate, bit_depth FROM tracks WHERE library_id = ?',
+    [libraryId]
+  )
+  const db = getDb()
+  for (const row of tracks) {
+    const durBucket = row.duration_ms ? Math.round((row.duration_ms as number) / 50) : 0
+    const key = `${durBucket}-${row.channels ?? 0}-${row.sample_rate ?? 0}-${row.bit_depth ?? 0}`
+    db.run('UPDATE tracks SET similarity_key = ? WHERE id = ?', [key, row.id as number])
+  }
+  persistDb()
+  return tracks.length
 }
 
 export function deleteLibrary(libraryId: number): void {
@@ -187,7 +220,8 @@ export function getCollections(): Collection[] {
       id,
       name: row.name as string,
       trackIds,
-      createdAt: (row.created_at as number) ?? 0
+      createdAt: (row.created_at as number) ?? 0,
+      color: (row.color as string) ?? null
     }
   })
 }
@@ -204,6 +238,16 @@ export function deleteCollection(id: number): void {
   persistDb()
 }
 
+export function renameCollection(id: number, name: string): void {
+  getDb().run('UPDATE collections SET name = ? WHERE id = ?', [name, id])
+  persistDb()
+}
+
+export function setCollectionColor(id: number, color: string | null): void {
+  getDb().run('UPDATE collections SET color = ? WHERE id = ?', [color, id])
+  persistDb()
+}
+
 export function addTrackToCollection(collectionId: number, trackId: number): void {
   const db = getDb()
   const pos = selectRows(
@@ -214,6 +258,22 @@ export function addTrackToCollection(collectionId: number, trackId: number): voi
     'INSERT OR IGNORE INTO collection_tracks (collection_id, track_id, position) VALUES (?, ?, ?)',
     [collectionId, trackId, pos]
   )
+  persistDb()
+}
+
+export function addTracksToCollection(collectionId: number, trackIds: number[]): void {
+  const db = getDb()
+  let pos = selectRows(
+    'SELECT COALESCE(MAX(position), -1) + 1 AS p FROM collection_tracks WHERE collection_id = ?',
+    [collectionId]
+  )[0].p as number
+  for (const trackId of trackIds) {
+    db.run(
+      'INSERT OR IGNORE INTO collection_tracks (collection_id, track_id, position) VALUES (?, ?, ?)',
+      [collectionId, trackId, pos]
+    )
+    pos++
+  }
   persistDb()
 }
 

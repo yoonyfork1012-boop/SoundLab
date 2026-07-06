@@ -86,7 +86,41 @@ export async function initDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_tracks_library ON tracks(library_id);
   `)
 
+  runMigrations()
   persistDb()
+}
+
+// CREATE TABLE IF NOT EXISTS는 기존 DB에 새 컬럼을 추가해주지 않으므로,
+// 이미 테이블이 있던 예전 DB에도 새 컬럼이 생기도록 직접 확인 후 ALTER TABLE
+function runMigrations(): void {
+  const d = getDb()
+
+  function hasColumn(table: string, column: string): boolean {
+    const stmt = d.prepare(`PRAGMA table_info(${table})`)
+    let found = false
+    while (stmt.step()) {
+      const row = stmt.getAsObject()
+      if (row.name === column) {
+        found = true
+        break
+      }
+    }
+    stmt.free()
+    return found
+  }
+
+  if (!hasColumn('collections', 'color')) {
+    d.run('ALTER TABLE collections ADD COLUMN color TEXT')
+  }
+  if (!hasColumn('libraries', 'monitor')) {
+    d.run('ALTER TABLE libraries ADD COLUMN monitor INTEGER DEFAULT 0')
+  }
+  if (!hasColumn('libraries', 'analyzed_at')) {
+    d.run('ALTER TABLE libraries ADD COLUMN analyzed_at INTEGER')
+  }
+  if (!hasColumn('tracks', 'similarity_key')) {
+    d.run('ALTER TABLE tracks ADD COLUMN similarity_key TEXT')
+  }
 }
 
 export function getDb(): Database {
