@@ -103,13 +103,38 @@ export default function ResultList({
   tracksRef.current = tracks
 
   const [visibleCols, setVisibleCols] = useState<Set<string>>(new Set(DEFAULT_VISIBLE))
+  const [colWidths, setColWidths] = useState<Record<string, number>>({})
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   const columns = useMemo(
     () => ALL_COLUMNS.filter((c) => visibleCols.has(c.key)),
     [visibleCols]
   )
-  const gridTemplate = useMemo(() => columns.map((c) => c.width).join(' '), [columns])
+  const gridTemplate = useMemo(
+    () => columns.map((c) => (colWidths[c.key] ? `${colWidths[c.key]}px` : c.width)).join(' '),
+    [columns, colWidths]
+  )
+
+  // 헤더 경계 드래그로 컬럼 폭 조절
+  function startResize(e: React.MouseEvent, key: string): void {
+    e.preventDefault()
+    e.stopPropagation()
+    const cell = (e.currentTarget as HTMLElement).parentElement as HTMLElement
+    const startWidth = cell.offsetWidth
+    const startX = e.clientX
+    function onMove(ev: MouseEvent): void {
+      const w = Math.max(48, startWidth + (ev.clientX - startX))
+      setColWidths((prev) => ({ ...prev, [key]: w }))
+    }
+    function onUp(): void {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
 
   useEffect(() => {
     if (selectedTrackId == null) return
@@ -167,8 +192,18 @@ export default function ResultList({
         }}
       >
         {columns.map((col) => (
-          <div key={col.key} style={col.align === 'right' ? { textAlign: 'right' } : undefined}>
-            {col.label}
+          <div
+            key={col.key}
+            className="list-header__cell"
+            style={col.align === 'right' ? { justifyContent: 'flex-end' } : undefined}
+          >
+            <span className="list-header__label">{col.label}</span>
+            <span
+              className="list-header__resize"
+              title="드래그로 폭 조절"
+              onMouseDown={(e) => startResize(e, col.key)}
+              onContextMenu={(e) => e.stopPropagation()}
+            />
           </div>
         ))}
       </div>

@@ -1,8 +1,15 @@
 import { readdir } from 'fs/promises'
 import { join, extname } from 'path'
-import { parseFile } from 'music-metadata'
 import { beginScanBatch, endScanBatch, upsertLibrary, upsertTrack } from '../db/queries'
 import type { Library, ScanProgress } from '../../shared/types'
+
+// music-metadata v10은 ESM 전용. 패키징된 CJS 빌드에서 static import은 parseFile이
+// undefined가 되어 매 파일 실패 → 동적 import로 로드해야 함.
+let mmPromise: Promise<typeof import('music-metadata')> | null = null
+function getMusicMetadata(): Promise<typeof import('music-metadata')> {
+  if (!mmPromise) mmPromise = import('music-metadata')
+  return mmPromise
+}
 
 const SUPPORTED_EXTENSIONS = new Set([
   '.wav',
@@ -47,6 +54,8 @@ export async function scanLibrary(
   const library = upsertLibrary(rootPath, name)
 
   const files = await collectAudioFiles(rootPath)
+  const { parseFile } = await getMusicMetadata()
+  let loggedError = false
 
   beginScanBatch()
   for (let i = 0; i < files.length; i++) {
@@ -64,7 +73,12 @@ export async function scanLibrary(
         bitDepth: meta.format.bitsPerSample ?? null,
         channels: meta.format.numberOfChannels ?? null
       })
-    } catch {
+    } catch (err) {
+      // 개별 파일 파싱 실패는 무시하되, 첫 오류는 진단용으로 남김
+      if (!loggedError) {
+        loggedError = true
+        console.error('metadata parse failed:', filename, (err as Error)?.message)
+      }
       upsertTrack({
         libraryId: library.id,
         filePath,
