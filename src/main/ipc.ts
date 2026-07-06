@@ -6,7 +6,13 @@ import {
   getAllTracks,
   deleteLibrary,
   toggleStarred,
-  updateLastPlayed
+  updateLastPlayed,
+  getCollections,
+  createCollection,
+  deleteCollection,
+  addTrackToCollection,
+  removeTrackFromCollection,
+  hasTrackFilePath
 } from './db/queries'
 import type { ScanProgress } from '../shared/types'
 
@@ -45,7 +51,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     updateLastPlayed(trackId)
   })
 
+  // Collections
+  ipcMain.handle('collections:getAll', () => getCollections())
+  ipcMain.handle('collections:create', (_event, name: string) => {
+    createCollection(name)
+    return getCollections()
+  })
+  ipcMain.handle('collections:delete', (_event, id: number) => {
+    deleteCollection(id)
+    return getCollections()
+  })
+  ipcMain.handle('collections:addTrack', (_event, collectionId: number, trackId: number) => {
+    addTrackToCollection(collectionId, trackId)
+    return getCollections()
+  })
+  ipcMain.handle('collections:removeTrack', (_event, collectionId: number, trackId: number) => {
+    removeTrackFromCollection(collectionId, trackId)
+    return getCollections()
+  })
+
   ipcMain.handle('file:readAudio', async (_event, filePath: string) => {
+    if (!hasTrackFilePath(filePath)) {
+      throw new Error('Audio file is not registered in the library')
+    }
     const buffer = await readFile(filePath)
     return new Uint8Array(buffer)
   })

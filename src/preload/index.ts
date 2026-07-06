@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Library, ScanProgress, Track } from '../shared/types'
+import type { Collection, Library, ScanProgress, Track } from '../shared/types'
 
 const api = {
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:selectFolder'),
@@ -25,6 +25,17 @@ const api = {
 
   updateLastPlayed: (trackId: number): Promise<void> =>
     ipcRenderer.invoke('track:updateLastPlayed', trackId),
+
+  // Collections
+  getCollections: (): Promise<Collection[]> => ipcRenderer.invoke('collections:getAll'),
+  createCollection: (name: string): Promise<Collection[]> =>
+    ipcRenderer.invoke('collections:create', name),
+  deleteCollection: (id: number): Promise<Collection[]> =>
+    ipcRenderer.invoke('collections:delete', id),
+  addTrackToCollection: (collectionId: number, trackId: number): Promise<Collection[]> =>
+    ipcRenderer.invoke('collections:addTrack', collectionId, trackId),
+  removeTrackFromCollection: (collectionId: number, trackId: number): Promise<Collection[]> =>
+    ipcRenderer.invoke('collections:removeTrack', collectionId, trackId),
 
   readAudioFile: (filePath: string): Promise<Uint8Array> =>
     ipcRenderer.invoke('file:readAudio', filePath),

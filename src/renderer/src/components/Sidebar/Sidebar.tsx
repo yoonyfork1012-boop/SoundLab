@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Library, Track } from '@shared/types'
+import type { Collection, Library, Track } from '@shared/types'
 import { colorForCategory } from '@shared/ucsCategories'
 import type { FolderNode } from '../../lib/folderTree'
 import FolderTree from './FolderTree'
@@ -16,6 +16,11 @@ interface SidebarProps {
   onRemoveLibrary: (id: number) => void
   selectedFolder: string | null
   onSelectFolder: (path: string | null) => void
+  collections: Collection[]
+  selectedCollection: number | null
+  onSelectCollection: (id: number) => void
+  onCreateCollection: () => void
+  onDeleteCollection: (id: number) => void
   showStarredOnly: boolean
   onToggleStarredView: () => void
   activeCategory: string | null
@@ -37,6 +42,11 @@ export default function Sidebar({
   onRemoveLibrary,
   selectedFolder,
   onSelectFolder,
+  collections,
+  selectedCollection,
+  onSelectCollection,
+  onCreateCollection,
+  onDeleteCollection,
   showStarredOnly,
   onToggleStarredView,
   activeCategory,
@@ -61,7 +71,6 @@ export default function Sidebar({
         </span>
       </div>
 
-      {/* Soundly처럼 Local 상위 노드 아래에 여러 라이브러리 폴더가 누적 */}
       <div className="ftree__row" style={{ paddingLeft: 10 }} onClick={() => setLocalOpen((v) => !v)}>
         <span className="ftree__toggle">
           <Chevron open={localOpen} />
@@ -93,6 +102,9 @@ export default function Sidebar({
       {/* COLLECTIONS */}
       <div className="sidebar__section">
         <span>Collections</span>
+        <span className="sidebar__section-btn" onClick={onCreateCollection} title="새 컬렉션">
+          ＋
+        </span>
       </div>
       <div
         className={`sidebar__coll${showStarredOnly ? ' sidebar__coll--active' : ''}`}
@@ -102,17 +114,51 @@ export default function Sidebar({
         <span className="sidebar__coll-label">Starred</span>
         <span className="sidebar__coll-count">{starredCount}</span>
       </div>
-      {categories.map((cat) => (
+      {collections.map((col) => (
         <div
-          key={cat}
-          className={`sidebar__coll${activeCategory === cat ? ' sidebar__coll--active' : ''}`}
-          onClick={() => onSelectCategory(activeCategory === cat ? null : cat)}
+          key={col.id}
+          className={`sidebar__coll${selectedCollection === col.id ? ' sidebar__coll--active' : ''}`}
+          onClick={() => onSelectCollection(col.id)}
         >
-          <span className="sidebar__coll-dot" style={{ background: colorForCategory(cat) }} />
-          <span className="sidebar__coll-label">{cat}</span>
-          <span className="sidebar__coll-count">{categoryCounts[cat]}</span>
+          <span className="sidebar__coll-icon">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+          </span>
+          <span className="sidebar__coll-label">{col.name}</span>
+          <span
+            className="ftree__remove"
+            title="컬렉션 삭제"
+            onClick={(e) => {
+              e.stopPropagation()
+              onDeleteCollection(col.id)
+            }}
+          >
+            ✕
+          </span>
+          <span className="sidebar__coll-count">{col.trackIds.length}</span>
         </div>
       ))}
+
+      {/* CATEGORIES */}
+      {categories.length > 0 && (
+        <>
+          <div className="sidebar__section">
+            <span>Categories</span>
+          </div>
+          {categories.map((cat) => (
+            <div
+              key={cat}
+              className={`sidebar__coll${activeCategory === cat ? ' sidebar__coll--active' : ''}`}
+              onClick={() => onSelectCategory(activeCategory === cat ? null : cat)}
+            >
+              <span className="sidebar__coll-dot" style={{ background: colorForCategory(cat) }} />
+              <span className="sidebar__coll-label">{cat}</span>
+              <span className="sidebar__coll-count">{categoryCounts[cat]}</span>
+            </div>
+          ))}
+        </>
+      )}
     </aside>
   )
 }

@@ -1,4 +1,4 @@
-import type { Library, Track } from '@shared/types'
+import type { Collection, Library, Track } from '@shared/types'
 
 // Electron preload(window.api)이 없는 순수 브라우저 프리뷰 환경에서
 // UI를 채워 보여주기 위한 샘플 데이터. 실제 앱 동작에는 영향 없음.
@@ -80,3 +80,8 @@ export const mockTracks: Track[] = EXPANDED.map(([base, category, subcategory, f
   // 일부는 미리듣기한 상태(previewed → 회색)로 표시해 프리뷰에서 확인
   lastPlayedAt: i % 4 === 1 ? Date.now() - i * 60_000 : null
 }))
+
+export const mockCollections: Collection[] = [
+  { id: 1, name: 'Favorites', trackIds: [1, 5, 9, 12], createdAt: Date.now() },
+  { id: 2, name: 'Trailer Hits', trackIds: [2, 3], createdAt: Date.now() }
+]

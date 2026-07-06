@@ -1,6 +1,14 @@
 import { readdir } from 'fs/promises'
 import { join, extname } from 'path'
-import { beginScanBatch, endScanBatch, upsertLibrary, upsertTrack } from '../db/queries'
+import {
+  beginScanBatch,
+  deleteMissingTracks,
+  endScanBatch,
+  rollbackScanBatch,
+  upsertLibrary,
+  upsertTrack
+} from '../db/queries'
+import { categoryFromFilename } from '../../shared/ucsCatId'
 import type { Library, ScanProgress } from '../../shared/types'
 
 // music-metadata v10은 ESM 전용. 패키징된 CJS 빌드에서 static import은 parseFile이
@@ -57,42 +65,57 @@ export async function scanLibrary(
   const { parseFile } = await getMusicMetadata()
   let loggedError = false
 
+  const presentFilePaths = new Set<string>()
+
   beginScanBatch()
-  for (let i = 0; i < files.length; i++) {
-    const filePath = files[i]
-    const filename = filePath.split(/[\\/]/).pop() ?? filePath
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const filePath = files[i]
+      const filename = filePath.split(/[\\/]/).pop() ?? filePath
+      presentFilePaths.add(filePath)
 
-    try {
-      const meta = await parseFile(filePath, { skipCovers: true, duration: true })
-      upsertTrack({
-        libraryId: library.id,
-        filePath,
-        filename,
-        durationMs: meta.format.duration ? Math.round(meta.format.duration * 1000) : null,
-        sampleRate: meta.format.sampleRate ?? null,
-        bitDepth: meta.format.bitsPerSample ?? null,
-        channels: meta.format.numberOfChannels ?? null
-      })
-    } catch (err) {
-      // 개별 파일 파싱 실패는 무시하되, 첫 오류는 진단용으로 남김
-      if (!loggedError) {
-        loggedError = true
-        console.error('metadata parse failed:', filename, (err as Error)?.message)
+      const ucs = categoryFromFilename(filename)
+      try {
+        const meta = await parseFile(filePath, { skipCovers: true, duration: true })
+        const genre = meta.common?.genre?.[0]
+        upsertTrack({
+          libraryId: library.id,
+          filePath,
+          filename,
+          durationMs: meta.format.duration ? Math.round(meta.format.duration * 1000) : null,
+          sampleRate: meta.format.sampleRate ?? null,
+          bitDepth: meta.format.bitsPerSample ?? null,
+          channels: meta.format.numberOfChannels ?? null,
+          category: ucs?.category ?? genre ?? null,
+          subcategory: ucs?.subcategory || null
+        })
+      } catch (err) {
+        // 개별 파일 파싱 실패는 무시하되, 첫 오류만 진단용으로 기록
+        if (!loggedError) {
+          loggedError = true
+          console.error('metadata parse failed:', filename, (err as Error)?.message)
+        }
+        upsertTrack({
+          libraryId: library.id,
+          filePath,
+          filename,
+          durationMs: null,
+          sampleRate: null,
+          bitDepth: null,
+          channels: null,
+          category: ucs?.category ?? null,
+          subcategory: ucs?.subcategory || null
+        })
       }
-      upsertTrack({
-        libraryId: library.id,
-        filePath,
-        filename,
-        durationMs: null,
-        sampleRate: null,
-        bitDepth: null,
-        channels: null
-      })
-    }
 
-    onProgress?.({ scanned: i + 1, total: files.length, currentFile: filename })
+      onProgress?.({ scanned: i + 1, total: files.length, currentFile: filename })
+    }
+    deleteMissingTracks(library.id, presentFilePaths)
+    endScanBatch()
+  } catch (err) {
+    rollbackScanBatch()
+    throw err
   }
-  endScanBatch()
 
   return library
 }

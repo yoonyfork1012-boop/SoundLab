@@ -30,3 +30,10 @@ export interface ScanProgress {
   total: number
   currentFile: string
 }
+
+export interface Collection {
+  id: number
+  name: string
+  trackIds: number[]
+  createdAt: number
+}

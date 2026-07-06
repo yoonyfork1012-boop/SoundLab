@@ -145,6 +145,8 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
   const [mode, setMode] = useState<'stereo' | 'mono'>('stereo')
   const loopRef = useRef(loop)
   loopRef.current = loop
+  const trackRef = useRef(track)
+  trackRef.current = track
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -171,6 +173,16 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     })
     wavesurferRef.current = ws
     return () => {
+      const route = routeRef.current
+      routeRef.current = null
+      void route?.ctx.close()
+      const decodeCtx = decodeCtxRef.current
+      decodeCtxRef.current = null
+      void decodeCtx?.close()
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current)
+        urlRef.current = null
+      }
       ws.destroy()
       wavesurferRef.current = null
     }
@@ -200,22 +212,41 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     return [pk.mono]
   }
 
-  // 선택된 채널/모드에 맞춰 웨이브폼만 다시 그림 (재생 위치 유지)
-  async function renderView(): Promise<void> {
-    const ws = wavesurferRef.current
-    const pk = peaksRef.current
-    const url = urlRef.current
-    if (!ws || !pk || !url) return
-    const v = viewFor(ch1, ch2, mode, pk.numCh)
-    const wasPlaying = ws.isPlaying()
-    const t = ws.getCurrentTime()
-    ws.setOptions({
-      height: v === 'both' ? 30 : 58,
-      splitChannels: v === 'both' ? [{ height: 30 }, { height: 30 }] : [{ height: 58 }]
-    })
+  // 필요 시(단일/모노 뷰) 채널별 피크를 지연 디코딩
+  async function ensurePeaks(): Promise<Peaks | null> {
+    if (peaksRef.current) return peaksRef.current
+    const t = trackRef.current
+    if (!t || !window.api) return null
     try {
-      await ws.load(url, peaksFor(pk, v), pk.duration)
-      if (t > 0) ws.setTime(t)
+      const bytes = await window.api.readAudioFile(t.filePath)
+      peaksRef.current = await decodePeaks(new Uint8Array(bytes))
+    } catch {
+      peaksRef.current = null
+    }
+    return peaksRef.current
+  }
+
+  // 선택된 채널/모드에 맞춰 웨이브폼만 다시 그림 (재생 위치 유지)
+  async function renderView(nCh1: boolean, nCh2: boolean, nMode: 'stereo' | 'mono'): Promise<void> {
+    const ws = wavesurferRef.current
+    const url = urlRef.current
+    if (!ws || !url) return
+    const numCh = peaksRef.current?.numCh ?? (trackRef.current?.channels ?? 2)
+    const v = viewFor(nCh1, nCh2, nMode, numCh)
+    const wasPlaying = ws.isPlaying()
+    const time = ws.getCurrentTime()
+    try {
+      if (v === 'both') {
+        // 스테레오는 WaveSurfer 네이티브 디코드 + splitChannels로 위/아래 2채널 스택
+        ws.setOptions({ height: 30, splitChannels: [{ height: 30 }, { height: 30 }] })
+        await ws.load(url)
+      } else {
+        const pk = await ensurePeaks()
+        if (!pk) return
+        ws.setOptions({ height: 58, splitChannels: [{ height: 58 }] })
+        await ws.load(url, peaksFor(pk, v), pk.duration)
+      }
+      if (time > 0) ws.setTime(time)
       if (wasPlaying) await ws.play()
     } catch {
       /* noop */
@@ -272,7 +303,7 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
 
   function applyChannels(nCh1: boolean, nCh2: boolean, nMode: 'stereo' | 'mono'): void {
     applyRoute(nCh1, nCh2, nMode) // 오디오
-    void renderView() // 웨이브폼(상태 반영 위해 다음 틱)
+    void renderView(nCh1, nCh2, nMode) // 웨이브폼
   }
 
   function toggleCh1(): void {
@@ -316,7 +347,10 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
 
     if (!track || !window.api) {
       peaksRef.current = null
-      urlRef.current = null
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current)
+        urlRef.current = null
+      }
       try {
         ws.empty()
       } catch {
@@ -325,32 +359,44 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       return
     }
 
+    peaksRef.current = null
     let objectUrl: string | null = null
+    let cancelled = false
+
     ;(async () => {
       try {
         const bytes = await window.api!.readAudioFile(track.filePath)
-        if (token !== loadTokenRef.current) return
+        if (cancelled || token !== loadTokenRef.current) return
+
         const arr = new Uint8Array(bytes)
         objectUrl = URL.createObjectURL(new Blob([arr], { type: mimeTypeFor(track.filename) }))
-        urlRef.current = objectUrl
-        const pk = await decodePeaks(arr)
-        if (token !== loadTokenRef.current) return
-        peaksRef.current = pk
-        const v = viewFor(ch1, ch2, mode, pk?.numCh ?? 2)
-        if (pk) {
-          ws.setOptions({
-            height: v === 'both' ? 30 : 58,
-            splitChannels: v === 'both' ? [{ height: 30 }, { height: 30 }] : [{ height: 58 }]
-          })
-          await ws.load(objectUrl, peaksFor(pk, v), pk.duration)
-        } else {
-          await ws.load(objectUrl)
+        if (cancelled || token !== loadTokenRef.current) {
+          URL.revokeObjectURL(objectUrl)
+          return
         }
-        if (token !== loadTokenRef.current) return
+        urlRef.current = objectUrl
+
+        const v = viewFor(ch1, ch2, mode, track.channels ?? 2)
+        if (v === 'both') {
+          ws.setOptions({ height: 30, splitChannels: [{ height: 30 }, { height: 30 }] })
+          await ws.load(objectUrl)
+        } else {
+          const pk = await decodePeaks(arr)
+          if (cancelled || token !== loadTokenRef.current) return
+          peaksRef.current = pk
+          if (pk) {
+            ws.setOptions({ height: 58, splitChannels: [{ height: 58 }] })
+            await ws.load(objectUrl, peaksFor(pk, v), pk.duration)
+          } else {
+            await ws.load(objectUrl)
+          }
+        }
+
+        if (cancelled || token !== loadTokenRef.current) return
         ws.setVolume(volume)
         await ws.play()
       } catch (err) {
-        if (token === loadTokenRef.current) {
+        if (!cancelled && token === loadTokenRef.current) {
           const msg = (err as Error)?.message ?? ''
           if (!/abort/i.test(msg)) console.warn('audio load failed:', msg)
         }
@@ -358,7 +404,9 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     })()
 
     return () => {
+      cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
+      if (urlRef.current === objectUrl) urlRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [track?.id])

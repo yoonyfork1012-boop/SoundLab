@@ -6,8 +6,8 @@ import FolderGrid from './components/FolderGrid/FolderGrid'
 import PlayerBar from './components/PlayerBar/PlayerBar'
 import MetadataPanel from './components/MetadataPanel/MetadataPanel'
 import AccentPicker from './components/AccentPicker/AccentPicker'
-import type { Library, Track } from '@shared/types'
-import { isBrowserPreview, mockLibrary, mockTracks } from './mockData'
+import type { Collection, Library, Track } from '@shared/types'
+import { isBrowserPreview, mockCollections, mockLibrary, mockTracks } from './mockData'
 import { buildFolderTree, tracksUnder, type FolderNode } from './lib/folderTree'
 import { applyAccent, loadAccent, saveAccent } from './lib/theme'
 
@@ -22,11 +22,23 @@ export default function App(): JSX.Element {
   const [search, setSearch] = useState('')
   const [scanning, setScanning] = useState(false)
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null)
+  const [collections, setCollections] = useState<Collection[]>([])
+  const [selectedCollection, setSelectedCollection] = useState<number | null>(null)
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [showStarredOnly, setShowStarredOnly] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
   const [view, setView] = useState<'grid' | 'list'>('grid')
   const [accent, setAccentState] = useState<string>(loadAccent())
+  const [scanProgress, setScanProgress] = useState<{
+    scanned: number
+    total: number
+    currentFile: string
+  } | null>(null)
+
+  useEffect(() => {
+    if (!window.api?.onScanProgress) return
+    return window.api.onScanProgress((p) => setScanProgress(p))
+  }, [])
 
   useEffect(() => {
     applyAccent(accent)
@@ -42,13 +54,33 @@ export default function App(): JSX.Element {
     if (isBrowserPreview) {
       setLibraries([mockLibrary])
       setTracks(mockTracks)
+      setCollections(mockCollections)
       return
     }
     window.api?.loadAll().then(({ libraries, tracks }) => {
       setLibraries(libraries)
       setTracks(tracks)
     })
+    window.api?.getCollections().then(setCollections)
   }, [])
+
+  async function handleCreateCollection(): Promise<void> {
+    const name = window.prompt('새 컬렉션 이름')
+    if (!name?.trim() || !window.api) return
+    setCollections(await window.api.createCollection(name.trim()))
+  }
+
+  async function handleDeleteCollection(id: number): Promise<void> {
+    if (!window.api) return
+    if (!window.confirm('이 컬렉션을 삭제할까요? (사운드 파일은 삭제되지 않습니다)')) return
+    setCollections(await window.api.deleteCollection(id))
+    if (selectedCollection === id) setSelectedCollection(null)
+  }
+
+  async function handleAddToCollection(collectionId: number, trackId: number): Promise<void> {
+    if (!window.api) return
+    setCollections(await window.api.addTrackToCollection(collectionId, trackId))
+  }
 
   // 라이브러리별 폴더 트리
   const trees = useMemo(
@@ -83,6 +115,7 @@ export default function App(): JSX.Element {
       setSelectedFolder(null)
     } finally {
       setScanning(false)
+      setScanProgress(null)
     }
   }
 
@@ -109,8 +142,16 @@ export default function App(): JSX.Element {
     if (window.api) await window.api.updateLastPlayed(track.id)
   }
 
+  const activeCollection = collections.find((c) => c.id === selectedCollection) ?? null
+
   const visibleTracks = useMemo(() => {
-    let base = selectedFolder ? tracksUnder(tracks, selectedFolder) : tracks
+    let base: Track[]
+    if (activeCollection) {
+      const byId = new Map(tracks.map((t) => [t.id, t]))
+      base = activeCollection.trackIds.map((id) => byId.get(id)).filter((t): t is Track => !!t)
+    } else {
+      base = selectedFolder ? tracksUnder(tracks, selectedFolder) : tracks
+    }
     if (showStarredOnly) base = base.filter((t) => t.starred)
     if (activeCategory) base = base.filter((t) => t.category === activeCategory)
     if (search.trim()) {
@@ -125,9 +166,9 @@ export default function App(): JSX.Element {
       )
     }
     return base
-  }, [tracks, selectedFolder, showStarredOnly, activeCategory, search])
+  }, [tracks, selectedFolder, activeCollection, showStarredOnly, activeCategory, search])
 
-  const isFiltering = Boolean(search.trim() || showStarredOnly || activeCategory)
+  const isFiltering = Boolean(search.trim() || showStarredOnly || activeCategory || activeCollection)
   // 폴더를 선택하면(=selectedFolder 있음) 하위 폴더가 있어도 사운드를 재귀로 보여줌 (Soundly 방식).
   // 폴더 카드 그리드는 최상위 진입 화면(아무 폴더도 선택 안 함)에서만 표시.
   const showGrid = view === 'grid' && !isFiltering && !selectedFolder && rootFolders.length > 0
@@ -198,7 +239,27 @@ export default function App(): JSX.Element {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        {scanning && <span className="topbar__scanning">스캔 중…</span>}
+        {scanning && (
+          <div className="scanbar">
+            <div className="scanbar__spinner" />
+            <div className="scanbar__text">
+              <span className="scanbar__count">
+                {scanProgress ? `${scanProgress.scanned.toLocaleString()} / ${scanProgress.total.toLocaleString()}` : '스캔 준비 중…'}
+              </span>
+              <span className="scanbar__file">{scanProgress?.currentFile ?? ''}</span>
+            </div>
+            <div className="scanbar__track">
+              <div
+                className="scanbar__fill"
+                style={{
+                  width: scanProgress && scanProgress.total > 0
+                    ? `${(scanProgress.scanned / scanProgress.total) * 100}%`
+                    : '0%'
+                }}
+              />
+            </div>
+          </div>
+        )}
         <div className="topbar__actions">
           <AccentPicker accent={accent} onChange={setAccent} />
           <button
@@ -223,17 +284,30 @@ export default function App(): JSX.Element {
           selectedFolder={selectedFolder}
           onSelectFolder={(p) => {
             setSelectedFolder(p)
+            setSelectedCollection(null)
             setShowStarredOnly(false)
             setActiveCategory(null)
           }}
+          collections={collections}
+          selectedCollection={selectedCollection}
+          onSelectCollection={(id) => {
+            setSelectedCollection(id)
+            setSelectedFolder(null)
+            setShowStarredOnly(false)
+            setActiveCategory(null)
+          }}
+          onCreateCollection={handleCreateCollection}
+          onDeleteCollection={handleDeleteCollection}
           showStarredOnly={showStarredOnly}
           onToggleStarredView={() => {
             setShowStarredOnly((v) => !v)
+            setSelectedCollection(null)
             setActiveCategory(null)
           }}
           activeCategory={activeCategory}
           onSelectCategory={(c) => {
             setActiveCategory(c)
+            setSelectedCollection(null)
             setShowStarredOnly(false)
           }}
         />
@@ -241,11 +315,22 @@ export default function App(): JSX.Element {
         <div className="content-wrap">
           <div className="breadcrumb">
             <span
-              className={`breadcrumb__link${!selectedFolder ? ' breadcrumb__link--current' : ''}`}
-              onClick={() => setSelectedFolder(null)}
+              className={`breadcrumb__link${!selectedFolder && !activeCollection ? ' breadcrumb__link--current' : ''}`}
+              onClick={() => {
+                setSelectedFolder(null)
+                setSelectedCollection(null)
+              }}
             >
               Home
             </span>
+            {activeCollection && (
+              <span className="breadcrumb__seg">
+                <span className="breadcrumb__sep">/</span>
+                <span className="breadcrumb__link breadcrumb__link--current">
+                  ★ {activeCollection.name}
+                </span>
+              </span>
+            )}
             {crumbs.map((c, i) => (
               <span key={i} className="breadcrumb__seg">
                 <span className="breadcrumb__sep">/</span>
@@ -268,8 +353,19 @@ export default function App(): JSX.Element {
             <ResultList
               tracks={visibleTracks}
               libraries={libraries}
+              collections={collections}
               selectedTrackId={selectedTrack?.id ?? null}
               onSelectTrack={handleSelectTrack}
+              onToggleStar={handleToggleStar}
+              onAddToCollection={handleAddToCollection}
+              onCreateCollectionWith={async (trackId) => {
+                const name = window.prompt('새 컬렉션 이름')
+                if (!name?.trim() || !window.api) return
+                const cols = await window.api.createCollection(name.trim())
+                setCollections(cols)
+                const created = cols[cols.length - 1]
+                if (created) await handleAddToCollection(created.id, trackId)
+              }}
             />
           )}
         </div>

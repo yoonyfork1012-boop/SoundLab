@@ -231,6 +231,61 @@ button {
   color: var(--accent-bright);
   font-size: 12px;
 }
+
+/* 스캔 진행 표시 */
+.scanbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  max-width: 520px;
+}
+.scanbar__spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.scanbar__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.scanbar__count {
+  font-size: 11px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.scanbar__file {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scanbar__track {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-elevated-2);
+  border-radius: 3px;
+  overflow: hidden;
+  min-width: 60px;
+}
+.scanbar__fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s var(--ease);
+}
 .topbar__viewtoggle {
   margin-left: auto;
   display: flex;
@@ -555,9 +610,18 @@ button {
 .list-header,
 .list-row {
   display: grid;
-  align-items: center;
-  gap: 14px;
-  padding: 0 16px;
+  align-items: stretch;
+}
+/* Soundly식 컬럼 구분선 (셀 오른쪽 세로선) */
+.list-header__cell,
+.list-row__cell {
+  border-right: 1px solid var(--border);
+  padding: 0 11px;
+  height: 100%;
+}
+.list-header__cell:last-child,
+.list-row__cell:last-child {
+  border-right: none;
 }
 .list-header {
   height: 30px;
@@ -650,6 +714,7 @@ button {
   align-items: center;
   gap: 9px;
   min-width: 0;
+  height: 100%;
 }
 .list-row__icon {
   flex-shrink: 0;
@@ -669,6 +734,7 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11.5px;
+  line-height: var(--row-h);
 }
 .list-row__cell--sub {
   color: var(--text-faint);
@@ -1171,6 +1237,14 @@ button {
   height: 1px;
   background: var(--border);
   margin: 6px 8px;
+}
+.colmenu__section {
+  padding: 4px 11px 3px;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 /* scrollbars */

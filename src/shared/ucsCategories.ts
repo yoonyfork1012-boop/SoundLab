@@ -15,10 +15,16 @@ export const UCS_CATEGORIES: UcsCategory[] = [
   { category: 'OTHER', color: '#8a8f98' }
 ]
 
+// 알려지지 않은(UCS 등) 카테고리는 이름 해시로 일관된 파스텔 색 생성
+function hashColor(s: string): string {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+  const hue = h % 360
+  return `hsl(${hue}, 52%, 62%)`
+}
+
 export function colorForCategory(category: string | null | undefined): string {
   if (!category) return '#8a8f98'
-  const found = UCS_CATEGORIES.find(
-    (c) => c.category.toLowerCase() === category.toLowerCase()
-  )
-  return found?.color ?? '#8a8f98'
+  const found = UCS_CATEGORIES.find((c) => c.category.toLowerCase() === category.toLowerCase())
+  return found?.color ?? hashColor(category.toUpperCase())
 }

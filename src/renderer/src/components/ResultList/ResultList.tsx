@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { FixedSizeList, ListChildComponentProps, areEqual } from 'react-window'
 import AutoSizer from 'react-virtualized-auto-sizer'
-import type { Library, Track } from '@shared/types'
+import type { Collection, Library, Track } from '@shared/types'
 import { colorForCategory } from '@shared/ucsCategories'
 import { ALL_COLUMNS, DEFAULT_VISIBLE, type ColumnDef } from './columns'
 import ColumnMenu from './ColumnMenu'
@@ -9,8 +9,12 @@ import ColumnMenu from './ColumnMenu'
 interface ResultListProps {
   tracks: Track[]
   libraries: Library[]
+  collections: Collection[]
   selectedTrackId: number | null
   onSelectTrack: (track: Track) => void
+  onToggleStar: (track: Track) => void
+  onAddToCollection: (collectionId: number, trackId: number) => void
+  onCreateCollectionWith: (trackId: number) => void
 }
 
 const ROW_HEIGHT = 30
@@ -91,8 +95,12 @@ Row.displayName = 'Row'
 export default function ResultList({
   tracks,
   libraries,
+  collections,
   selectedTrackId,
-  onSelectTrack
+  onSelectTrack,
+  onToggleStar,
+  onAddToCollection,
+  onCreateCollectionWith
 }: ResultListProps): JSX.Element {
   const listRef = useRef<FixedSizeList>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -105,6 +113,14 @@ export default function ResultList({
   const [visibleCols, setVisibleCols] = useState<Set<string>>(new Set(DEFAULT_VISIBLE))
   const [colWidths, setColWidths] = useState<Record<string, number>>({})
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [rowMenu, setRowMenu] = useState<{ x: number; y: number; track: Track } | null>(null)
+
+  useEffect(() => {
+    if (!rowMenu) return
+    const close = (): void => setRowMenu(null)
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [rowMenu])
 
   const columns = useMemo(
     () => ALL_COLUMNS.filter((c) => visibleCols.has(c.key)),
@@ -232,6 +248,13 @@ export default function ResultList({
             mouseYRef.current = null
             updateHoverBox()
           }}
+          onContextMenu={(e) => {
+            const idx = indexAtY(e.clientY)
+            if (idx < 0) return
+            e.preventDefault()
+            onSelectTrack(tracksRef.current[idx])
+            setRowMenu({ x: e.clientX, y: e.clientY, track: tracksRef.current[idx] })
+          }}
         >
           <div
             ref={hoverBoxRef}
@@ -271,6 +294,52 @@ export default function ResultList({
           onAutoResize={() => {}}
           onClose={() => setMenu(null)}
         />
+      )}
+
+      {rowMenu && (
+        <div
+          className="colmenu"
+          style={{ left: Math.min(rowMenu.x, window.innerWidth - 230), top: Math.min(rowMenu.y, window.innerHeight - 300) }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            className="colmenu__item"
+            onClick={() => {
+              onToggleStar(rowMenu.track)
+              setRowMenu(null)
+            }}
+          >
+            <span className="colmenu__check">{rowMenu.track.starred ? '★' : '☆'}</span>
+            <span>{rowMenu.track.starred ? '즐겨찾기 해제' : '즐겨찾기'}</span>
+          </button>
+          <div className="colmenu__sep" />
+          <div className="colmenu__section">컬렉션에 추가</div>
+          <div className="colmenu__scroll">
+            {collections.map((col) => (
+              <button
+                key={col.id}
+                className="colmenu__item"
+                onClick={() => {
+                  onAddToCollection(col.id, rowMenu.track.id)
+                  setRowMenu(null)
+                }}
+              >
+                <span className="colmenu__check" />
+                <span>{col.name}</span>
+              </button>
+            ))}
+          </div>
+          <button
+            className="colmenu__item"
+            onClick={() => {
+              onCreateCollectionWith(rowMenu.track.id)
+              setRowMenu(null)
+            }}
+          >
+            <span className="colmenu__check">＋</span>
+            <span>새 컬렉션…</span>
+          </button>
+        </div>
       )}
     </div>
   )
