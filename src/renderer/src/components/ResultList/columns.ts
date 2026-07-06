@@ -7,9 +7,11 @@ export interface ColumnCtx {
 export interface ColumnDef {
   key: string
   label: string
-  width: string // grid-template-columns 트랙 값 (예: '1fr', '80px')
+  defaultWidth: number // 고정 px 폭 — 컬럼은 항상 독립적으로 리사이즈됨 (fr 사용 안 함)
   align?: 'right'
+  icon?: boolean // 헤더에 텍스트 대신 아이콘을 그릴지 여부 (ResultList가 아이콘 매핑)
   value: (t: Track, ctx: ColumnCtx) => string
+  sortValue?: (t: Track, ctx: ColumnCtx) => string | number
 }
 
 function norm(p: string): string {
@@ -49,34 +51,86 @@ function fmtDate(ms: number | null): string {
 
 // Soundly 컬럼 순서/이름 그대로. 데이터가 없는 필드는 빈 값으로 표시.
 export const ALL_COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: 'minmax(240px, 2fr)', value: (t) => t.filename },
-  { key: 'duration', label: 'Duration', width: '78px', align: 'right', value: (t) => fmtDuration(t.durationMs) },
-  { key: 'format', label: 'Format', width: '84px', value: (t) => fmtFormat(t) },
-  { key: 'channels', label: 'Channels', width: '78px', align: 'right', value: (t) => (t.channels ? String(t.channels) : '') },
-  { key: 'library', label: 'Library', width: 'minmax(200px, 2fr)', value: (t, c) => libraryPath(t, c) },
-  { key: 'description', label: 'Description', width: 'minmax(160px, 1fr)', value: (t) => t.description ?? '' },
-  { key: 'originator', label: 'Originator', width: '120px', value: () => '' },
-  { key: 'tape', label: 'Tape', width: '100px', value: () => '' },
-  { key: 'scene', label: 'Scene', width: '90px', value: () => '' },
-  { key: 'take', label: 'Take', width: '80px', value: () => '' },
-  { key: 'note', label: 'Note', width: '120px', value: () => '' },
-  { key: 'project', label: 'Project', width: '120px', value: () => '' },
-  { key: 'category', label: 'Category', width: 'minmax(120px, 1fr)', value: (t) => t.category ?? '' },
-  { key: 'reference', label: 'Reference', width: '100px', value: () => '' },
-  { key: 'originationDate', label: 'Origination Date', width: '120px', value: () => '' },
-  { key: 'dateAdded', label: 'Date Added', width: '110px', value: (t) => fmtDate(t.addedAt) },
-  { key: 'fileFormat', label: 'File Format', width: '90px', value: (t) => ext(t) },
-  { key: 'filePath', label: 'File Path', width: 'minmax(200px, 2fr)', value: (t) => t.filePath },
-  { key: 'smartDescription', label: 'Smart Description', width: 'minmax(160px, 1fr)', value: () => '' },
-  { key: 'ucsCategory', label: 'UCS Category', width: '120px', value: (t) => t.category ?? '' },
-  { key: 'ucsSubcategory', label: 'UCS Subcategory', width: '120px', value: (t) => t.subcategory ?? '' },
-  { key: 'ucsFxname', label: 'UCS Fxname', width: '120px', value: () => '' },
-  { key: 'ucsCreatorid', label: 'UCS Creatorid', width: '110px', value: () => '' },
-  { key: 'ucsSourceid', label: 'UCS Sourceid', width: '110px', value: () => '' },
-  { key: 'ucsUsercategory', label: 'UCS Usercategory', width: '130px', value: () => '' },
-  { key: 'ucsVendorcategory', label: 'UCS Vendorcategory', width: '140px', value: () => '' },
-  { key: 'ucsUserdata', label: 'UCS Userdata', width: '120px', value: () => '' }
+  { key: 'name', label: 'Name', defaultWidth: 260, value: (t) => t.filename, sortValue: (t) => t.filename.toLowerCase() },
+  {
+    key: 'duration',
+    label: 'Duration',
+    defaultWidth: 78,
+    align: 'right',
+    icon: true,
+    value: (t) => fmtDuration(t.durationMs),
+    sortValue: (t) => t.durationMs ?? -1
+  },
+  {
+    key: 'format',
+    label: 'Format',
+    defaultWidth: 84,
+    icon: true,
+    value: (t) => fmtFormat(t),
+    sortValue: (t) => fmtFormat(t)
+  },
+  {
+    key: 'channels',
+    label: 'Channels',
+    defaultWidth: 78,
+    align: 'right',
+    icon: true,
+    value: (t) => (t.channels ? String(t.channels) : ''),
+    sortValue: (t) => t.channels ?? -1
+  },
+  { key: 'library', label: 'Library', defaultWidth: 220, value: (t, c) => libraryPath(t, c), sortValue: (t, c) => libraryPath(t, c).toLowerCase() },
+  { key: 'description', label: 'Description', defaultWidth: 200, value: (t) => t.description ?? '' },
+  { key: 'originator', label: 'Originator', defaultWidth: 120, value: () => '' },
+  { key: 'tape', label: 'Tape', defaultWidth: 100, value: () => '' },
+  { key: 'scene', label: 'Scene', defaultWidth: 90, value: () => '' },
+  { key: 'take', label: 'Take', defaultWidth: 80, value: () => '' },
+  { key: 'note', label: 'Note', defaultWidth: 120, value: () => '' },
+  { key: 'project', label: 'Project', defaultWidth: 120, value: () => '' },
+  { key: 'category', label: 'Category', defaultWidth: 130, value: (t) => t.category ?? '', sortValue: (t) => (t.category ?? '').toLowerCase() },
+  { key: 'subcategory', label: 'Sub Category', defaultWidth: 130, value: (t) => t.subcategory ?? '', sortValue: (t) => (t.subcategory ?? '').toLowerCase() },
+  { key: 'reference', label: 'Reference', defaultWidth: 100, value: () => '' },
+  { key: 'originationDate', label: 'Origination Date', defaultWidth: 140, value: () => '' },
+  { key: 'dateAdded', label: 'Date Added', defaultWidth: 110, value: (t) => fmtDate(t.addedAt), sortValue: (t) => t.addedAt ?? 0 },
+  { key: 'fileFormat', label: 'File Format', defaultWidth: 90, value: (t) => ext(t), sortValue: (t) => ext(t) },
+  { key: 'filePath', label: 'File Path', defaultWidth: 240, value: (t) => t.filePath, sortValue: (t) => t.filePath.toLowerCase() },
+  { key: 'smartDescription', label: 'Smart Description', defaultWidth: 200, value: () => '' },
+  { key: 'ucsCategory', label: 'UCS Category', defaultWidth: 120, value: (t) => t.category ?? '' },
+  { key: 'ucsSubcategory', label: 'UCS Subcategory', defaultWidth: 120, value: (t) => t.subcategory ?? '' },
+  { key: 'ucsFxname', label: 'UCS Fxname', defaultWidth: 120, value: () => '' },
+  { key: 'ucsCreatorid', label: 'UCS Creatorid', defaultWidth: 110, value: () => '' },
+  { key: 'ucsSourceid', label: 'UCS Sourceid', defaultWidth: 110, value: () => '' },
+  { key: 'ucsUsercategory', label: 'UCS Usercategory', defaultWidth: 130, value: () => '' },
+  { key: 'ucsVendorcategory', label: 'UCS Vendorcategory', defaultWidth: 140, value: () => '' },
+  { key: 'ucsUserdata', label: 'UCS Userdata', defaultWidth: 120, value: () => '' }
 ]
 
 // 사진의 체크된 기본 컬럼
-export const DEFAULT_VISIBLE = ['name', 'duration', 'format', 'channels', 'library', 'category']
+export const DEFAULT_VISIBLE = [
+  'name',
+  'duration',
+  'format',
+  'channels',
+  'library',
+  'category',
+  'subcategory'
+]
+
+export function sortTracks(
+  tracks: Track[],
+  sortKey: string | null,
+  sortDir: 'asc' | 'desc',
+  ctx: ColumnCtx
+): Track[] {
+  if (!sortKey) return tracks
+  const col = ALL_COLUMNS.find((c) => c.key === sortKey)
+  if (!col) return tracks
+  const getValue = col.sortValue ?? col.value
+  const dir = sortDir === 'asc' ? 1 : -1
+  return [...tracks].sort((a, b) => {
+    const va = getValue(a, ctx)
+    const vb = getValue(b, ctx)
+    if (va < vb) return -1 * dir
+    if (va > vb) return 1 * dir
+    return 0
+  })
+}

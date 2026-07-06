@@ -2,12 +2,15 @@ import { useState } from 'react'
 import type { Collection, Library, Track } from '@shared/types'
 import { colorForCategory } from '@shared/ucsCategories'
 import type { FolderNode } from '../../lib/folderTree'
+import { loadJSON, saveJSON } from '../../lib/uiState'
 import FolderTree from './FolderTree'
 
 export interface LibraryTree {
   library: Library
   node: FolderNode
 }
+
+const EXPANDED_KEY = 'soundlib.tree.expanded'
 
 interface SidebarProps {
   trees: LibraryTree[]
@@ -25,6 +28,8 @@ interface SidebarProps {
   onToggleStarredView: () => void
   activeCategory: string | null
   onSelectCategory: (c: string | null) => void
+  onCollectionContextMenu?: (e: React.MouseEvent, collection: Collection) => void
+  onLibraryContextMenu?: (e: React.MouseEvent, library: Library) => void
 }
 
 function Chevron({ open }: { open: boolean }): JSX.Element {
@@ -50,9 +55,20 @@ export default function Sidebar({
   showStarredOnly,
   onToggleStarredView,
   activeCategory,
-  onSelectCategory
+  onSelectCategory,
+  onCollectionContextMenu,
+  onLibraryContextMenu
 }: SidebarProps): JSX.Element {
-  const [localOpen, setLocalOpen] = useState(true)
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(() =>
+    loadJSON(EXPANDED_KEY, {})
+  )
+  function toggleExpand(path: string, next: boolean): void {
+    setExpandedMap((prev) => {
+      const updated = { ...prev, [path]: next }
+      saveJSON(EXPANDED_KEY, updated)
+      return updated
+    })
+  }
   const starredCount = tracks.filter((t) => t.starred).length
   const categoryCounts = tracks.reduce<Record<string, number>>((acc, t) => {
     const key = t.category ?? 'OTHER'
@@ -71,33 +87,37 @@ export default function Sidebar({
         </span>
       </div>
 
-      <div className="ftree__row" style={{ paddingLeft: 10 }} onClick={() => setLocalOpen((v) => !v)}>
+      <div className="ftree__row ftree__row--static" style={{ paddingLeft: 10 }}>
         <span className="ftree__toggle">
-          <Chevron open={localOpen} />
+          <Chevron open />
         </span>
         <span className="ftree__name">Local</span>
       </div>
 
-      {localOpen &&
-        (trees.length > 0 ? (
-          trees.map(({ library, node }) => (
-            <div key={library.id} className="ftree__lib">
-              <FolderTree
-                node={node}
-                depth={1}
-                selectedPath={selectedFolder}
-                onSelectFolder={(p) => onSelectFolder(p)}
-                defaultExpanded={trees.length === 1}
-                onRemove={() => onRemoveLibrary(library.id)}
-              />
-            </div>
-          ))
-        ) : (
-          <div className="ftree__row" style={{ paddingLeft: 24 }} onClick={onOpenFolder}>
-            <span className="ftree__toggle" />
-            <span className="ftree__name" style={{ color: 'var(--accent)' }}>＋ 폴더 추가</span>
+      {trees.length > 0 ? (
+        trees.map(({ library, node }) => (
+          <div key={library.id} className="ftree__lib">
+            <FolderTree
+              node={node}
+              depth={1}
+              selectedPath={selectedFolder}
+              onSelectFolder={(p) => onSelectFolder(p)}
+              expandedMap={expandedMap}
+              onToggleExpand={toggleExpand}
+              onRemove={() => onRemoveLibrary(library.id)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                onLibraryContextMenu?.(e, library)
+              }}
+            />
           </div>
-        ))}
+        ))
+      ) : (
+        <div className="ftree__row" style={{ paddingLeft: 24 }} onClick={onOpenFolder}>
+          <span className="ftree__toggle" />
+          <span className="ftree__name" style={{ color: 'var(--accent)' }}>＋ 폴더 추가</span>
+        </div>
+      )}
 
       {/* COLLECTIONS */}
       <div className="sidebar__section">
@@ -119,6 +139,11 @@ export default function Sidebar({
           key={col.id}
           className={`sidebar__coll${selectedCollection === col.id ? ' sidebar__coll--active' : ''}`}
           onClick={() => onSelectCollection(col.id)}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            onSelectCollection(col.id)
+            onCollectionContextMenu?.(e, col)
+          }}
         >
           <span className="sidebar__coll-icon">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

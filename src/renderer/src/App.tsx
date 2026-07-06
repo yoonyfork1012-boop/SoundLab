@@ -6,20 +6,30 @@ import FolderGrid from './components/FolderGrid/FolderGrid'
 import PlayerBar from './components/PlayerBar/PlayerBar'
 import MetadataPanel from './components/MetadataPanel/MetadataPanel'
 import AccentPicker from './components/AccentPicker/AccentPicker'
+import NamePromptModal from './components/NamePromptModal/NamePromptModal'
 import type { Collection, Library, Track } from '@shared/types'
 import { isBrowserPreview, mockCollections, mockLibrary, mockTracks } from './mockData'
 import { buildFolderTree, tracksUnder, type FolderNode } from './lib/folderTree'
 import { applyAccent, loadAccent, saveAccent } from './lib/theme'
+import { loadJSON, loadNumber, saveJSON, saveNumber } from './lib/uiState'
+import { sortTracks } from './components/ResultList/columns'
 
 function norm(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '')
 }
+
+const SIDEBAR_MIN = 180
+const SIDEBAR_MAX = 440
+const META_MIN = 220
+const META_MAX = 480
 
 export default function App(): JSX.Element {
   const [libraries, setLibraries] = useState<Library[]>([])
   const [tracks, setTracks] = useState<Track[]>([])
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null)
   const [search, setSearch] = useState('')
+  const [subSearch, setSubSearch] = useState('')
+  const [shuffleMode, setShuffleMode] = useState(() => loadJSON('soundlib.shuffle', false))
   const [scanning, setScanning] = useState(false)
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null)
   const [collections, setCollections] = useState<Collection[]>([])
@@ -27,8 +37,23 @@ export default function App(): JSX.Element {
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [showStarredOnly, setShowStarredOnly] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
+  const [namePrompt, setNamePrompt] = useState<{ title: string; onSubmit: (name: string) => void } | null>(null)
   const [view, setView] = useState<'grid' | 'list'>('grid')
   const [accent, setAccentState] = useState<string>(loadAccent())
+  const [sidebarWidth, setSidebarWidth] = useState(() => loadNumber('soundlib.sidebarWidth', 246))
+  const [metaWidth, setMetaWidth] = useState(() => loadNumber('soundlib.metaWidth', 272))
+  const [sort, setSort] = useState<{ key: string | null; dir: 'asc' | 'desc' }>(() =>
+    loadJSON('soundlib.sort', { key: null, dir: 'asc' })
+  )
+
+  function handleSort(key: string): void {
+    setSort((prev) => {
+      const next: { key: string | null; dir: 'asc' | 'desc' } =
+        prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }
+      saveJSON('soundlib.sort', next)
+      return next
+    })
+  }
   const [scanProgress, setScanProgress] = useState<{
     scanned: number
     total: number
@@ -49,6 +74,34 @@ export default function App(): JSX.Element {
     saveAccent(hex)
   }
 
+  // 사이드바/메타패널 드래그 리사이즈 (최소·최대 폭 제한, 종료 시 폭 저장)
+  function startPanelResize(e: React.MouseEvent, which: 'sidebar' | 'meta'): void {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = which === 'sidebar' ? sidebarWidth : metaWidth
+    const min = which === 'sidebar' ? SIDEBAR_MIN : META_MIN
+    const max = which === 'sidebar' ? SIDEBAR_MAX : META_MAX
+    let latest = startWidth
+
+    function onMove(ev: MouseEvent): void {
+      const delta = which === 'sidebar' ? ev.clientX - startX : startX - ev.clientX
+      latest = Math.max(min, Math.min(max, startWidth + delta))
+      if (which === 'sidebar') setSidebarWidth(latest)
+      else setMetaWidth(latest)
+    }
+    function onUp(): void {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      saveNumber(which === 'sidebar' ? 'soundlib.sidebarWidth' : 'soundlib.metaWidth', latest)
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
   // 시작 시 저장돼 있던 전체 라이브러리/트랙 로드 (누적 유지)
   useEffect(() => {
     if (isBrowserPreview) {
@@ -64,10 +117,14 @@ export default function App(): JSX.Element {
     window.api?.getCollections().then(setCollections)
   }, [])
 
-  async function handleCreateCollection(): Promise<void> {
-    const name = window.prompt('새 컬렉션 이름')
-    if (!name?.trim() || !window.api) return
-    setCollections(await window.api.createCollection(name.trim()))
+  function handleCreateCollection(): void {
+    setNamePrompt({
+      title: '새 컬렉션 이름',
+      onSubmit: async (name) => {
+        if (window.api) setCollections(await window.api.createCollection(name))
+        setNamePrompt(null)
+      }
+    })
   }
 
   async function handleDeleteCollection(id: number): Promise<void> {
@@ -165,8 +222,20 @@ export default function App(): JSX.Element {
           t.tags.some((tag) => tag.toLowerCase().includes(q))
       )
     }
+    if (subSearch.trim()) {
+      const q = subSearch.toLowerCase()
+      base = base.filter(
+        (t) =>
+          t.filename.toLowerCase().includes(q) ||
+          (t.category ?? '').toLowerCase().includes(q) ||
+          (t.subcategory ?? '').toLowerCase().includes(q) ||
+          (t.description ?? '').toLowerCase().includes(q) ||
+          t.tags.some((tag) => tag.toLowerCase().includes(q))
+      )
+    }
+    base = sortTracks(base, sort.key, sort.dir, { libraries })
     return base
-  }, [tracks, selectedFolder, activeCollection, showStarredOnly, activeCategory, search])
+  }, [tracks, selectedFolder, activeCollection, showStarredOnly, activeCategory, search, subSearch, sort, libraries])
 
   const isFiltering = Boolean(search.trim() || showStarredOnly || activeCategory || activeCollection)
   // 폴더를 선택하면(=selectedFolder 있음) 하위 폴더가 있어도 사운드를 재귀로 보여줌 (Soundly 방식).
@@ -175,10 +244,25 @@ export default function App(): JSX.Element {
 
   function selectRelative(delta: number): void {
     if (visibleTracks.length === 0) return
+    if (shuffleMode && visibleTracks.length > 1) {
+      const idx = visibleTracks.findIndex((t) => t.id === selectedTrack?.id)
+      let next = idx
+      while (next === idx) next = Math.floor(Math.random() * visibleTracks.length)
+      void handleSelectTrack(visibleTracks[next])
+      return
+    }
     const idx = visibleTracks.findIndex((t) => t.id === selectedTrack?.id)
     let next = idx === -1 ? 0 : idx + delta
     next = Math.max(0, Math.min(visibleTracks.length - 1, next))
     void handleSelectTrack(visibleTracks[next])
+  }
+
+  function toggleShuffle(): void {
+    setShuffleMode((v: boolean) => {
+      const next = !v
+      saveJSON('soundlib.shuffle', next)
+      return next
+    })
   }
 
   useEffect(() => {
@@ -263,6 +347,31 @@ export default function App(): JSX.Element {
         <div className="topbar__actions">
           <AccentPicker accent={accent} onChange={setAccent} />
           <button
+            className={`icon-btn${shuffleMode ? ' icon-btn--active' : ''}`}
+            title={shuffleMode ? '랜덤 재생 켜짐' : '랜덤 재생 꺼짐'}
+            onClick={toggleShuffle}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M16 3h5v5" />
+              <path d="M4 20L21 3" />
+              <path d="M21 16v5h-5" />
+              <path d="M15 15l6 6" />
+              <path d="M4 4l5 5" />
+            </svg>
+          </button>
+          <div className="topbar__subsearch-wrap" title="검색 결과 내에서 다시 필터링">
+            <svg className="topbar__subsearch-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
+            </svg>
+            <input
+              className="topbar__subsearch"
+              placeholder="Filter…"
+              value={subSearch}
+              onChange={(e) => setSubSearch(e.target.value)}
+            />
+          </div>
+          <button
             className={`icon-btn${showMeta ? ' icon-btn--active' : ''}`}
             title="메타데이터 패널"
             onClick={() => setShowMeta((v) => !v)}
@@ -275,7 +384,26 @@ export default function App(): JSX.Element {
         </div>
       </div>
 
-      <div className={`main${showMeta ? '' : ' main--no-meta'}`}>
+      <div
+        className="main"
+        style={{
+          gridTemplateColumns: showMeta
+            ? `${sidebarWidth}px 1fr ${metaWidth}px`
+            : `${sidebarWidth}px 1fr`
+        }}
+      >
+        <div
+          className="resizer resizer--left"
+          style={{ left: sidebarWidth }}
+          onMouseDown={(e) => startPanelResize(e, 'sidebar')}
+        />
+        {showMeta && (
+          <div
+            className="resizer resizer--right"
+            style={{ right: metaWidth }}
+            onMouseDown={(e) => startPanelResize(e, 'meta')}
+          />
+        )}
         <Sidebar
           trees={trees}
           tracks={tracks}
@@ -358,13 +486,22 @@ export default function App(): JSX.Element {
               onSelectTrack={handleSelectTrack}
               onToggleStar={handleToggleStar}
               onAddToCollection={handleAddToCollection}
-              onCreateCollectionWith={async (trackId) => {
-                const name = window.prompt('새 컬렉션 이름')
-                if (!name?.trim() || !window.api) return
-                const cols = await window.api.createCollection(name.trim())
-                setCollections(cols)
-                const created = cols[cols.length - 1]
-                if (created) await handleAddToCollection(created.id, trackId)
+              sortKey={sort.key}
+              sortDir={sort.dir}
+              onSort={handleSort}
+              onCreateCollectionWith={(trackId) => {
+                setNamePrompt({
+                  title: '새 컬렉션 이름',
+                  onSubmit: async (name) => {
+                    if (window.api) {
+                      const cols = await window.api.createCollection(name)
+                      setCollections(cols)
+                      const created = cols[cols.length - 1]
+                      if (created) await handleAddToCollection(created.id, trackId)
+                    }
+                    setNamePrompt(null)
+                  }
+                })
               }}
             />
           )}
@@ -379,6 +516,14 @@ export default function App(): JSX.Element {
         onPrev={() => selectRelative(-1)}
         onNext={() => selectRelative(1)}
       />
+
+      {namePrompt && (
+        <NamePromptModal
+          title={namePrompt.title}
+          onSubmit={namePrompt.onSubmit}
+          onCancel={() => setNamePrompt(null)}
+        />
+      )}
     </div>
   )
 }

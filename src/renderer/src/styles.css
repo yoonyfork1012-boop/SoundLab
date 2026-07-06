@@ -31,8 +31,6 @@
   --menubar-h: 34px;
   --topbar-h: 50px;
   --player-h: 140px;
-  --sidebar-w: 246px;
-  --meta-w: 272px;
   --row-h: 32px;
 
   --radius: 9px;
@@ -227,6 +225,38 @@ button {
 .topbar__search::placeholder {
   color: var(--text-faint);
 }
+.topbar__subsearch-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 9px;
+  height: 28px;
+  width: 130px;
+  transition: border-color 0.14s var(--ease), box-shadow 0.14s var(--ease);
+}
+.topbar__subsearch-wrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.topbar__subsearch-icon {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+.topbar__subsearch {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 11.5px;
+  outline: none;
+}
+.topbar__subsearch::placeholder {
+  color: var(--text-faint);
+}
 .topbar__scanning {
   color: var(--accent-bright);
   font-size: 12px;
@@ -340,11 +370,28 @@ button {
 /* ───────── Main grid ───────── */
 .main {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr var(--meta-w);
   min-height: 0;
+  position: relative;
 }
-.main--no-meta {
-  grid-template-columns: var(--sidebar-w) 1fr;
+
+/* 좌/우 패널 드래그 리사이즈 핸들 (절대 위치, 경계선 위에 겹쳐 배치) */
+.resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 60;
+}
+.resizer--left {
+  margin-left: -3.5px;
+}
+.resizer--right {
+  margin-right: -3.5px;
+}
+.resizer:hover,
+.resizer:active {
+  background: var(--accent-dim);
 }
 
 /* ───────── Sidebar ───────── */
@@ -393,6 +440,14 @@ button {
 .ftree__row:hover {
   background: var(--surface-hover);
   color: var(--text);
+}
+/* Local 헤더처럼 접히지 않는 정적 행 */
+.ftree__row--static {
+  cursor: default;
+}
+.ftree__row--static:hover {
+  background: transparent;
+  color: var(--text-dim);
 }
 .ftree__row--active {
   background: var(--surface-active);
@@ -607,6 +662,21 @@ button {
   overflow: hidden;
   position: relative;
 }
+/* 헤더 + 리스트를 하나의 가로 스크롤 영역으로 묶어 폭이 항상 완전히 일치하게 함 */
+.list-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.list-scroll__inner {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .list-header,
 .list-row {
   display: grid;
@@ -643,6 +713,18 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  user-select: none;
+}
+.list-header__label:hover {
+  color: var(--text);
+}
+.list-header__sort {
+  font-size: 8px;
+  color: var(--accent-bright);
 }
 .list-header__resize {
   position: absolute;
@@ -1211,6 +1293,13 @@ button {
   color: var(--text-ghost);
   cursor: default;
 }
+.colmenu__item--danger {
+  color: var(--close);
+}
+.colmenu__item--danger:hover {
+  background: var(--close);
+  color: #fff;
+}
 .colmenu__item--disabled:hover {
   background: transparent;
   color: var(--text-ghost);
@@ -1261,4 +1350,71 @@ button {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.18);
   background-clip: content-box;
+}
+
+/* name prompt modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal {
+  width: 320px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  padding: 16px;
+}
+.modal__title {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+.modal__input {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  padding: 8px 10px;
+  outline: none;
+}
+.modal__input:focus {
+  border-color: var(--accent);
+}
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.modal__btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s var(--ease);
+}
+.modal__btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.modal__btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08090b;
+  font-weight: 600;
+}
+.modal__btn--primary:hover {
+  background: var(--accent-bright);
+  color: #08090b;
 }

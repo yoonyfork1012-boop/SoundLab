@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import type { FolderNode } from '../../lib/folderTree'
 
 interface FolderTreeProps {
@@ -6,8 +5,10 @@ interface FolderTreeProps {
   depth: number
   selectedPath: string | null
   onSelectFolder: (path: string) => void
-  defaultExpanded?: boolean
+  expandedMap: Record<string, boolean>
+  onToggleExpand: (path: string, next: boolean) => void
   onRemove?: () => void // 라이브러리 루트에만 전달 (폴더 제거)
+  onContextMenu?: (e: React.MouseEvent, node: FolderNode) => void
 }
 
 function Chevron({ open }: { open: boolean }): JSX.Element {
@@ -28,10 +29,13 @@ export default function FolderTree({
   depth,
   selectedPath,
   onSelectFolder,
-  defaultExpanded = false,
-  onRemove
+  expandedMap,
+  onToggleExpand,
+  onRemove,
+  onContextMenu
 }: FolderTreeProps): JSX.Element {
-  const [expanded, setExpanded] = useState(defaultExpanded || depth === 0)
+  // 라이브러리 루트(depth<=1)는 기본 펼침, 하위 폴더는 기본 접힘 — 저장된 값이 있으면 그걸 우선
+  const expanded = expandedMap[node.path] ?? depth <= 1
   const hasChildren = node.children.length > 0
   const isSelected = selectedPath === node.path
 
@@ -41,12 +45,13 @@ export default function FolderTree({
         className={`ftree__row${isSelected ? ' ftree__row--active' : ''}`}
         style={{ paddingLeft: 10 + depth * 14 }}
         onClick={() => onSelectFolder(node.path)}
+        onContextMenu={depth === 1 ? (e) => onContextMenu?.(e, node) : undefined}
       >
         <span
           className="ftree__toggle"
           onClick={(e) => {
             e.stopPropagation()
-            if (hasChildren) setExpanded((v) => !v)
+            if (hasChildren) onToggleExpand(node.path, !expanded)
           }}
         >
           {hasChildren ? <Chevron open={expanded} /> : <span style={{ width: 9, display: 'inline-block' }} />}
@@ -77,6 +82,9 @@ export default function FolderTree({
             depth={depth + 1}
             selectedPath={selectedPath}
             onSelectFolder={onSelectFolder}
+            expandedMap={expandedMap}
+            onToggleExpand={onToggleExpand}
+            onContextMenu={onContextMenu}
           />
         ))}
     </div>
