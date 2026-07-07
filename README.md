@@ -1,4 +1,4 @@
-# SoundLib
+# SoundLab
 
 [Soundly](https://www.getsoundly.com/)를 벤치마킹한 1인용 로컬 사운드 라이브러리 데스크탑 앱입니다.
 클라우드/계정/구독 없이 완전히 오프라인으로 동작하며, 폴더를 스캔해 SQLite로 인덱싱하고
