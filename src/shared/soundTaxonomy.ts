@@ -72,17 +72,35 @@ export const TAXONOMY: CategoryRule[] = [
   },
   {
     category: 'Slot',
-    keywords: ['reel', 'spin', 'slot', 'scatter', 'jackpot', 'payline', 'wild'],
+    // 슬롯 전용 어휘만 카테고리 키워드로 둔다(일반 SFX 파일명엔 거의 없어 오분류 위험이 낮음).
+    // 'spin'·'wild'처럼 다른 라이브러리에도 나올 수 있는 일반어는 소분류 키워드로만 둔다.
+    keywords: [
+      'reel',
+      'respin',
+      'nospin',
+      'slot',
+      'scatter',
+      'payout',
+      'payline',
+      'freespin',
+      'multipot',
+      'bigwin',
+      'megaways',
+      'jackpot'
+    ],
     subcategories: [
-      { name: 'Reel Spin', keywords: ['spin', 'spinning', 'roll', 'rolling'] },
+      { name: 'Reel Spin', keywords: ['spin', 'spinning', 'respin', 'roll', 'rolling'] },
       { name: 'Reel Stop', keywords: ['stop', 'stopping', 'halt', 'land', 'landing'] },
       { name: 'Scatter', keywords: ['scatter'] },
-      { name: 'Bonus', keywords: ['bonus', 'feature', 'freespin', 'free spin'] }
+      { name: 'Bonus', keywords: ['bonus', 'feature', 'freespin', 'free spin', 'pick', 'wheel', 'respin'] },
+      { name: 'Payout', keywords: ['payout', 'payline', 'pay', 'win', 'bigwin', 'collect', 'payline'] },
+      { name: 'Jackpot', keywords: ['jackpot', 'multipot', 'grand', 'major', 'minor', 'mini', 'mega', 'ultra', 'super'] },
+      { name: 'Wild', keywords: ['wild', 'multiplier', 'multiply', 'link', 'lock'] }
     ]
   },
   {
     category: 'Voice',
-    keywords: ['voice', 'vo', 'vocal', 'character', 'speech', 'shout', 'yell', 'scream', 'talk', 'laugh'],
+    keywords: ['voice', 'voc', 'vox', 'vocal', 'character', 'speech', 'shout', 'yell', 'scream', 'talk', 'laugh', 'announcer'],
     subcategories: [
       { name: 'Male Voice', keywords: ['male', 'man', 'guy'] },
       { name: 'Female Voice', keywords: ['female', 'woman', 'girl'] },
@@ -184,10 +202,11 @@ export interface ClassifyResult {
 }
 
 export function classifySound(input: ClassifyInput): ClassifyResult {
-  const text = [input.filename, input.folderPath ?? '', ...(input.tags ?? []), input.description ?? '']
-    .join(' ')
-    .toLowerCase()
-  const tokens = new Set(tokenize(text))
+  // 원본 대소문자를 유지한 채 토큰화해야 CamelCase("MetalPipeImpact"→metal/pipe/impact)가
+  // 올바로 분리된다. 구문(공백 포함) 키워드 매칭에는 소문자화한 text를 사용.
+  const rawText = [input.filename, input.folderPath ?? '', ...(input.tags ?? []), input.description ?? ''].join(' ')
+  const text = rawText.toLowerCase()
+  const tokens = new Set(tokenize(rawText))
 
   let best: { category: string; subcategory: string; score: number } | null = null
 
@@ -214,6 +233,9 @@ export function classifySound(input: ClassifyInput): ClassifyResult {
     }
   }
 
-  if (!best) return { category: UNCATEGORIZED, subcategory: '' }
+  // 최소 점수 임계값: 대분류 키워드 1개(=2점) 또는 소분류 키워드 2개 이상(=2점)이 모여야 분류.
+  // 이렇게 하면 'wild'·'spin' 같은 일반어 하나만으로는(=1점) 카테고리가 성립하지 않아
+  // 다른 라이브러리(동물/차량 등)의 오분류를 크게 줄인다.
+  if (!best || best.score < 2) return { category: UNCATEGORIZED, subcategory: '' }
   return { category: best.category, subcategory: best.subcategory }
 }
