@@ -3,8 +3,53 @@ import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin, { type Region } from 'wavesurfer.js/plugins/regions'
 import type { Track } from '@shared/types'
 import { encodeWavFloat32, sliceAudioBuffer } from '../../lib/wavEncoder'
+import { audioCacheKey, type AudioAccess } from '../../lib/audioCacheKey'
 
 const MIN_REGION_SEC = 0.05
+const PLAYBACK_OPTIONS_KEY = 'soundlib.playbackOptions'
+const WAVE_COLOR = 'rgba(245, 247, 250, 0.82)'
+const PLAYHEAD_COLOR = '#ffffff'
+const WAVE_CACHE_DB = 'soundlib-wave-cache'
+const WAVE_CACHE_STORE = 'peaks'
+const PRELOAD_RADIUS = 3
+// 세션 중 미리듣기한 트랙이 아주 많아져도(수천 개 라이브러리) 피크 메모리 캐시가
+// 무한정 커지지 않도록 LRU로 상한을 둔다. 디스크(IndexedDB) 캐시는 상한 없이 유지된다.
+const MAX_MEMORY_PEAKS = 300
+
+type StartMode = 'resume' | 'start'
+type QueueMode = 'single' | 'continuous'
+
+interface PlaybackOptions {
+  startMode: StartMode
+  selectionLoop: boolean
+  autoPlayOnSelect: boolean
+  queueMode: QueueMode
+}
+
+const DEFAULT_PLAYBACK_OPTIONS: PlaybackOptions = {
+  startMode: 'resume',
+  selectionLoop: false,
+  autoPlayOnSelect: true,
+  queueMode: 'single'
+}
+
+function loadPlaybackOptions(): PlaybackOptions {
+  try {
+    const raw = localStorage.getItem(PLAYBACK_OPTIONS_KEY)
+    if (!raw) return DEFAULT_PLAYBACK_OPTIONS
+    return { ...DEFAULT_PLAYBACK_OPTIONS, ...JSON.parse(raw) }
+  } catch {
+    return DEFAULT_PLAYBACK_OPTIONS
+  }
+}
+
+function savePlaybackOptions(options: PlaybackOptions): void {
+  try {
+    localStorage.setItem(PLAYBACK_OPTIONS_KEY, JSON.stringify(options))
+  } catch {
+    /* noop */
+  }
+}
 
 // 플레이어 패널 전체 높이에서 컨트롤바/여백을 뺀 웨이브폼 가용 높이를 계산해,
 // 스테레오(2채널 스택)/단일 채널 각각의 렌더 높이를 구한다. 패널을 키우면 웨이브폼도 커짐.
@@ -22,6 +67,17 @@ interface PlayerBarProps {
   panelHeight: number
   onPrev: () => void
   onNext: () => void
+  queueTracks?: Track[]
+}
+
+export interface MeterTap {
+  analyserL: AnalyserNode
+  analyserR: AnalyserNode
+  isMono: boolean
+  // AnalyserNode는 미디어가 멈춰도(pause/stop) 새 샘플이 안 들어올 뿐 마지막으로 받은
+  // 값을 계속 돌려준다 — 그래서 재생 중인지 여부를 별도로 알려줘야 분석 패널이 "정지 후에도
+  // 미터가 멈춘 값으로 얼어붙는" 문제 없이 무음으로 취급할 수 있다.
+  isPlaying: boolean
 }
 
 // App의 키보드 단축키(Space/Enter/Esc)가 플레이어를 제어할 수 있도록 노출하는 명령형 핸들
@@ -29,27 +85,9 @@ export interface PlayerHandle {
   playPause: () => void
   play: () => void
   stopAndClear: () => void
-}
-
-function mimeTypeFor(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase()
-  switch (ext) {
-    case 'mp3':
-      return 'audio/mpeg'
-    case 'wav':
-      return 'audio/wav'
-    case 'm4a':
-      return 'audio/mp4'
-    case 'ogg':
-      return 'audio/ogg'
-    case 'flac':
-      return 'audio/flac'
-    case 'aiff':
-    case 'aif':
-      return 'audio/aiff'
-    default:
-      return 'application/octet-stream'
-  }
+  // 오른쪽 분석 패널(AnalysisPanel)이 실시간 레벨을 읽어가는 AnalyserNode 탭.
+  // 아직 재생 그래프가 생성되지 않았으면(트랙을 한 번도 재생하지 않음) null.
+  getMeterTap: () => MeterTap | null
 }
 
 function fmt(sec: number): string {
@@ -102,14 +140,92 @@ interface Peaks {
   numCh: number
 }
 
+interface WaveCacheRecord extends Peaks {
+  key: string
+}
+
 interface Route {
   ctx: AudioContext
   g0: GainNode
   g1: GainNode
   merger: ChannelMergerNode
+  // 실시간 분석 패널(Peak/Stereo Width)이 읽어가는 탭 — 오디오 그래프의 부산물로만
+  // 존재하며 destination에는 연결하지 않는다(신호 경로/음량에는 영향 없음)
+  analyserL: AnalyserNode
+  analyserR: AnalyserNode
 }
 
-type WaveView = 'both' | 'left' | 'right' | 'mono'
+type WaveView = 'both' | 'left' | 'right' | 'mono' | 'silent'
+
+
+let waveCacheDbPromise: Promise<IDBDatabase> | null = null
+const memoryPeakCache = new Map<string, Peaks>()
+const preloadUrlCache = new Map<string, string>()
+
+function openWaveCacheDb(): Promise<IDBDatabase> {
+  if (waveCacheDbPromise) return waveCacheDbPromise
+  waveCacheDbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(WAVE_CACHE_DB, 1)
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(WAVE_CACHE_STORE)) req.result.createObjectStore(WAVE_CACHE_STORE, { keyPath: 'key' })
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+  return waveCacheDbPromise
+}
+
+// Map은 삽입 순서를 보존하므로, 읽거나 쓸 때마다 delete 후 재삽입해 항상 "가장 최근 사용"이
+// 끝에 오도록 유지한다. 상한을 넘으면 맨 앞(가장 오래 전에 쓰인) 항목부터 제거한다.
+function touchMemoryPeaks(key: string, peaks: Peaks): void {
+  memoryPeakCache.delete(key)
+  memoryPeakCache.set(key, peaks)
+  while (memoryPeakCache.size > MAX_MEMORY_PEAKS) {
+    const oldest = memoryPeakCache.keys().next().value
+    if (oldest === undefined) break
+    memoryPeakCache.delete(oldest)
+  }
+}
+
+async function getCachedPeaks(key: string): Promise<Peaks | null> {
+  const mem = memoryPeakCache.get(key)
+  if (mem) {
+    touchMemoryPeaks(key, mem)
+    return mem
+  }
+  try {
+    const db = await openWaveCacheDb()
+    return await new Promise((resolve) => {
+      const tx = db.transaction(WAVE_CACHE_STORE, 'readonly')
+      const req = tx.objectStore(WAVE_CACHE_STORE).get(key)
+      req.onsuccess = () => {
+        const row = req.result as WaveCacheRecord | undefined
+        if (!row) return resolve(null)
+        const peaks: Peaks = { l: row.l, r: row.r, mono: row.mono, duration: row.duration, numCh: row.numCh }
+        touchMemoryPeaks(key, peaks)
+        resolve(peaks)
+      }
+      req.onerror = () => resolve(null)
+    })
+  } catch {
+    return null
+  }
+}
+
+async function putCachedPeaks(key: string, peaks: Peaks): Promise<void> {
+  touchMemoryPeaks(key, peaks)
+  try {
+    const db = await openWaveCacheDb()
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(WAVE_CACHE_STORE, 'readwrite')
+      tx.objectStore(WAVE_CACHE_STORE).put({ key, ...peaks })
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => resolve()
+    })
+  } catch {
+    /* noop */
+  }
+}
 
 // 통일된 트랜스포트 아이콘
 const IconLoop = (): JSX.Element => (
@@ -150,9 +266,10 @@ const IconStop = (): JSX.Element => (
 )
 
 const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
-  { track, accent, panelHeight, onPrev, onNext },
+  { track, accent, panelHeight, onPrev, onNext, queueTracks = [] },
   ref
 ) {
+  const waveBandRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   // 현재 패널 높이에 따른 웨이브폼 높이 (setOptions에 항상 이 값을 사용)
   const panelHeightRef = useRef(panelHeight)
@@ -171,6 +288,10 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   const rawBufferTrackIdRef = useRef<number | null>(null)
   const [regionBounds, setRegionBounds] = useState<{ start: number; end: number } | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  // wavesurfer.isPlaying()를 매 애니메이션 프레임 직접 호출하면 stop() 후 재생을 다시
+  // 시작했을 때 잠깐(혹은 계속) 실제 상태와 어긋나는 경우가 있어, 'play'/'pause'/'finish'
+  // 이벤트로만 갱신되는 이 ref를 분석 패널의 실제 재생 여부 판단 기준으로 쓴다.
+  const isPlayingRef = useRef(false)
   const [loop, setLoop] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -178,18 +299,87 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   const [ch1, setCh1] = useState(true)
   const [ch2, setCh2] = useState(true)
   const [mode, setMode] = useState<'stereo' | 'mono'>('stereo')
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  const [playbackOptions, setPlaybackOptions] = useState<PlaybackOptions>(() => loadPlaybackOptions())
   const loopRef = useRef(loop)
   loopRef.current = loop
+  const playbackOptionsRef = useRef(playbackOptions)
+  playbackOptionsRef.current = playbackOptions
+  const regionBoundsRef = useRef(regionBounds)
+  regionBoundsRef.current = regionBounds
   const trackRef = useRef(track)
   trackRef.current = track
+
+  function updatePlaybackOptions(patch: Partial<PlaybackOptions>): void {
+    setPlaybackOptions((prev) => {
+      const next = { ...prev, ...patch }
+      savePlaybackOptions(next)
+      return next
+    })
+  }
+
+  function positionKey(t: Track | null = trackRef.current): string | null {
+    return t ? `soundlib.playbackPosition.${t.id}` : null
+  }
+
+  function savePlaybackPosition(time?: number): void {
+    const key = positionKey()
+    const ws = wavesurferRef.current
+    if (!key || !ws) return
+    const value = Number.isFinite(time) ? time! : ws.getCurrentTime()
+    try {
+      localStorage.setItem(key, String(Math.max(0, value)))
+    } catch {
+      /* noop */
+    }
+  }
+
+  function loadPlaybackPosition(t: Track | null = trackRef.current): number {
+    const key = positionKey(t)
+    if (!key) return 0
+    const value = Number(localStorage.getItem(key) ?? 0)
+    return Number.isFinite(value) ? Math.max(0, value) : 0
+  }
+
+  async function startPlayback(forceStart = false): Promise<void> {
+    const ws = wavesurferRef.current
+    if (!ws || !trackRef.current) return
+    const bounds = regionBoundsRef.current
+    if (playbackOptionsRef.current.selectionLoop && bounds && bounds.end - bounds.start >= MIN_REGION_SEC) {
+      ws.setTime(bounds.start)
+    } else if (forceStart || playbackOptionsRef.current.startMode === 'start') {
+      ws.setTime(0)
+    } else if (!ws.isPlaying()) {
+      const saved = loadPlaybackPosition()
+      const dur = ws.getDuration()
+      if (saved > 0 && (!dur || saved < Math.max(0, dur - 0.05))) ws.setTime(saved)
+    }
+    await ws.play()
+  }
+
+  function stopPlayback(): void {
+    const ws = wavesurferRef.current
+    if (!ws) return
+    savePlaybackPosition(ws.getCurrentTime())
+    ws.stop()
+    // ws.stop()이 내부적으로 'pause' 이벤트를 안정적으로 쏘지 않는 경우가 있어(재생을 다시
+    // 시작해도 분석 패널이 계속 무음으로 판단하던 버그의 원인), 여기서도 명시적으로 갱신한다
+    isPlayingRef.current = false
+  }
+
+  function clearRegionSelection(): void {
+    regionsPluginRef.current?.clearRegions()
+    activeRegionRef.current = null
+    setRegionBounds(null)
+  }
 
   useEffect(() => {
     if (!containerRef.current) return
     const ws = WaveSurfer.create({
       container: containerRef.current,
-      waveColor: '#3a4048',
-      progressColor: accent,
-      cursorColor: '#eceef2',
+      waveColor: WAVE_COLOR,
+      progressColor: WAVE_COLOR,
+      cursorColor: PLAYHEAD_COLOR,
       cursorWidth: 1,
       height: waveH.both,
       barWidth: 2,
@@ -198,19 +388,46 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       normalize: true,
       splitChannels: [{ height: waveH.both }, { height: waveH.both }]
     })
-    ws.on('play', () => setIsPlaying(true))
-    ws.on('pause', () => setIsPlaying(false))
-    ws.on('timeupdate', (t: number) => setCurrent(t))
+    ws.on('play', () => {
+      setIsPlaying(true)
+      isPlayingRef.current = true
+    })
+    ws.on('pause', () => {
+      setIsPlaying(false)
+      isPlayingRef.current = false
+      savePlaybackPosition(ws.getCurrentTime())
+    })
+    ws.on('timeupdate', (t: number) => {
+      setCurrent(t)
+      const bounds = regionBoundsRef.current
+      if (playbackOptionsRef.current.selectionLoop && bounds && bounds.end - bounds.start >= MIN_REGION_SEC && t >= bounds.end) {
+        ws.setTime(bounds.start)
+        if (ws.isPlaying()) void ws.play()
+      }
+    })
     ws.on('ready', () => setDuration(ws.getDuration()))
     ws.on('finish', () => {
-      if (loopRef.current) ws.play()
-      else setIsPlaying(false)
+      savePlaybackPosition(ws.getDuration())
+      const bounds = regionBoundsRef.current
+      if (playbackOptionsRef.current.selectionLoop && bounds && bounds.end - bounds.start >= MIN_REGION_SEC) {
+        ws.setTime(bounds.start)
+        void ws.play()
+        return
+      }
+      if (loopRef.current) {
+        ws.setTime(0)
+        void ws.play()
+        return
+      }
+      setIsPlaying(false)
+      isPlayingRef.current = false
+      if (playbackOptionsRef.current.queueMode === 'continuous') onNext()
     })
 
     // Waveform 구간 선택(드래그로 생성/리사이즈) — 선택 구간만 DAW로 드래그 내보내기 위한 기반
     const regions = ws.registerPlugin(RegionsPlugin.create())
     regionsPluginRef.current = regions
-    regions.enableDragSelection({ color: 'rgba(163, 227, 193, 0.28)' })
+    regions.enableDragSelection({ color: 'rgba(255, 255, 255, 0.22)' })
     regions.on('region-created', (region) => {
       // 한 번에 하나의 구간만 유지 (새로 그리면 이전 선택은 제거)
       for (const r of regions.getRegions()) {
@@ -250,7 +467,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   }, [])
 
   useEffect(() => {
-    wavesurferRef.current?.setOptions({ progressColor: accent })
+    wavesurferRef.current?.setOptions({ waveColor: WAVE_COLOR, progressColor: WAVE_COLOR, cursorColor: PLAYHEAD_COLOR })
   }, [accent])
 
   useEffect(() => {
@@ -269,22 +486,30 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
 
   // App 키보드 단축키가 호출하는 명령형 제어 (재생/일시정지, 재생, 정지+구간해제)
   useImperativeHandle(ref, () => ({
-    playPause: () => wavesurferRef.current?.playPause(),
+    playPause: togglePlayback,
     play: () => {
-      void wavesurferRef.current?.play()
+      void startPlayback()
     },
     stopAndClear: () => {
-      wavesurferRef.current?.stop()
-      regionsPluginRef.current?.clearRegions()
-      activeRegionRef.current = null
-      setRegionBounds(null)
+      stopPlayback()
+      clearRegionSelection()
+    },
+    getMeterTap: () => {
+      const r = routeRef.current
+      if (!r) return null
+      return {
+        analyserL: r.analyserL,
+        analyserR: r.analyserR,
+        isMono: (trackRef.current?.channels ?? 2) < 2,
+        isPlaying: isPlayingRef.current
+      }
     }
   }))
 
   // 현재 채널/모드 → 웨이브폼 뷰
-  function viewFor(c1: boolean, c2: boolean, m: 'stereo' | 'mono', numCh: number): WaveView {
-    if (numCh < 2) return 'mono'
-    if (m === 'mono') return 'mono'
+  function viewFor(c1: boolean, c2: boolean, numCh: number): WaveView {
+    if (!c1 && !c2) return 'silent'
+    if (numCh < 2) return c1 ? 'mono' : 'silent'
     if (c1 && !c2) return 'left'
     if (c2 && !c1) return 'right'
     return 'both'
@@ -294,6 +519,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     if (v === 'both') return [pk.l, pk.r]
     if (v === 'left') return [pk.l]
     if (v === 'right') return [pk.r]
+    if (v === 'silent') return [new Float32Array(pk.l.length)]
     return [pk.mono]
   }
 
@@ -317,7 +543,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     const url = urlRef.current
     if (!ws || !url) return
     const numCh = peaksRef.current?.numCh ?? (trackRef.current?.channels ?? 2)
-    const v = viewFor(nCh1, nCh2, nMode, numCh)
+    const v = viewFor(nCh1, nCh2, numCh)
     const wasPlaying = ws.isPlaying()
     const time = ws.getCurrentTime()
     const h = waveHeightsFor(panelHeightRef.current)
@@ -340,6 +566,9 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   }
 
   // ── Web Audio 채널 라우팅 (실제 solo / Mono·Stereo 오디오) ──
+  // 채널 게인(g0/g1) 뒤에 분석용 탭(AnalyserNode)을 붙여 오른쪽 분석 패널이 실시간
+  // Peak/Stereo Width를 읽어갈 수 있게 한다. 이 탭들은 destination에 연결하지 않으므로
+  // 실제 재생 신호 경로/음량에는 전혀 영향을 주지 않는다.
   function ensureRoute(): Route | null {
     if (routeRef.current) return routeRef.current
     const media = wavesurferRef.current?.getMediaElement()
@@ -355,52 +584,58 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       splitter.connect(g0, 0)
       splitter.connect(g1, 1)
       merger.connect(ctx.destination)
-      routeRef.current = { ctx, g0, g1, merger }
+
+      const analyserL = ctx.createAnalyser()
+      analyserL.fftSize = 2048
+      const analyserR = ctx.createAnalyser()
+      analyserR.fftSize = 2048
+      g0.connect(analyserL)
+      g1.connect(analyserR)
+
+      routeRef.current = { ctx, g0, g1, merger, analyserL, analyserR }
       return routeRef.current
     } catch {
       return null
     }
   }
 
-  function applyRoute(nCh1: boolean, nCh2: boolean, nMode: 'stereo' | 'mono'): void {
+  function applyRoute(nCh1: boolean, nCh2: boolean): void {
     const r = ensureRoute()
     if (!r) return
     void r.ctx.resume()
-    r.g0.disconnect()
-    r.g1.disconnect()
+    // g0/g1은 merger(재생 출력) 외에도 분석 탭(analyserL/R, monoSum→LUFS)에 항상 연결돼
+    // 있어야 하므로, 여기서는 merger로 가는 연결만 끊는다(disconnect()를 인자 없이 부르면
+    // 분석 탭 연결까지 전부 끊겨 채널을 한 번이라도 토글하면 미터가 죽는 버그가 생김).
+    try {
+      r.g0.disconnect(r.merger)
+    } catch {
+      /* 원래 연결돼 있지 않았으면 예외 — 무시 */
+    }
+    try {
+      r.g1.disconnect(r.merger)
+    } catch {
+      /* noop */
+    }
 
-    // 모노 파일: 채널 스플리터의 채널1은 무음이므로 채널0을 양쪽 출력으로 보내야
-    // 왼쪽만 들리는 문제가 없음
     const isMonoFile = (trackRef.current?.channels ?? 2) < 2
     if (isMonoFile) {
-      r.g0.gain.value = 1
+      r.g0.gain.value = nCh1 ? 1 : 0
       r.g1.gain.value = 0
-      r.g0.connect(r.merger, 0, 0)
-      r.g0.connect(r.merger, 0, 1)
+      if (nCh1) {
+        r.g0.connect(r.merger, 0, 0)
+        r.g0.connect(r.merger, 0, 1)
+      }
       return
     }
 
     r.g0.gain.value = nCh1 ? 1 : 0
     r.g1.gain.value = nCh2 ? 1 : 0
-    const solo = nMode === 'mono' || (nCh1 && !nCh2) || (nCh2 && !nCh1)
-    if (solo) {
-      // 활성 채널을 양쪽 출력으로 (모노/솔로)
-      if (nCh1) {
-        r.g0.connect(r.merger, 0, 0)
-        r.g0.connect(r.merger, 0, 1)
-      }
-      if (nCh2) {
-        r.g1.connect(r.merger, 0, 0)
-        r.g1.connect(r.merger, 0, 1)
-      }
-    } else {
-      r.g0.connect(r.merger, 0, 0)
-      r.g1.connect(r.merger, 0, 1)
-    }
+    if (nCh1) r.g0.connect(r.merger, 0, 0)
+    if (nCh2) r.g1.connect(r.merger, 0, 1)
   }
 
   function applyChannels(nCh1: boolean, nCh2: boolean, nMode: 'stereo' | 'mono'): void {
-    applyRoute(nCh1, nCh2, nMode) // 오디오
+    applyRoute(nCh1, nCh2) // 오디오
     void renderView(nCh1, nCh2, nMode) // 웨이브폼
   }
 
@@ -483,19 +718,13 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     setCurrent(0)
     setDuration(0)
 
-    // 트랙이 바뀌면 이전 트랙의 구간 선택/캐시된 원본 버퍼는 더 이상 유효하지 않음
-    regionsPluginRef.current?.clearRegions()
-    activeRegionRef.current = null
-    setRegionBounds(null)
+    clearRegionSelection()
     rawBufferRef.current = null
     rawBufferTrackIdRef.current = null
 
     if (!track || !window.api) {
       peaksRef.current = null
-      if (urlRef.current) {
-        URL.revokeObjectURL(urlRef.current)
-        urlRef.current = null
-      }
+      if (urlRef.current) urlRef.current = null
       try {
         ws.empty()
       } catch {
@@ -505,45 +734,69 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     }
 
     peaksRef.current = null
-    let objectUrl: string | null = null
     let cancelled = false
 
     ;(async () => {
       try {
-        const bytes = await window.api!.readAudioFile(track.filePath)
+        const access = await window.api!.getAudioAccess(track.filePath)
         if (cancelled || token !== loadTokenRef.current) return
 
-        const arr = new Uint8Array(bytes)
-        objectUrl = URL.createObjectURL(new Blob([arr], { type: mimeTypeFor(track.filename) }))
-        if (cancelled || token !== loadTokenRef.current) {
-          URL.revokeObjectURL(objectUrl)
-          return
-        }
-        urlRef.current = objectUrl
-
-        const v = viewFor(ch1, ch2, mode, track.channels ?? 2)
-        const h = waveHeightsFor(panelHeightRef.current)
-        if (v === 'both') {
-          ws.setOptions({ height: h.both, splitChannels: [{ height: h.both }, { height: h.both }] })
-          await ws.load(objectUrl)
-        } else {
-          const pk = await decodePeaks(arr)
-          if (cancelled || token !== loadTokenRef.current) return
-          peaksRef.current = pk
-          if (pk) {
-            ws.setOptions({ height: h.single, splitChannels: [{ height: h.single }] })
-            await ws.load(objectUrl, peaksFor(pk, v), pk.duration)
-          } else {
-            await ws.load(objectUrl)
-          }
-        }
-
+        urlRef.current = access.url
+        preloadUrlCache.set(track.filePath, access.url)
+        const key = audioCacheKey(track.filePath, access)
+        const cached = await getCachedPeaks(key)
         if (cancelled || token !== loadTokenRef.current) return
+        if (cached) peaksRef.current = cached
+
+        const durationSec = cached?.duration ?? (track.durationMs ? track.durationMs / 1000 : 1)
+        const initialPeaks = cached ? peaksFor(cached, viewFor(ch1, ch2, cached.numCh)) : [new Float32Array(1200)]
+        ws.setOptions({
+          height: cached && viewFor(ch1, ch2, cached.numCh) === 'both' ? waveHeightsFor(panelHeightRef.current).both : waveHeightsFor(panelHeightRef.current).single,
+          splitChannels: cached && viewFor(ch1, ch2, cached.numCh) === 'both' ? [{ height: waveHeightsFor(panelHeightRef.current).both }, { height: waveHeightsFor(panelHeightRef.current).both }] : [{ height: waveHeightsFor(panelHeightRef.current).single }]
+        })
+        await ws.load(access.url, initialPeaks, durationSec)
+        if (cancelled || token !== loadTokenRef.current) return
+
         ws.setVolume(volume)
-        // 라우팅이 이미 생성돼 있으면 새 파일(모노/스테레오)에 맞춰 재적용
-        // (모노 파일이 이전 스테레오 라우팅 때문에 왼쪽만 들리는 문제 방지)
-        if (routeRef.current) applyRoute(ch1, ch2, mode)
-        await ws.play()
+        // 분석 패널이 첫 재생부터 실시간 레벨을 읽을 수 있도록, 채널 토글을 누르기 전에도
+        // Web Audio 라우트(+분석 탭)를 미리 만들어 둔다
+        ensureRoute()
+        applyRoute(ch1, ch2)
+        const saved = loadPlaybackPosition(track)
+        if (playbackOptionsRef.current.startMode === 'resume' && saved > 0 && saved < Math.max(0, ws.getDuration() - 0.05)) ws.setTime(saved)
+        else ws.setTime(0)
+
+        if (playbackOptionsRef.current.autoPlayOnSelect) {
+          await startPlayback()
+        }
+
+        if (!cached) {
+          void (async () => {
+            try {
+              const bytes = await window.api!.readAudioFile(track.filePath)
+              if (cancelled || token !== loadTokenRef.current) return
+              const pk = await decodePeaks(new Uint8Array(bytes))
+              if (!pk) return
+              await putCachedPeaks(key, pk)
+              peaksRef.current = pk
+              // 재생 중이어도(자동재생 켜짐+최초 디코딩) 실제 웨이브폼으로 반드시 교체한다.
+              // 재생 위치/재생 상태를 캡처했다가 로드 후 복원해 재생이 끊기지 않게 한다.
+              if (token === loadTokenRef.current && urlRef.current === access.url && wavesurferRef.current) {
+                const ws2 = wavesurferRef.current
+                const wasPlaying = ws2.isPlaying()
+                const time = ws2.getCurrentTime()
+                const v = viewFor(ch1, ch2, pk.numCh)
+                const h = waveHeightsFor(panelHeightRef.current)
+                ws2.setOptions({ height: v === 'both' ? h.both : h.single, splitChannels: v === 'both' ? [{ height: h.both }, { height: h.both }] : [{ height: h.single }] })
+                await ws2.load(access.url, peaksFor(pk, v), pk.duration)
+                if (time > 0) ws2.setTime(time)
+                if (wasPlaying) await ws2.play()
+              }
+            } catch (err) {
+              console.warn('waveform cache failed:', (err as Error)?.message)
+            }
+          })()
+        }
       } catch (err) {
         if (!cancelled && token === loadTokenRef.current) {
           const msg = (err as Error)?.message ?? ''
@@ -554,28 +807,73 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
 
     return () => {
       cancelled = true
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-      if (urlRef.current === objectUrl) urlRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [track?.id])
 
-  const sr = track?.sampleRate ? `${(track.sampleRate / 1000).toFixed(0)}k` : '—'
-  const bit = track?.bitDepth ? `${track.bitDepth}` : '—'
+  useEffect(() => {
+    if (!track || !window.api || queueTracks.length === 0) return
+    const idx = queueTracks.findIndex((t) => t.id === track.id)
+    if (idx < 0) return
+    let cancelled = false
+    const nearby = queueTracks.slice(Math.max(0, idx - PRELOAD_RADIUS), idx + PRELOAD_RADIUS + 1).filter((t) => t.id !== track.id)
+    for (const item of nearby) {
+      if (preloadUrlCache.has(item.filePath)) continue
+      void window.api.getAudioAccess(item.filePath).then((access) => {
+        if (cancelled) return
+        preloadUrlCache.set(item.filePath, access.url)
+        const audio = new Audio(access.url)
+        audio.preload = 'auto'
+        audio.load()
+      }).catch(() => {})
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [track?.id, queueTracks])
+
+  const sr = track?.sampleRate ? `${(track.sampleRate / 1000).toFixed(0)}k` : '--'
+  const bit = track?.bitDepth ? `${track.bitDepth}` : '--'
   const stereoTrack = (track?.channels ?? 2) >= 2
+
+  function togglePlayback(): void {
+    const ws = wavesurferRef.current
+    if (!ws) return
+    if (ws.isPlaying()) {
+      savePlaybackPosition(ws.getCurrentTime())
+      ws.pause()
+    } else {
+      void startPlayback()
+    }
+  }
+
+  // Click outside playback options menu to close it
+  useEffect(() => {
+    if (!optionsOpen) return
+    function handleClickOutside(e: MouseEvent): void {
+      const target = e.target as HTMLElement | null
+      if (!target) return
+      if (!target.closest('.player__options')) {
+        setOptionsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [optionsOpen])
 
   return (
     <div className="player">
-      <div className="player__wave-band">
-        <div className="player__waveform" ref={containerRef} />
-        {!track && <div className="player__wave-empty">재생할 사운드를 선택하세요</div>}
+      <div className="player__wave-band" ref={waveBandRef}>
+        <div className={`player__waveform${track && !ch1 && !ch2 ? ' is-muted' : ''}`} ref={containerRef} />
+        {!track && <div className="player__wave-empty">Select a sound to preview</div>}
+        {track && !ch1 && !ch2 && <div className="player__wave-empty">Muted</div>}
         {regionBounds && duration > 0 && regionBounds.end - regionBounds.start >= MIN_REGION_SEC && (
           <div
             className="player__region-drag"
             style={{ left: `${((regionBounds.start + regionBounds.end) / 2 / duration) * 100}%` }}
             draggable
             onDragStart={handleRegionDragStart}
-            title="선택 구간을 DAW로 드래그"
+            title="Drag selected range"
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M8 6h13M8 12h13M8 18h13" />
@@ -583,7 +881,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
               <circle cx="3" cy="12" r="1.5" fill="currentColor" stroke="none" />
               <circle cx="3" cy="18" r="1.5" fill="currentColor" stroke="none" />
             </svg>
-            구간 드래그
+            Drag range
           </div>
         )}
       </div>
@@ -613,19 +911,60 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
             className="player__tbtn player__tbtn--play"
             title="재생 / 일시정지 (Space)"
             disabled={!track}
-            onClick={() => wavesurferRef.current?.playPause()}
+            onClick={togglePlayback}
           >
             {isPlaying ? <IconPause /> : <IconPlay />}
           </button>
           <button className="player__tbtn" title="다음 (↓)" onClick={onNext}>
             <IconNext />
           </button>
-          <button className="player__tbtn" title="정지" onClick={() => wavesurferRef.current?.stop()}>
+          <button className="player__tbtn" title="정지" onClick={stopPlayback}>
             <IconStop />
           </button>
         </div>
 
         <div className="player__right">
+          <div className="player__options">
+            <button
+              className={`player__opt-btn${optionsOpen ? ' player__opt-btn--open' : ''}`}
+              title="Playback options"
+              onClick={() => setOptionsOpen((v) => !v)}
+            >
+              Options
+            </button>
+            {optionsOpen && (
+              <div className="player__opt-menu" onMouseDown={(e) => e.stopPropagation()}>
+                <div className="player__opt-section">Start</div>
+                <label className="player__opt-item">
+                  <input type="radio" name="startMode" checked={playbackOptions.startMode === 'resume'} onChange={() => updatePlaybackOptions({ startMode: 'resume' })} />
+                  Resume last position
+                </label>
+                <label className="player__opt-item">
+                  <input type="radio" name="startMode" checked={playbackOptions.startMode === 'start'} onChange={() => updatePlaybackOptions({ startMode: 'start' })} />
+                  Always start at 0:00
+                </label>
+                <div className="player__opt-section">Playback</div>
+                <label className="player__opt-item">
+                  <input type="checkbox" checked={playbackOptions.selectionLoop} onChange={(e) => updatePlaybackOptions({ selectionLoop: e.target.checked })} />
+                  Loop selected range
+                </label>
+                <label className="player__opt-item">
+                  <input type="checkbox" checked={playbackOptions.autoPlayOnSelect} onChange={(e) => updatePlaybackOptions({ autoPlayOnSelect: e.target.checked })} />
+                  Auto play on select
+                </label>
+                <div className="player__opt-section">Queue</div>
+                <label className="player__opt-item">
+                  <input type="radio" name="queueMode" checked={playbackOptions.queueMode === 'single'} onChange={() => updatePlaybackOptions({ queueMode: 'single' })} />
+                  Single
+                </label>
+                <label className="player__opt-item">
+                  <input type="radio" name="queueMode" checked={playbackOptions.queueMode === 'continuous'} onChange={() => updatePlaybackOptions({ queueMode: 'continuous' })} />
+                  Continuous
+                </label>
+              </div>
+            )}
+          </div>
+
           <div className="player__vol">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4 9v6h4l5 4V5L8 9H4z" />
@@ -657,7 +996,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
             <button
               className={`player__chip${ch1 ? ' player__chip--on' : ''}`}
               onClick={toggleCh1}
-              disabled={mode === 'mono'}
+              disabled={!track}
               title="채널 1 (왼쪽)"
             >
               Channel 1
@@ -665,7 +1004,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
             <button
               className={`player__chip${ch2 && stereoTrack ? ' player__chip--on' : ''}`}
               onClick={toggleCh2}
-              disabled={!stereoTrack || mode === 'mono'}
+              disabled={!stereoTrack}
               title={stereoTrack ? '채널 2 (오른쪽)' : '모노 파일 (채널 2 없음)'}
             >
               Channel 2

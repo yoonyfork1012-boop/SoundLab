@@ -1,28 +1,67 @@
 import { useEffect, useState } from 'react'
-import type { Track } from '@shared/types'
+import type { Library, PublisherRule, Track } from '@shared/types'
 import { colorForCategory } from '@shared/ucsCategories'
+import { toTitleCase } from '@shared/textCase'
+import { formatPublisherName, resolveTrackPublisher } from '@shared/publisher'
 
 interface MetadataPanelProps {
   track: Track | null
+  libraries: Library[]
+  publisherRule: PublisherRule
   onToggleStar: (track: Track) => void
 }
 
+type ArtworkResult = { url: string; source: string } | null
+
+const artworkCache = new Map<string, ArtworkResult>()
+
+function artworkCacheKey(filePath: string, folderCoverPath: string | null): string {
+  return `${filePath}|${folderCoverPath ?? ''}`
+}
+
 function formatDuration(ms: number | null): string {
-  if (ms === null) return '—'
+  if (ms === null) return ''
   const total = Math.round(ms / 1000)
   const m = Math.floor(total / 60)
   const s = total % 60
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-export default function MetadataPanel({ track, onToggleStar }: MetadataPanelProps): JSX.Element {
-  // 커버 아트워크: 트랙 선택 시 임베디드 우선 → 폴더 커버 순으로 비동기 로드
-  const [artwork, setArtwork] = useState<{ url: string; source: string } | null>(null)
+function formatFileSize(bytes: number | null): string {
+  if (bytes == null) return ''
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB']
+  let value = bytes / 1024
+  let i = 0
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024
+    i++
+  }
+  return `${value.toFixed(1)} ${units[i]}`
+}
+
+export default function MetadataPanel({
+  track,
+  libraries,
+  publisherRule,
+  onToggleStar
+}: MetadataPanelProps): JSX.Element {
+  const [artwork, setArtwork] = useState<ArtworkResult>(null)
+
   useEffect(() => {
+    if (!track || !window.api?.getTrackArtwork) {
+      setArtwork(null)
+      return
+    }
+    const key = artworkCacheKey(track.filePath, track.artworkPath)
+    if (artworkCache.has(key)) {
+      setArtwork(artworkCache.get(key) ?? null)
+      return
+    }
     setArtwork(null)
-    if (!track || !window.api?.getTrackArtwork) return
     let cancelled = false
     void window.api.getTrackArtwork(track.filePath, track.artworkPath).then((res) => {
+      artworkCache.set(key, res)
       if (!cancelled) setArtwork(res)
     })
     return () => {
@@ -33,23 +72,19 @@ export default function MetadataPanel({ track, onToggleStar }: MetadataPanelProp
   if (!track) {
     return (
       <aside className="meta">
-        <div className="meta__empty">사운드를 선택하면
-          <br />여기에 정보가 표시됩니다</div>
+        <div className="meta__empty">Select a sound to show metadata.</div>
       </aside>
     )
   }
 
   const color = colorForCategory(track.category)
+  const publisher = formatPublisherName(resolveTrackPublisher(track, libraries, publisherRule))
 
   return (
     <aside className="meta">
       <div
         className="meta__artwork"
-        style={
-          artwork
-            ? undefined
-            : { background: `linear-gradient(150deg, ${color}44, ${color}12)` }
-        }
+        style={artwork ? undefined : { background: `linear-gradient(150deg, ${color}44, ${color}12)` }}
       >
         {artwork ? (
           <img className="meta__artwork-img" src={artwork.url} alt="" />
@@ -68,7 +103,7 @@ export default function MetadataPanel({ track, onToggleStar }: MetadataPanelProp
         <span
           className={`meta__star${track.starred ? ' meta__star--on' : ''}`}
           onClick={() => onToggleStar(track)}
-          title="즐겨찾기 (F)"
+          title="Toggle favorite"
         >
           {track.starred ? '★' : '☆'}
         </span>
@@ -78,20 +113,22 @@ export default function MetadataPanel({ track, onToggleStar }: MetadataPanelProp
 
       <div className="meta__grid">
         <span className="meta__key">Category</span>
-        <span className="meta__val">{track.category ?? '—'}</span>
+        <span className="meta__val">{track.category ? toTitleCase(track.category) : ''}</span>
         <span className="meta__key">Subcategory</span>
-        <span className="meta__val">{track.subcategory ?? '—'}</span>
+        <span className="meta__val">{track.subcategory ? toTitleCase(track.subcategory) : ''}</span>
+        <span className="meta__key">Publisher</span>
+        <span className="meta__val">{publisher}</span>
         <span className="meta__key">Duration</span>
         <span className="meta__val">{formatDuration(track.durationMs)}</span>
+        <span className="meta__key">File Size</span>
+        <span className="meta__val">{formatFileSize(track.fileSize)}</span>
         <span className="meta__key">Sample Rate</span>
-        <span className="meta__val">
-          {track.sampleRate ? `${(track.sampleRate / 1000).toFixed(1)} kHz` : '—'}
-        </span>
+        <span className="meta__val">{track.sampleRate ? `${(track.sampleRate / 1000).toFixed(1)} kHz` : ''}</span>
         <span className="meta__key">Bit Depth</span>
-        <span className="meta__val">{track.bitDepth ? `${track.bitDepth} bit` : '—'}</span>
+        <span className="meta__val">{track.bitDepth ? `${track.bitDepth} ${track.isFloat ? 'float' : 'bit'}` : ''}</span>
         <span className="meta__key">Channels</span>
         <span className="meta__val">
-          {track.channels ? (track.channels === 1 ? 'Mono' : track.channels === 2 ? 'Stereo' : `${track.channels}ch`) : '—'}
+          {track.channels ? (track.channels === 1 ? 'Mono' : track.channels === 2 ? 'Stereo' : `${track.channels}ch`) : ''}
         </span>
       </div>
 

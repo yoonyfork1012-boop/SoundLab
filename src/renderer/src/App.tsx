@@ -5,18 +5,21 @@ import ResultList from './components/ResultList/ResultList'
 import FolderGrid from './components/FolderGrid/FolderGrid'
 import PlayerBar, { type PlayerHandle } from './components/PlayerBar/PlayerBar'
 import MetadataPanel from './components/MetadataPanel/MetadataPanel'
+import AnalysisPanel from './components/AnalysisPanel/AnalysisPanel'
 import AccentPicker from './components/AccentPicker/AccentPicker'
 import NamePromptModal from './components/NamePromptModal/NamePromptModal'
 import ContextMenu from './components/ContextMenu/ContextMenu'
 import ColorPickerPopover from './components/ColorPickerPopover/ColorPickerPopover'
 import Toast from './components/Toast/Toast'
 import ShortcutsModal from './components/ShortcutsModal/ShortcutsModal'
-import type { Collection, Library, ScanProgress, Track } from '@shared/types'
+import PublisherSettingsModal from './components/PublisherSettingsModal/PublisherSettingsModal'
+import type { Collection, Library, PublisherRule, ScanProgress, Track } from '@shared/types'
 import { isBrowserPreview, mockCollections, mockLibrary, mockTracks } from './mockData'
 import { buildFolderTree, tracksUnder, type FolderNode } from './lib/folderTree'
 import { applyAccent, loadAccent, saveAccent } from './lib/theme'
 import { loadJSON, loadNumber, saveJSON, saveNumber } from './lib/uiState'
 import { shuffleTracks, sortTracks } from './components/ResultList/columns'
+import { DEFAULT_PUBLISHER_RULE } from '@shared/publisher'
 
 function norm(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -28,6 +31,10 @@ const META_MIN = 220
 const META_MAX = 480
 const PLAYER_MIN = 96
 const PLAYER_MAX = 380
+const META_PANEL_HEIGHT_MIN = 160
+const META_PANEL_HEIGHT_MAX = 640
+// Analysis(Peak/Stereo Image)가 ?�무�?좁아??최소 ???�도 ?�이???�도�??�약 ??// ??그러�?Metadata�??�까지 ?�렸????Analysis가 ?�면 밖으�??�전??밀??"?�라�? 것처??보임
+const ANALYSIS_MIN_RESERVED = 170
 
 export default function App(): JSX.Element {
   const [libraries, setLibraries] = useState<Library[]>([])
@@ -35,8 +42,8 @@ export default function App(): JSX.Element {
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null)
   const [search, setSearch] = useState('')
   const [subSearch, setSubSearch] = useState('')
-  // Shuffle은 토글이 아니라 "버튼 클릭 = 지금 즉시 새로 섞기" 동작. shuffled는 현재 리스트가
-  // 셔플된 순서로 보이는 중인지만 나타내며(컬럼 정렬을 클릭하면 다시 false), 영속 저장하지 않는다.
+  // Shuffle?� ?��????�니??"버튼 ?�릭 = 지�?즉시 ?�로 ?�기" ?�작. shuffled???�재 리스?��?
+  // ?�플???�서�?보이??중인지�??��??�며(컬럼 ?�렬???�릭?�면 ?�시 false), ?�속 ?�?�하지 ?�는??
   const [shuffled, setShuffled] = useState(false)
   const [shuffleSeed, setShuffleSeed] = useState(0)
   const [scanning, setScanning] = useState(false)
@@ -45,6 +52,10 @@ export default function App(): JSX.Element {
   const [selectedCollection, setSelectedCollection] = useState<number | null>(null)
   const [showStarredOnly, setShowStarredOnly] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
+  const [publisherRule, setPublisherRule] = useState<PublisherRule>(() =>
+    loadJSON('soundlib.publisherRule', DEFAULT_PUBLISHER_RULE)
+  )
+  const [publisherSettingsOpen, setPublisherSettingsOpen] = useState(false)
   const [namePrompt, setNamePrompt] = useState<{
     title: string
     defaultValue?: string
@@ -60,12 +71,19 @@ export default function App(): JSX.Element {
   )
   const [toast, setToast] = useState<string | null>(null)
   const [showShortcuts, setShowShortcuts] = useState(false)
-  // 다중 선택(Ctrl+A 등). 단일 클릭/화살표 이동 시 해당 트랙 하나로 초기화됨.
+  // ?�중 ?�택(Ctrl+A ??. ?�일 ?�릭/?�살???�동 ???�당 ?�랙 ?�나�?초기?�됨.
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  // "미리듣기(previewed)" 표시를 tracks 배열과 분리된 별도 상태로 둔다 — 예전에는 선택할 때마다
+  // setTracks(prev => prev.map(...))로 tracks 참조 자체를 바꿨는데, 이게 visibleTracks의
+  // useMemo 의존성이라 클릭할 때마다 라이브러리 전체(수만~수십만 트랙)를 다시 정렬/필터링하는
+  // 원인이었다(클릭 반응 저하의 주범). previewedIds는 이 세션에서 막 선택한 트랙만 담고,
+  // 재시작 후 이력은 DB에서 로드된 track.lastPlayedAt으로 그대로 커버된다.
+  const [previewedIds, setPreviewedIds] = useState<Set<number>>(new Set())
   const toastTimerRef = useRef<number | undefined>(undefined)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const subSearchRef = useRef<HTMLInputElement>(null)
   const playerRef = useRef<PlayerHandle>(null)
+  const rightPanelRef = useRef<HTMLDivElement>(null)
 
   function showToast(message: string): void {
     setToast(message)
@@ -76,13 +94,13 @@ export default function App(): JSX.Element {
   const [accent, setAccentState] = useState<string>(loadAccent())
   const [sidebarWidth, setSidebarWidth] = useState(() => loadNumber('soundlib.sidebarWidth', 246))
   const [metaWidth, setMetaWidth] = useState(() => loadNumber('soundlib.metaWidth', 272))
+  const [metaPanelHeight, setMetaPanelHeight] = useState(() => loadNumber('soundlib.metaPanelHeight', 320))
   const [playerHeight, setPlayerHeight] = useState(() => loadNumber('soundlib.playerHeight', 140))
   const [sort, setSort] = useState<{ key: string | null; dir: 'asc' | 'desc' }>(() =>
     loadJSON('soundlib.sort', { key: null, dir: 'asc' })
   )
-
   function handleSort(key: string): void {
-    // 셔플된 상태에서 컬럼 정렬을 클릭하면 셔플은 해제되고 정렬이 적용됨
+    // Shuffle mode is disabled when the user sorts the list
     if (shuffled) setShuffled(false)
     setSort((prev) => {
       const next: { key: string | null; dir: 'asc' | 'desc' } =
@@ -93,17 +111,24 @@ export default function App(): JSX.Element {
   }
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null)
 
+  // 진행 ?�벤?��? ?�면(?�동 ?�캔?�든 백그?�운??감시 ?�스캔이?? ?�덱???�시�?켠다
   useEffect(() => {
     if (!window.api?.onScanProgress) return
-    return window.api.onScanProgress((p) => setScanProgress(p))
+    return window.api.onScanProgress((p) => {
+      setScanProgress(p)
+      setScanning(true)
+    })
   }, [])
 
-  // "Monitor for changes"로 백그라운드에서 재스캔되면 최신 라이브러리/트랙을 반영
+  // "Monitor for changes"�?백그?�운?�에???�스캔되�?최신 ?�이브러�??�랙??반영?�고
+  // (?�동 ?�캔 ?�들?��? 거치지 ?�으므�? ?�기??직접 ?�덱???�시�??�다
   useEffect(() => {
     if (!window.api?.onLibraryUpdated) return
     return window.api.onLibraryUpdated(({ libraries, tracks }) => {
       setLibraries(libraries)
       setTracks(tracks)
+      setScanning(false)
+      setScanProgress(null)
     })
   }, [])
 
@@ -116,7 +141,13 @@ export default function App(): JSX.Element {
     saveAccent(hex)
   }
 
-  // 사이드바/메타패널 드래그 리사이즈 (최소·최대 폭 제한, 종료 시 폭 저장)
+  function handleSavePublisherRule(next: PublisherRule): void {
+    setPublisherRule(next)
+    saveJSON('soundlib.publisherRule', next)
+    setPublisherSettingsOpen(false)
+  }
+
+  // ?�이?�바/메�??�널 ?�래�?리사?�즈 (최소·최�? ???�한, 종료 ?????�??
   function startPanelResize(e: React.MouseEvent, which: 'sidebar' | 'meta'): void {
     e.preventDefault()
     const startX = e.clientX
@@ -143,8 +174,7 @@ export default function App(): JSX.Element {
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
   }
-
-  // 하단 플레이어(웨이브폼) 높이 드래그 조절 — 위로 끌면 커지고, 최소/최대 제한 + 종료 시 저장
+  // Bottom player height resize handle with min/max limits
   function startPlayerResize(e: React.MouseEvent): void {
     e.preventDefault()
     const startY = e.clientY
@@ -167,7 +197,49 @@ export default function App(): JSX.Element {
     document.addEventListener('mouseup', onUp)
   }
 
-  // 시작 시 저장돼 있던 전체 라이브러리/트랙 로드 (누적 유지)
+  // ?�측 컬럼 ?�에??Metadata/Analysis ?�이 배분 조절 ???�래�??�면 Metadata가 커짐.
+  // ?�래�??�작 ?�점???�측 컬럼 ?�제 ?�이�??�서, Metadata�??�무�??�려??Analysis가
+  // ANALYSIS_MIN_RESERVED 밑으�??�려가(=?�면 밖으�?밀???�라?? 보이지 ?�게 ?�는 ?�이
+  // ?�도�??�번 ?�래그의 최�?값을 ?�적?�로 ?�시 계산?�다.
+  function startMetaPanelResize(e: React.MouseEvent): void {
+    e.preventDefault()
+    const startY = e.clientY
+    const startHeight = metaPanelHeight
+    const rightPanelHeight = rightPanelRef.current?.getBoundingClientRect().height ?? META_PANEL_HEIGHT_MAX
+    const dynamicMax = Math.max(META_PANEL_HEIGHT_MIN, Math.min(META_PANEL_HEIGHT_MAX, rightPanelHeight - ANALYSIS_MIN_RESERVED))
+    let latest = startHeight
+    function onMove(ev: MouseEvent): void {
+      latest = Math.max(META_PANEL_HEIGHT_MIN, Math.min(dynamicMax, startHeight + (ev.clientY - startY)))
+      setMetaPanelHeight(latest)
+    }
+    function onUp(): void {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      saveNumber('soundlib.metaPanelHeight', latest)
+    }
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  // ?�전???�?�된 metaPanelHeight가 지�?�??�기 기�??�로 ?�무 커서 Analysis가 ?�면
+  // 밖으�?밀?�나 ?�으�??? ?�전??????창에???�?? ?�작 ??�??�기 변�???보정?�다.
+  useEffect(() => {
+    function clampToFit(): void {
+      const rightPanelHeight = rightPanelRef.current?.getBoundingClientRect().height
+      if (!rightPanelHeight) return
+      const maxAllowed = Math.max(META_PANEL_HEIGHT_MIN, rightPanelHeight - ANALYSIS_MIN_RESERVED)
+      setMetaPanelHeight((prev) => (prev > maxAllowed ? maxAllowed : prev))
+    }
+    clampToFit()
+    window.addEventListener('resize', clampToFit)
+    return () => window.removeEventListener('resize', clampToFit)
+  }, [showMeta])
+
+  // ?�작 ???�?�돼 ?�던 ?�체 ?�이브러�??�랙 로드 (?�적 ?��?)
   useEffect(() => {
     if (isBrowserPreview) {
       setLibraries([mockLibrary])
@@ -175,16 +247,21 @@ export default function App(): JSX.Element {
       setCollections(mockCollections)
       return
     }
-    window.api?.loadAll().then(({ libraries, tracks }) => {
+    const loadTracksP = window.api?.loadAll().then(({ libraries, tracks }) => {
       setLibraries(libraries)
       setTracks(tracks)
     })
-    window.api?.getCollections().then(setCollections)
+    const loadCollectionsP = window.api?.getCollections().then(setCollections)
+    // 메인 프로세스의 스플래시 창은 이 초기 로드가 끝날 때까지 유지된다 — 실패하더라도
+    // 스플래시에 갇히지 않도록 finally에서 알린다.
+    Promise.all([loadTracksP, loadCollectionsP]).finally(() => {
+      window.api?.notifyReady()
+    })
   }, [])
 
   function handleCreateCollection(): void {
     setNamePrompt({
-      title: '새 컬렉션 이름',
+      title: 'New collection name',
       onSubmit: async (name) => {
         if (window.api) setCollections(await window.api.createCollection(name))
         setNamePrompt(null)
@@ -194,7 +271,7 @@ export default function App(): JSX.Element {
 
   async function handleDeleteCollection(id: number): Promise<void> {
     if (!window.api) return
-    if (!window.confirm('이 컬렉션을 삭제할까요? (사운드 파일은 삭제되지 않습니다)')) return
+    if (!window.confirm('Delete this collection? This does not delete sounds.')) return
     setCollections(await window.api.deleteCollection(id))
     if (selectedCollection === id) setSelectedCollection(null)
   }
@@ -206,9 +283,9 @@ export default function App(): JSX.Element {
 
   function handleRenameCollection(collection: Collection): void {
     setNamePrompt({
-      title: '컬렉션 이름 변경',
+      title: 'Rename collection',
       defaultValue: collection.name,
-      confirmLabel: '변경',
+      confirmLabel: 'Rename',
       onSubmit: async (name) => {
         if (window.api) setCollections(await window.api.renameCollection(collection.id, name))
         setNamePrompt(null)
@@ -227,11 +304,11 @@ export default function App(): JSX.Element {
     if (!folder) return
     const matching = tracksUnder(tracks, folder)
     if (matching.length === 0) {
-      showToast('선택한 폴더에 해당하는 사운드가 없습니다')
+      showToast('No sounds found in the selected folder')
       return
     }
     setCollections(await window.api.addTracksToCollection(collectionId, matching.map((t) => t.id)))
-    showToast(`${matching.length}개 사운드를 컬렉션에 추가했습니다`)
+    showToast(`Added ${matching.length} sounds to the collection`)
   }
 
   async function handleShareCollection(collection: Collection): Promise<void> {
@@ -239,11 +316,11 @@ export default function App(): JSX.Element {
     const byId = new Map(tracks.map((t) => [t.id, t]))
     const paths = collection.trackIds.map((id) => byId.get(id)?.filePath).filter((p): p is string => !!p)
     if (paths.length === 0) {
-      showToast('공유할 사운드가 없습니다')
+      showToast('No sounds to share')
       return
     }
     await window.api.writeClipboardText(paths.join('\n'))
-    showToast(`${paths.length}개 파일 경로를 클립보드에 복사했습니다`)
+    showToast(`Copied ${paths.length} file paths to clipboard`)
   }
 
   function handleSearchInCollection(collection: Collection): void {
@@ -276,7 +353,9 @@ export default function App(): JSX.Element {
       )
       setLibraries(allLibs)
       setTracks(allTracks)
-      showToast(addedCount > 0 ? `새 파일 ${addedCount}개를 추가했습니다` : '새 파일이 없습니다')
+      showToast(addedCount > 0 ? `Added ${addedCount} new files` : 'No new files')
+    } catch (err) {
+      showToast(`Failed to scan for new files: ${(err as Error)?.message ?? 'unknown error'}`)
     } finally {
       setScanning(false)
       setScanProgress(null)
@@ -289,17 +368,17 @@ export default function App(): JSX.Element {
 
   async function handleAnalyzeLibrary(library: Library): Promise<void> {
     if (!window.api) return
-    showToast('유사 사운드 분석 중…')
+    showToast('Analyzing sounds...')
     const { libraries: allLibs, analyzedCount } = await window.api.analyzeLibrary(library.id)
     setLibraries(allLibs)
-    showToast(`${analyzedCount}개 트랙 분석 완료`)
+    showToast(`Analyzed ${analyzedCount} tracks`)
   }
 
   function handleRenameLibrary(library: Library): void {
     setNamePrompt({
-      title: '라이브러리 이름 변경',
+      title: 'Rename library',
       defaultValue: library.name,
-      confirmLabel: '변경',
+      confirmLabel: 'Rename',
       onSubmit: async (name) => {
         if (window.api) setLibraries(await window.api.renameLibrary(library.id, name))
         setNamePrompt(null)
@@ -311,10 +390,10 @@ export default function App(): JSX.Element {
     if (!window.api) return
     const next = !library.monitor
     setLibraries(await window.api.setLibraryMonitor(library.id, library.rootPath, next))
-    showToast(next ? '변경 감시를 켰습니다' : '변경 감시를 껐습니다')
+    showToast(next ? 'Monitoring enabled' : 'Monitoring disabled')
   }
 
-  // 라이브러리별 폴더 트리
+  // ?�이브러리별 ?�더 ?�리
   const trees = useMemo(
     () =>
       libraries.map((lib) => ({
@@ -326,9 +405,9 @@ export default function App(): JSX.Element {
       })),
     [libraries, tracks]
   )
-  // 루트(진입) 화면 그리드에 보일 폴더 = 모든 라이브러리의 최상위 폴더
+  // 루트(진입) ?�면 그리?�에 보일 ?�더 = 모든 ?�이브러리의 최상???�더
   const rootFolders = useMemo(() => trees.flatMap((t) => t.node.children), [trees])
-  // 현재 선택 폴더가 속한 라이브러리
+  // Current selected library for the breadcrumb and shortcuts
   const currentLibrary = useMemo(() => {
     if (!selectedFolder) return null
     return libraries.find((l) => norm(selectedFolder).startsWith(norm(l.rootPath))) ?? null
@@ -340,11 +419,13 @@ export default function App(): JSX.Element {
     if (!folder) return
     setScanning(true)
     try {
-      // 폴더 추가 = 누적. 스캔 후 전체를 다시 받아 반영(기존 라이브러리 유지)
+      // ?�더 추�? = ?�적. ?�캔 ???�체�??�시 받아 반영(기존 ?�이브러�??��?)
       const { libraries: allLibs, tracks: allTracks } = await window.api.scanLibrary(folder)
       setLibraries(allLibs)
       setTracks(allTracks)
       setSelectedFolder(null)
+    } catch (err) {
+      showToast(`Failed to scan folder: ${(err as Error)?.message ?? 'unknown error'}`)
     } finally {
       setScanning(false)
       setScanProgress(null)
@@ -368,10 +449,9 @@ export default function App(): JSX.Element {
 
   async function handleSelectTrack(track: Track): Promise<void> {
     setSelectedTrack(track)
-    setSelectedIds(new Set([track.id])) // 단일 선택으로 초기화
-    // Soundly처럼 미리듣기한 사운드는 회색(previewed) 처리 — 로컬 상태 즉시 반영
-    const now = Date.now()
-    setTracks((prev) => prev.map((t) => (t.id === track.id ? { ...t, lastPlayedAt: now } : t)))
+    setSelectedIds(new Set([track.id])) // ?�일 ?�택?�로 초기??    // Soundly처럼 미리?�기???�운?�는 ?�색(previewed) 처리 ??tracks 배열은 건드리지 않고
+    // previewedIds만 갱신(visibleTracks 재정렬을 유발하지 않음)
+    setPreviewedIds((prev) => (prev.has(track.id) ? prev : new Set(prev).add(track.id)))
     if (window.api) await window.api.updateLastPlayed(track.id)
   }
 
@@ -408,8 +488,8 @@ export default function App(): JSX.Element {
           t.tags.some((tag) => tag.toLowerCase().includes(q))
       )
     }
-    // shuffled면 리스트 표시 순서 자체를 섞고, 아니면 정렬 상태(또는 기본 순서)로 표시
-    base = shuffled ? shuffleTracks(base, shuffleSeed) : sortTracks(base, sort.key, sort.dir, { libraries })
+    // shuffled�?리스???�시 ?�서 ?�체�??�고, ?�니�??�렬 ?�태(?�는 기본 ?�서)�??�시
+    base = shuffled ? shuffleTracks(base, shuffleSeed) : sortTracks(base, sort.key, sort.dir, { libraries, publisherRule })
     return base
   }, [
     tracks,
@@ -425,12 +505,12 @@ export default function App(): JSX.Element {
   ])
 
   const isFiltering = Boolean(search.trim() || showStarredOnly || activeCollection)
-  // 폴더를 선택하면(=selectedFolder 있음) 하위 폴더가 있어도 사운드를 재귀로 보여줌 (Soundly 방식).
-  // 폴더 카드 그리드는 최상위 진입 화면(아무 폴더도 선택 안 함)에서만 표시.
+  // ?�더�??�택?�면(=selectedFolder ?�음) ?�위 ?�더가 ?�어???�운?��? ?��?�?보여�?(Soundly 방식).
+  // ?�더 카드 그리?�는 최상??진입 ?�면(?�무 ?�더???�택 ?????�서�??�시.
   const showGrid = view === 'grid' && !isFiltering && !selectedFolder && rootFolders.length > 0
 
   function selectRelative(delta: number): void {
-    // Shuffle Mode에서는 visibleTracks 자체가 이미 섞인 순서이므로, 그 순서를 그대로 순차 탐색하면 됨
+    // Shuffle mode still moves through the visible track list
     if (visibleTracks.length === 0) return
     const idx = visibleTracks.findIndex((t) => t.id === selectedTrack?.id)
     let next = idx === -1 ? 0 : idx + delta
@@ -438,13 +518,12 @@ export default function App(): JSX.Element {
     void handleSelectTrack(visibleTracks[next])
   }
 
-  // Shuffle 버튼 클릭 = 토글이 아니라 "지금 리스트를 새 순서로 다시 섞기"
+  // Shuffle 버튼 ?�릭 = ?��????�니??"지�?리스?��? ???�서�??�시 ?�기"
   function handleShuffleClick(): void {
     setShuffled(true)
     setShuffleSeed(Date.now())
   }
-
-  // 단축키 대상 라이브러리: 현재 폴더의 라이브러리 → 선택 트랙의 라이브러리 → 첫 라이브러리
+  // Shortcut navigation library lookup
   const shortcutLibrary = useMemo(() => {
     if (currentLibrary) return currentLibrary
     if (selectedTrack) return libraries.find((l) => l.id === selectedTrack.libraryId) ?? null
@@ -454,7 +533,7 @@ export default function App(): JSX.Element {
   function selectAllVisible(): void {
     if (visibleTracks.length === 0) return
     setSelectedIds(new Set(visibleTracks.map((t) => t.id)))
-    showToast(`${visibleTracks.length.toLocaleString()}개 선택됨`)
+    showToast(`${visibleTracks.length.toLocaleString()} selected`)
   }
 
   async function removeTracksFromActiveCollection(ids: number[]): Promise<void> {
@@ -464,22 +543,20 @@ export default function App(): JSX.Element {
       cols = await window.api.removeTrackFromCollection(activeCollection.id, id)
     }
     setCollections(cols)
-    showToast(`${ids.length}개 사운드를 컬렉션에서 제거했습니다`)
+    showToast(`Removed ${ids.length} sounds from the collection`)
   }
 
-  // Delete: 컬렉션 보기에서는 선택 트랙을 컬렉션에서 제거. (라이브러리 보기에서는 실제 파일을
-  // 삭제하지 않으므로 안전하게 아무 동작도 하지 않음)
+  // Delete: 컬렉??보기?�서???�택 ?�랙??컬렉?�에???�거. (?�이브러�?보기?�서???�제 ?�일??  // ??��?��? ?�으므�??�전?�게 ?�무 ?�작???��? ?�음)
   function handleDeleteShortcut(): void {
     if (activeCollection) {
       const ids = selectedIds.size > 0 ? [...selectedIds] : selectedTrack ? [selectedTrack.id] : []
       if (ids.length > 0) void removeTracksFromActiveCollection(ids)
     } else if (selectedCollection == null && showStarredOnly) {
-      // 즐겨찾기 보기에서 Delete = 선택 트랙 즐겨찾기 해제
+      // 즐겨찾기 보기?�서 Delete = ?�택 ?�랙 즐겨찾기 ?�제
       if (selectedTrack?.starred) void handleToggleStar(selectedTrack)
     }
   }
-
-  // F2: 컬렉션 보기면 컬렉션 이름 변경, 아니면 현재 라이브러리 이름 변경
+  // F2: rename the active collection or the current library
   function handleRenameShortcut(): void {
     if (activeCollection) handleRenameCollection(activeCollection)
     else if (currentLibrary) handleRenameLibrary(currentLibrary)
@@ -492,16 +569,15 @@ export default function App(): JSX.Element {
       const inEditable = tag === 'INPUT' || tag === 'TEXTAREA' || (target?.isContentEditable ?? false)
       const mod = e.ctrlKey || e.metaKey
 
-      // ── 포커스 위치와 무관하게 동작 ──
-      // Ctrl+F: 메인 검색 / Ctrl+Shift+F: 서브 검색
+      // ?�?� ?�커???�치?� 무�??�게 ?�작 ?�?�
+      // Ctrl+F: main search / Ctrl+Shift+F: sub search
       if (mod && (e.key === 'f' || e.key === 'F')) {
-        e.preventDefault()
         const el = e.shiftKey ? subSearchRef.current : searchInputRef.current
         el?.focus()
         el?.select()
         return
       }
-      // Esc: 정지 + 구간 선택 해제 (입력 중이면 블러)
+      // Esc: ?��? + 구간 ?�택 ?�제 (?�력 중이�?블러)
       if (e.key === 'Escape') {
         playerRef.current?.stopAndClear()
         setSelectedIds((prev) => (prev.size > 0 ? new Set() : prev))
@@ -510,7 +586,7 @@ export default function App(): JSX.Element {
       }
 
       if (mod && (e.key === 'a' || e.key === 'A')) {
-        if (inEditable) return // 인풋 내 텍스트 전체 선택은 기본 동작 유지
+        if (inEditable) return // ?�풋 ???�스???�체 ?�택?� 기본 ?�작 ?��?
         e.preventDefault()
         selectAllVisible()
         return
@@ -526,9 +602,9 @@ export default function App(): JSX.Element {
         if (path) void window.api?.showInExplorer(path)
         return
       }
-      // 그 외 Ctrl/Meta 조합은 브라우저/OS 기본 동작에 맡김
+      // �???Ctrl/Meta 조합?� 브라?��?/OS 기본 ?�작??맡�?
       if (mod) return
-      // 입력창에서 편집 중이면 (Ctrl 조합이 아닌) 나머지 단축키는 텍스트 입력을 방해하지 않도록 무시
+      // ?�력창에???�집 중이�?(Ctrl 조합???�닌) ?�머지 ?�축?�는 ?�스???�력??방해?��? ?�도�?무시
       if (inEditable) return
 
       switch (e.key) {
@@ -585,7 +661,7 @@ export default function App(): JSX.Element {
     collections
   ])
 
-  // 브레드크럼: 라이브러리명 + 선택 폴더 세그먼트 (Home = 루트 그리드)
+  // 브레?�크?? ?�이브러리명 + ?�택 ?�더 ?�그먼트 (Home = 루트 그리??
   const crumbs = useMemo(() => {
     if (!currentLibrary || !selectedFolder) return []
     const root = norm(currentLibrary.rootPath)
@@ -608,7 +684,7 @@ export default function App(): JSX.Element {
     <div
       className="app"
       style={{
-        gridTemplateRows: `var(--menubar-h) var(--topbar-h) 1fr ${playerHeight}px`
+        gridTemplateRows: `var(--menubar-h) var(--topbar-h) 1fr`
       }}
     >
       <MenuBar
@@ -617,6 +693,7 @@ export default function App(): JSX.Element {
         view={view}
         onSetView={setView}
         onShowShortcuts={() => setShowShortcuts(true)}
+        onOpenPublisherSettings={() => setPublisherSettingsOpen(true)}
       />
 
       <div className="topbar">
@@ -633,41 +710,11 @@ export default function App(): JSX.Element {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        {scanning && (
-          <div className="scanbar">
-            <div className="scanbar__spinner" />
-            <div className="scanbar__text">
-              <span className="scanbar__phase">
-                {!scanProgress || scanProgress.phase === 'discovering'
-                  ? '1/2  파일 검색 중'
-                  : '2/2  메타데이터 분석 중'}
-              </span>
-              <span className="scanbar__count">
-                {!scanProgress
-                  ? '준비 중…'
-                  : scanProgress.phase === 'discovering'
-                    ? `${scanProgress.scanned.toLocaleString()}개 발견`
-                    : `${scanProgress.scanned.toLocaleString()} / ${scanProgress.total.toLocaleString()}`}
-              </span>
-              <span className="scanbar__file">{scanProgress?.currentFile ?? ''}</span>
-            </div>
-            <div className="scanbar__track">
-              <div
-                className={`scanbar__fill${!scanProgress || scanProgress.phase === 'discovering' ? ' scanbar__fill--indeterminate' : ''}`}
-                style={
-                  scanProgress && scanProgress.phase === 'parsing' && scanProgress.total > 0
-                    ? { width: `${(scanProgress.scanned / scanProgress.total) * 100}%` }
-                    : undefined
-                }
-              />
-            </div>
-          </div>
-        )}
         <div className="topbar__actions">
           <AccentPicker accent={accent} onChange={setAccent} />
           <button
-            className={`icon-btn${shuffled ? ' icon-btn--active' : ''}`}
-            title="Shuffle — 클릭할 때마다 리스트를 새 순서로 섞습니다"
+            className="icon-btn"
+            title="Shuffle"
             onClick={handleShuffleClick}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -678,7 +725,7 @@ export default function App(): JSX.Element {
               <path d="M4 4l5 5" />
             </svg>
           </button>
-          <div className="topbar__subsearch-wrap" title="검색 결과 내에서 다시 필터링">
+          <div className="topbar__subsearch-wrap" title="Filter results as you type">
             <svg className="topbar__subsearch-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="11" cy="11" r="7" />
               <path d="M21 21l-4.3-4.3" />
@@ -686,14 +733,14 @@ export default function App(): JSX.Element {
             <input
               ref={subSearchRef}
               className="topbar__subsearch"
-              placeholder="Filter…"
+              placeholder="Filter sounds"
               value={subSearch}
               onChange={(e) => setSubSearch(e.target.value)}
             />
           </div>
           <button
             className={`icon-btn${showMeta ? ' icon-btn--active' : ''}`}
-            title="메타데이터 패널"
+            title="Metadata panel"
             onClick={() => setShowMeta((v) => !v)}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
@@ -709,12 +756,14 @@ export default function App(): JSX.Element {
         style={{
           gridTemplateColumns: showMeta
             ? `${sidebarWidth}px 1fr ${metaWidth}px`
-            : `${sidebarWidth}px 1fr`
+            : `${sidebarWidth}px 1fr`,
+          gridTemplateRows: `1fr ${playerHeight}px`
         }}
       >
+        {/* ?�이?�바 ??조절 ?�들 ???�레?�어 ?�까지 ?�려가�??�레?�어 컨트�??��??�데�?            가로�?르는 것처??보이므�? 콘텐�????�쪽)까�?�??�도�??�이�??�한?�다 */}
         <div
           className="resizer resizer--left"
-          style={{ left: sidebarWidth }}
+          style={{ left: sidebarWidth, bottom: playerHeight }}
           onMouseDown={(e) => startPanelResize(e, 'sidebar')}
         />
         {showMeta && (
@@ -750,7 +799,7 @@ export default function App(): JSX.Element {
             setSelectedCollection(null)
           }}
           onSelectLocalRoot={() => {
-            // Local 클릭 = 최상위 진입점: 모든 선택 해제 + 폴더 그리드 화면으로
+            // Local ?�릭 = 최상??진입?? 모든 ?�택 ?�제 + ?�더 그리???�면?�로
             setSelectedFolder(null)
             setSelectedCollection(null)
             setShowStarredOnly(false)
@@ -760,6 +809,8 @@ export default function App(): JSX.Element {
           }}
           onCollectionContextMenu={(e, collection) => setCollectionMenu({ x: e.clientX, y: e.clientY, collection })}
           onLibraryContextMenu={(e, library) => setLibraryMenu({ x: e.clientX, y: e.clientY, library })}
+          scanning={scanning}
+          scanProgress={scanProgress}
         />
 
         <div className="content-wrap">
@@ -777,7 +828,7 @@ export default function App(): JSX.Element {
               <span className="breadcrumb__seg">
                 <span className="breadcrumb__sep">/</span>
                 <span className="breadcrumb__link breadcrumb__link--current">
-                  ★ {activeCollection.name}
+                  ??{activeCollection.name}
                 </span>
               </span>
             )}
@@ -812,9 +863,11 @@ export default function App(): JSX.Element {
               sortKey={sort.key}
               sortDir={sort.dir}
               onSort={handleSort}
+              publisherRule={publisherRule}
+              previewedIds={previewedIds}
               onCreateCollectionWith={(trackId) => {
                 setNamePrompt({
-                  title: '새 컬렉션 이름',
+                  title: 'New collection name',
                   onSubmit: async (name) => {
                     if (window.api) {
                       const cols = await window.api.createCollection(name)
@@ -830,24 +883,34 @@ export default function App(): JSX.Element {
           )}
         </div>
 
-        {showMeta && <MetadataPanel track={selectedTrack} onToggleStar={handleToggleStar} />}
+        {showMeta && (
+          <div className="right-panel" ref={rightPanelRef}>
+            <div className="right-panel__meta" style={{ height: metaPanelHeight }}>
+              <MetadataPanel track={selectedTrack} libraries={libraries} publisherRule={publisherRule} onToggleStar={handleToggleStar} />
+            </div>
+            <div className="right-panel__resizer" onMouseDown={startMetaPanelResize} />
+            <AnalysisPanel playerRef={playerRef} track={selectedTrack} />
+          </div>
+        )}
+
+        {/* 리스???�레?�어 경계 ?�이 조절 ?�들 ???�이?�바+콘텐�???��지�?메�?/분석 ?�널
+            컬럼?� ?�아?�로 ?�뉘지 ?�는 ?�나???�역?��?�?�?경계까�????�히지 ?�음) */}
+        <div
+          className="resizer-h"
+          style={{ bottom: playerHeight, right: showMeta ? metaWidth : 0 }}
+          onMouseDown={startPlayerResize}
+        />
+
+        <PlayerBar
+          ref={playerRef}
+          track={selectedTrack}
+          accent={accent}
+          panelHeight={playerHeight}
+          onPrev={() => selectRelative(-1)}
+          onNext={() => selectRelative(1)}
+          queueTracks={visibleTracks}
+        />
       </div>
-
-      {/* 리스트/플레이어 경계 높이 조절 핸들 (플레이어 상단 경계에 겹쳐 배치) */}
-      <div
-        className="resizer-h"
-        style={{ bottom: playerHeight }}
-        onMouseDown={startPlayerResize}
-      />
-
-      <PlayerBar
-        ref={playerRef}
-        track={selectedTrack}
-        accent={accent}
-        panelHeight={playerHeight}
-        onPrev={() => selectRelative(-1)}
-        onNext={() => selectRelative(1)}
-      />
 
       {namePrompt && (
         <NamePromptModal
@@ -956,8 +1019,22 @@ export default function App(): JSX.Element {
       )}
 
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
+      {publisherSettingsOpen && (
+        <PublisherSettingsModal
+          value={publisherRule}
+          onSave={handleSavePublisherRule}
+          onCancel={() => setPublisherSettingsOpen(false)}
+        />
+      )}
 
       {toast && <Toast message={toast} />}
     </div>
   )
 }
+
+
+
+
+
+
+

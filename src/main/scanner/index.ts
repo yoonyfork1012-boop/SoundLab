@@ -1,9 +1,10 @@
-import { readdir } from 'fs/promises'
+import { readdir, stat } from 'fs/promises'
 import { join, extname } from 'path'
 import {
   beginScanBatch,
   deleteMissingTracks,
   endScanBatch,
+  getTrackStatsByLibrary,
   hasTrackFilePath,
   rollbackScanBatch,
   upsertLibrary,
@@ -99,12 +100,36 @@ function folderCoverFor(filePath: string, cache: Map<string, string | null>): st
   return cache.get(dir) ?? null
 }
 
+function cleanTagValue(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  // BWF(bext) 필드는 고정 길이 필드라 널바이트/공백으로 패딩돼 있는 경우가 많음
+  const trimmed = v.replace(/\0+$/, '').trim()
+  return trimmed ? trimmed : null
+}
+
+// 사운드 제작사/제작사 이름 — 전문 SFX 라이브러리는 대개 WAV의 BWF(bext) Originator에
+// 회사명을 담고(예: "Boom Library"), 음악 파일은 ID3/Vorbis의 Publisher/Label 태그를 쓴다.
+function resolvePublisher(meta: {
+  native?: Record<string, { id: string; value: unknown }[]>
+  common?: { publisher?: string[]; label?: string[] }
+}): string | null {
+  const exifTags = meta.native?.exif ?? []
+  const bextOriginator = exifTags.find((t) => t.id === 'bext.originator')?.value
+  return cleanTagValue(bextOriginator) ?? cleanTagValue(meta.common?.publisher?.[0]) ?? cleanTagValue(meta.common?.label?.[0])
+}
+
+// WAV(IEEE_FLOAT)/AIFC(fl32,fl64) 등 부동소수점 PCM 여부 — Bit Depth를 "32 float"처럼 표시하기 위함
+function isFloatCodec(codec?: string): boolean {
+  return !!codec && /float|fl32|fl64/i.test(codec)
+}
+
 async function parseAndUpsert(
   filePath: string,
   libraryId: number,
   rootPath: string,
   loggedErrorRef: { v: boolean },
-  dirCoverCache: Map<string, string | null>
+  dirCoverCache: Map<string, string | null>,
+  fileStat: { mtimeMs: number; size: number } | null
 ): Promise<void> {
   const filename = filePath.split(/[\\/]/).pop() ?? filePath
   const folderPath = relativeFolderPath(filePath, rootPath)
@@ -126,7 +151,11 @@ async function parseAndUpsert(
       category,
       subcategory,
       artworkPath: cover,
-      artworkSource: cover ? 'folder' : null
+      artworkSource: cover ? 'folder' : null,
+      mtimeMs: fileStat?.mtimeMs ?? null,
+      fileSize: fileStat?.size ?? null,
+      publisher: resolvePublisher(meta),
+      isFloat: isFloatCodec(meta.format.codec)
     })
   } catch (err) {
     // 개별 파일 파싱 실패는 무시하되, 첫 오류만 진단용으로 기록
@@ -146,11 +175,17 @@ async function parseAndUpsert(
       category,
       subcategory,
       artworkPath: cover,
-      artworkSource: cover ? 'folder' : null
+      artworkSource: cover ? 'folder' : null,
+      mtimeMs: fileStat?.mtimeMs ?? null,
+      fileSize: fileStat?.size ?? null
     })
   }
 }
 
+// 증분 스캔: 이미 등록된 파일 중 mtime/size가 이전과 동일하면 메타데이터 재파싱을 건너뛴다.
+// 최초 실행(라이브러리에 아무 트랙도 없음) 시에는 모든 파일이 "변경됨"으로 취급돼 자연히
+// 전체 인덱싱이 수행되고, 이후 재스캔(폴더 재추가·변경 감시 재스캔)에서는 실제로 새로
+// 추가되었거나 내용이 바뀐 파일만 다시 파싱된다.
 export async function scanLibrary(
   rootPath: string,
   onProgress?: (progress: ScanProgress) => void
@@ -159,6 +194,7 @@ export async function scanLibrary(
   const library = upsertLibrary(rootPath, name)
 
   const files = await collectAudioFiles(rootPath, onProgress)
+  const existingStats = getTrackStatsByLibrary(library.id)
   const loggedErrorRef = { v: false }
   const presentFilePaths = new Set<string>()
   const dirCoverCache = new Map<string, string | null>()
@@ -168,7 +204,28 @@ export async function scanLibrary(
     for (let i = 0; i < files.length; i++) {
       const filePath = files[i]
       presentFilePaths.add(filePath)
-      await parseAndUpsert(filePath, library.id, rootPath, loggedErrorRef, dirCoverCache)
+      try {
+        let fileStat: { mtimeMs: number; size: number } | null = null
+        try {
+          const info = await stat(filePath)
+          fileStat = { mtimeMs: info.mtimeMs, size: info.size }
+        } catch {
+          /* stat 실패 시 변경 여부를 알 수 없으므로 항상 재파싱 */
+        }
+        const prev = existingStats.get(filePath)
+        const unchanged =
+          fileStat != null &&
+          prev != null &&
+          prev.mtimeMs === fileStat.mtimeMs &&
+          prev.fileSize === fileStat.size
+        if (!unchanged) {
+          await parseAndUpsert(filePath, library.id, rootPath, loggedErrorRef, dirCoverCache, fileStat)
+        }
+      } catch (err) {
+        // 파일 한 개의 처리 실패로 전체 스캔(트랜잭션)이 롤백돼 이미 스캔된 다른 파일까지
+        // 통째로 사라지면 안 되므로, 개별 파일 단위로 격리해 로그만 남기고 계속 진행한다.
+        console.error('scan: skipping file after error:', filePath, (err as Error)?.message)
+      }
       onProgress?.({
         phase: 'parsing',
         scanned: i + 1,
@@ -202,7 +259,19 @@ export async function scanNewFilesOnly(
   try {
     for (let i = 0; i < newFiles.length; i++) {
       const filePath = newFiles[i]
-      await parseAndUpsert(filePath, libraryId, rootPath, loggedErrorRef, dirCoverCache)
+      try {
+        let fileStat: { mtimeMs: number; size: number } | null = null
+        try {
+          const info = await stat(filePath)
+          fileStat = { mtimeMs: info.mtimeMs, size: info.size }
+        } catch {
+          /* noop */
+        }
+        await parseAndUpsert(filePath, libraryId, rootPath, loggedErrorRef, dirCoverCache, fileStat)
+      } catch (err) {
+        // scanLibrary와 동일한 이유로 파일 단위 실패를 격리한다.
+        console.error('scanNewFilesOnly: skipping file after error:', filePath, (err as Error)?.message)
+      }
       onProgress?.({
         phase: 'parsing',
         scanned: i + 1,

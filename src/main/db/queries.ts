@@ -33,7 +33,10 @@ function rowToTrack(row: SqlRow): Track {
     artworkPath: (row.artwork_path as string) ?? null,
     artworkSource: (row.artwork_source as Track['artworkSource']) ?? null,
     addedAt: row.added_at as number,
-    lastPlayedAt: (row.last_played_at as number) ?? null
+    lastPlayedAt: (row.last_played_at as number) ?? null,
+    fileSize: (row.file_size as number) ?? null,
+    publisher: (row.publisher as string) ?? null,
+    isFloat: row.is_float === 1
   }
 }
 
@@ -86,10 +89,14 @@ export function upsertTrack(track: {
   subcategory: string | null
   artworkPath?: string | null
   artworkSource?: string | null
+  mtimeMs?: number | null
+  fileSize?: number | null
+  publisher?: string | null
+  isFloat?: boolean
 }): void {
   getDb().run(
-    `INSERT INTO tracks (library_id, file_path, filename, duration_ms, sample_rate, bit_depth, channels, category, subcategory, artwork_path, artwork_source, added_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO tracks (library_id, file_path, filename, duration_ms, sample_rate, bit_depth, channels, category, subcategory, artwork_path, artwork_source, mtime_ms, file_size, publisher, is_float, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(file_path) DO UPDATE SET
        duration_ms = excluded.duration_ms,
        sample_rate = excluded.sample_rate,
@@ -98,7 +105,11 @@ export function upsertTrack(track: {
        category = excluded.category,
        subcategory = excluded.subcategory,
        artwork_path = excluded.artwork_path,
-       artwork_source = excluded.artwork_source`,
+       artwork_source = excluded.artwork_source,
+       mtime_ms = excluded.mtime_ms,
+       file_size = excluded.file_size,
+       publisher = excluded.publisher,
+       is_float = excluded.is_float`,
     [
       track.libraryId,
       track.filePath,
@@ -111,9 +122,31 @@ export function upsertTrack(track: {
       track.subcategory,
       track.artworkPath ?? null,
       track.artworkSource ?? null,
+      track.mtimeMs ?? null,
+      track.fileSize ?? null,
+      track.publisher ?? null,
+      track.isFloat ? 1 : 0,
       Date.now()
     ]
   )
+}
+
+// 라이브러리의 기존 트랙 파일별 mtime/size 스냅샷 — 스캔 시 파일별 stat과 비교해
+// 변경되지 않은 파일은 재파싱(메타데이터 재추출)을 건너뛰기 위한 증분 인덱싱 기반.
+export function getTrackStatsByLibrary(
+  libraryId: number
+): Map<string, { mtimeMs: number | null; fileSize: number | null }> {
+  const rows = selectRows('SELECT file_path, mtime_ms, file_size FROM tracks WHERE library_id = ?', [
+    libraryId
+  ])
+  const map = new Map<string, { mtimeMs: number | null; fileSize: number | null }>()
+  for (const row of rows) {
+    map.set(row.file_path as string, {
+      mtimeMs: (row.mtime_ms as number) ?? null,
+      fileSize: (row.file_size as number) ?? null
+    })
+  }
+  return map
 }
 
 export function deleteMissingTracks(libraryId: number, presentFilePaths: Set<string>): number {
@@ -131,12 +164,6 @@ export function deleteMissingTracks(libraryId: number, presentFilePaths: Set<str
 
 export function hasTrackFilePath(filePath: string): boolean {
   return selectRows('SELECT 1 FROM tracks WHERE file_path = ? LIMIT 1', [filePath]).length > 0
-}
-
-export function getTracksByLibrary(libraryId: number): Track[] {
-  return selectRows('SELECT * FROM tracks WHERE library_id = ? ORDER BY filename', [
-    libraryId
-  ]).map(rowToTrack)
 }
 
 export function getAllTracks(): Track[] {

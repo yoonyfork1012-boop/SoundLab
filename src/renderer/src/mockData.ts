@@ -80,7 +80,10 @@ export const mockTracks: Track[] = EXPANDED.map(([base, category, subcategory, f
   artworkSource: 'generated',
   addedAt: Date.now() - i * 3600_000,
   // 일부는 미리듣기한 상태(previewed → 회색)로 표시해 프리뷰에서 확인
-  lastPlayedAt: i % 4 === 1 ? Date.now() - i * 60_000 : null
+  lastPlayedAt: i % 4 === 1 ? Date.now() - i * 60_000 : null,
+  fileSize: 200_000 + ((i * 54321) % 8_000_000),
+  publisher: i % 3 === 0 ? 'Acme Sound Co.' : null,
+  isFloat: BITS[i % BITS.length] === 32
 }))
 
 export const mockCollections: Collection[] = [

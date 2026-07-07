@@ -121,6 +121,18 @@ function runMigrations(): void {
   if (!hasColumn('tracks', 'similarity_key')) {
     d.run('ALTER TABLE tracks ADD COLUMN similarity_key TEXT')
   }
+  if (!hasColumn('tracks', 'mtime_ms')) {
+    d.run('ALTER TABLE tracks ADD COLUMN mtime_ms REAL')
+  }
+  if (!hasColumn('tracks', 'file_size')) {
+    d.run('ALTER TABLE tracks ADD COLUMN file_size INTEGER')
+  }
+  if (!hasColumn('tracks', 'publisher')) {
+    d.run('ALTER TABLE tracks ADD COLUMN publisher TEXT')
+  }
+  if (!hasColumn('tracks', 'is_float')) {
+    d.run('ALTER TABLE tracks ADD COLUMN is_float INTEGER DEFAULT 0')
+  }
 }
 
 export function getDb(): Database {

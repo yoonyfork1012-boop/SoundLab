@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { FixedSizeList, ListChildComponentProps, areEqual } from 'react-window'
 import AutoSizer from 'react-virtualized-auto-sizer'
-import type { Collection, Library, Track } from '@shared/types'
+import type { Collection, Library, PublisherRule, Track } from '@shared/types'
 import { colorForCategory } from '@shared/ucsCategories'
 import { ALL_COLUMNS, DEFAULT_VISIBLE, type ColumnDef } from './columns'
 import { loadJSON, saveJSON } from '../../lib/uiState'
@@ -20,12 +20,15 @@ interface ResultListProps {
   sortKey: string | null
   sortDir: 'asc' | 'desc'
   onSort: (key: string) => void
+  publisherRule: PublisherRule
+  previewedIds: Set<number>
 }
 
 const ROW_HEIGHT = 30
 const SCROLLBAR_GUARD = 14
 const MIN_COL_WIDTH = 48
 const COL_WIDTHS_KEY = 'soundlib.columnWidths'
+const COL_ORDER_KEY = 'soundlib.columnOrder'
 
 interface RowData {
   tracks: Track[]
@@ -35,6 +38,8 @@ interface RowData {
   gridTemplate: string
   totalWidth: number
   libraries: Library[]
+  publisherRule: PublisherRule
+  previewedIds: Set<number>
 }
 
 function SpeakerIcon({ color }: { color: string }): JSX.Element {
@@ -46,7 +51,7 @@ function SpeakerIcon({ color }: { color: string }): JSX.Element {
   )
 }
 
-// Duration / Format / Channels 헤더용 아이콘 (텍스트 대신 표시, title로 툴팁 제공)
+// Duration / Format / Channels ?�더???�이�?(?�스???�???�시, title�??�팁 ?�공)
 function IconDuration(): JSX.Element {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -77,10 +82,10 @@ const HEADER_ICONS: Record<string, () => JSX.Element> = {
 }
 
 const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX.Element => {
-  const { tracks, selectedTrackId, selectedIds, columns, gridTemplate, totalWidth, libraries } = data
+  const { tracks, selectedTrackId, selectedIds, columns, gridTemplate, totalWidth, libraries, publisherRule, previewedIds } = data
   const track = tracks[index]
   const isSelected = track.id === selectedTrackId || (selectedIds?.has(track.id) ?? false)
-  const isPreviewed = track.lastPlayedAt != null
+  const isPreviewed = track.lastPlayedAt != null || previewedIds.has(track.id)
   const color = colorForCategory(track.category)
 
   return (
@@ -89,7 +94,7 @@ const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX
       className={`list-row${isSelected ? ' list-row--selected' : ''}${isPreviewed ? ' list-row--previewed' : ''}`}
       draggable
       onDragStart={(e) => {
-        // 선택 여부와 무관하게 어떤 행이든 즉시 OS 네이티브 드래그(DAW/탐색기로 드롭)
+        // ?�택 ?��??� 무�??�게 ?�떤 ?�이??즉시 OS ?�이?�브 ?�래�?DAW/?�색기로 ?�롭)
         e.preventDefault()
         window.api?.startDrag(track.filePath)
       }}
@@ -105,24 +110,13 @@ const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX
             </div>
           )
         }
-        if (col.key === 'category') {
-          return (
-            <div className="list-row__cell" key={col.key}>
-              {track.category && (
-                <span className="list-row__cat-pill" style={{ color }}>
-                  {track.category}
-                </span>
-              )}
-            </div>
-          )
-        }
         return (
           <div
             className={`list-row__cell${col.key !== 'name' ? ' list-row__cell--sub' : ''}`}
             style={col.align === 'right' ? { textAlign: 'right', fontVariantNumeric: 'tabular-nums' } : undefined}
             key={col.key}
           >
-            {col.value(track, { libraries })}
+            {col.value(track, { libraries, publisherRule })}
           </div>
         )
       })}
@@ -143,10 +137,13 @@ export default function ResultList({
   onCreateCollectionWith,
   sortKey,
   sortDir,
-  onSort
+  onSort,
+  publisherRule,
+  previewedIds
 }: ResultListProps): JSX.Element {
   const listRef = useRef<FixedSizeList>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const hoverBoxRef = useRef<HTMLDivElement>(null)
   const scrollOffsetRef = useRef(0)
   const mouseYRef = useRef<number | null>(null)
@@ -154,8 +151,13 @@ export default function ResultList({
   tracksRef.current = tracks
 
   const [visibleCols, setVisibleCols] = useState<Set<string>>(new Set(DEFAULT_VISIBLE))
-  // 컬럼별 고정 px 폭 — 하나를 늘려도 다른 컬럼에 영향 없이 독립적으로 리사이즈됨
+  // 컬럼�?고정 px ?????�나�??�려???�른 컬럼???�향 ?�이 ?�립?�으�?리사?�즈??
   const [colWidths, setColWidths] = useState<Record<string, number>>(() => loadJSON(COL_WIDTHS_KEY, {}))
+  const [columnOrder, setColumnOrder] = useState<string[]>(() =>
+    loadJSON(COL_ORDER_KEY, ALL_COLUMNS.map((c) => c.key))
+  )
+  const [dragCol, setDragCol] = useState<string | null>(null)
+  const [viewportWidth, setViewportWidth] = useState(0)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [rowMenu, setRowMenu] = useState<{ x: number; y: number; track: Track } | null>(null)
 
@@ -166,10 +168,12 @@ export default function ResultList({
     return () => document.removeEventListener('mousedown', close)
   }, [rowMenu])
 
-  const columns = useMemo(
-    () => ALL_COLUMNS.filter((c) => visibleCols.has(c.key)),
-    [visibleCols]
-  )
+  const columns = useMemo(() => {
+    const byKey = new Map(ALL_COLUMNS.map((c) => [c.key, c]))
+    const validOrder = columnOrder.filter((key) => byKey.has(key))
+    const missing = ALL_COLUMNS.map((c) => c.key).filter((key) => !validOrder.includes(key))
+    return [...validOrder, ...missing].map((key) => byKey.get(key)!).filter((c) => visibleCols.has(c.key))
+  }, [columnOrder, visibleCols])
   function widthOf(col: ColumnDef): number {
     return colWidths[col.key] ?? col.defaultWidth
   }
@@ -184,7 +188,7 @@ export default function ResultList({
     [columns, colWidths]
   )
 
-  // 헤더 경계 드래그로 컬럼 폭 조절 — 컬럼마다 독립된 고정 px이므로 다른 컬럼에 영향 없음
+  // ?�더 경계 ?�래그로 컬럼 ??조절 ??컬럼마다 ?�립??고정 px?��?�??�른 컬럼???�향 ?�음
   function startResize(e: React.MouseEvent, key: string): void {
     e.preventDefault()
     e.stopPropagation()
@@ -210,11 +214,39 @@ export default function ResultList({
     document.addEventListener('mouseup', onUp)
   }
 
+  function moveColumn(fromKey: string, toKey: string): void {
+    if (fromKey === toKey) return
+    setColumnOrder((prev) => {
+      const known = new Set(ALL_COLUMNS.map((c) => c.key))
+      const base = prev.filter((key) => known.has(key))
+      for (const col of ALL_COLUMNS) {
+        if (!base.includes(col.key)) base.push(col.key)
+      }
+      const from = base.indexOf(fromKey)
+      const to = base.indexOf(toKey)
+      if (from < 0 || to < 0) return prev
+      const next = [...base]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      saveJSON(COL_ORDER_KEY, next)
+      return next
+    })
+  }
+
+  // ?�택???�랙??"바�??�만"(?�릭/?�살???�동) ?�면 밖이�?보이?�록 ?�크�????�렬/?�플�?
+  // tracks 배열 ?�서�?바뀌는 경우?�는 ?�행?��? ?�도�?tracks???�존?�에???�외
   useEffect(() => {
     if (selectedTrackId == null) return
-    const idx = tracks.findIndex((t) => t.id === selectedTrackId)
+    const idx = tracksRef.current.findIndex((t) => t.id === selectedTrackId)
     if (idx >= 0) listRef.current?.scrollToItem(idx, 'smart')
-  }, [selectedTrackId, tracks])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTrackId])
+
+  // 정렬/셔플로 tracks 순서가 바뀌어도 scrollTop은 건드리지 않는다 — react-window는
+  // itemData만 바뀔 뿐 스크롤 위치를 스스로 초기화하지 않으므로, 화면에 보이던 "행 위치"는
+  // 그대로 두고 그 자리에 놓이는 아이템만 새 순서로 바뀐다(특정 아이템을 따라가도록
+  // scrollTo를 호출하면 정렬 방향이 바뀔 때마다 그 아이템의 절대 위치가 크게 달라져
+  // 스크롤바가 오히려 위아래로 크게 움직이는 결과가 된다).
 
   function indexAtY(clientY: number): number {
     const wrap = wrapRef.current
@@ -246,7 +278,7 @@ export default function ResultList({
     setVisibleCols((prev) => {
       const next = new Set(prev)
       if (next.has(key)) {
-        if (key === 'name') return next // Name은 항상 유지
+        if (key === 'name') return next // Name?� ??�� ?��?
         next.delete(key)
       } else next.add(key)
       return next
@@ -258,17 +290,39 @@ export default function ResultList({
     saveJSON(COL_WIDTHS_KEY, {})
   }
 
-  const itemData: RowData = { tracks, selectedTrackId, selectedIds, columns, gridTemplate, totalWidth, libraries }
+  function handleHorizontalWheel(e: React.WheelEvent<HTMLDivElement>): void {
+    const scroll = scrollRef.current
+    if (!scroll) return
+    const wantsHorizontal = e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)
+    if (!wantsHorizontal) return
+    const delta = e.deltaX !== 0 ? e.deltaX : e.deltaY
+    if (delta === 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    scroll.scrollLeft += delta
+  }
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const update = (): void => setViewportWidth(el.clientWidth)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const itemData: RowData = { tracks, selectedTrackId, selectedIds, columns, gridTemplate, totalWidth, libraries, publisherRule, previewedIds }
 
   return (
     <div className="content">
       {tracks.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-state__big">표시할 사운드가 없습니다</div>
-          <div>좌측에서 폴더를 추가하거나 다른 폴더를 선택하세요</div>
+          <div className="empty-state__big">No sounds to display</div>
+          <div>Add a folder from the sidebar or select another folder.</div>
         </div>
       ) : (
-        <div className="list-scroll">
+        <div ref={scrollRef} className="list-scroll" onWheelCapture={handleHorizontalWheel}>
           <div className="list-scroll__inner" style={{ width: totalWidth }}>
             <div
               className="list-header"
@@ -284,8 +338,25 @@ export default function ResultList({
                 return (
                   <div
                     key={col.key}
-                    className="list-header__cell"
+                    className={`list-header__cell${dragCol === col.key ? ' list-header__cell--dragging' : ''}`}
                     style={col.align === 'right' ? { justifyContent: 'flex-end' } : undefined}
+                    draggable
+                    onDragStart={(e) => {
+                      setDragCol(col.key)
+                      e.dataTransfer.effectAllowed = 'move'
+                      e.dataTransfer.setData('text/plain', col.key)
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault()
+                      e.dataTransfer.dropEffect = 'move'
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      const from = e.dataTransfer.getData('text/plain') || dragCol
+                      if (from) moveColumn(from, col.key)
+                      setDragCol(null)
+                    }}
+                    onDragEnd={() => setDragCol(null)}
                   >
                     <span
                       className="list-header__label"
@@ -293,11 +364,11 @@ export default function ResultList({
                       onClick={() => onSort(col.key)}
                     >
                       {Icon ? <Icon /> : col.label}
-                      {isSorted && <span className="list-header__sort">{sortDir === 'asc' ? '▲' : '▼'}</span>}
+                      {isSorted && <span className="list-header__sort">{sortDir === 'asc' ? '^' : 'v'}</span>}
                     </span>
                     <span
                       className="list-header__resize"
-                      title="드래그로 폭 조절"
+                      title="?�래그로 ??조절"
                       onMouseDown={(e) => startResize(e, col.key)}
                       onContextMenu={(e) => e.stopPropagation()}
                     />
@@ -337,12 +408,12 @@ export default function ResultList({
                 className="list-hoverbox"
                 style={{ height: ROW_HEIGHT, width: totalWidth, display: 'none' }}
               />
-              <AutoSizer disableWidth>
-                {({ height }: { height: number }) => (
+              <AutoSizer>
+                {({ height, width }: { height: number; width: number }) => (
                   <FixedSizeList
                     ref={listRef}
                     height={height}
-                    width={totalWidth}
+                    width={Math.max(1, viewportWidth || width)}
                     itemCount={tracks.length}
                     itemSize={ROW_HEIGHT}
                     itemData={itemData}
@@ -388,11 +459,11 @@ export default function ResultList({
               setRowMenu(null)
             }}
           >
-            <span className="colmenu__check">{rowMenu.track.starred ? '★' : '☆'}</span>
-            <span>{rowMenu.track.starred ? '즐겨찾기 해제' : '즐겨찾기'}</span>
+            <span className="colmenu__check">{rowMenu.track.starred ? '*' : ''}</span>
+            <span>{rowMenu.track.starred ? 'Remove favorite' : 'Favorite'}</span>
           </button>
           <div className="colmenu__sep" />
-          <div className="colmenu__section">컬렉션에 추가</div>
+          <div className="colmenu__section">Add to collection</div>
           <div className="colmenu__scroll">
             {collections.map((col) => (
               <button
@@ -415,11 +486,14 @@ export default function ResultList({
               setRowMenu(null)
             }}
           >
-            <span className="colmenu__check">＋</span>
-            <span>새 컬렉션…</span>
+            <span className="colmenu__check">+</span>
+            <span>New collection</span>
           </button>
         </div>
       )}
     </div>
   )
 }
+
+
+

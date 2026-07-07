@@ -10,6 +10,9 @@ const api = {
   loadAll: (): Promise<{ libraries: Library[]; tracks: Track[] }> =>
     ipcRenderer.invoke('app:loadAll'),
 
+  // 초기 데이터 로드가 끝났음을 메인 프로세스에 알려 스플래시 창을 닫고 메인 창을 보여주게 함
+  notifyReady: (): void => ipcRenderer.send('app:renderer-ready'),
+
   removeLibrary: (libraryId: number): Promise<{ libraries: Library[]; tracks: Track[] }> =>
     ipcRenderer.invoke('library:remove', libraryId),
 
@@ -73,6 +76,9 @@ const api = {
 
   readAudioFile: (filePath: string): Promise<Uint8Array> =>
     ipcRenderer.invoke('file:readAudio', filePath),
+
+  getAudioAccess: (filePath: string): Promise<{ url: string; size: number; mtimeMs: number }> =>
+    ipcRenderer.invoke('file:getAudioAccess', filePath),
 
   writeClipboardText: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:writeText', text),
 

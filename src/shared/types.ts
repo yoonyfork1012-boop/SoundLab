@@ -16,6 +16,16 @@ export interface Track {
   artworkSource: 'embedded' | 'manual' | 'generated' | null
   addedAt: number
   lastPlayedAt: number | null
+  fileSize: number | null
+  publisher: string | null
+  isFloat: boolean
+}
+
+export type PublisherMode = 'library-root-child' | 'file-parent-1' | 'file-parent-2' | 'file-parent-3' | 'custom'
+
+export interface PublisherRule {
+  mode: PublisherMode
+  customPath: string | null
 }
 
 export interface Library {

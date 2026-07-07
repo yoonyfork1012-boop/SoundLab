@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import type { Collection, Library, Track } from '@shared/types'
+import type { Collection, Library, ScanProgress, Track } from '@shared/types'
 import type { FolderNode } from '../../lib/folderTree'
 import { loadBool, loadJSON, saveBool, saveJSON } from '../../lib/uiState'
 import FolderTree from './FolderTree'
+import IndexingIndicator from '../IndexingIndicator/IndexingIndicator'
 
 export interface LibraryTree {
   library: Library
@@ -29,6 +30,8 @@ interface SidebarProps {
   onSelectLocalRoot: () => void
   onCollectionContextMenu?: (e: React.MouseEvent, collection: Collection) => void
   onLibraryContextMenu?: (e: React.MouseEvent, library: Library) => void
+  scanning?: boolean
+  scanProgress?: ScanProgress | null
 }
 
 function Chevron({ open }: { open: boolean }): JSX.Element {
@@ -55,7 +58,9 @@ export default function Sidebar({
   onToggleStarredView,
   onSelectLocalRoot,
   onCollectionContextMenu,
-  onLibraryContextMenu
+  onLibraryContextMenu,
+  scanning = false,
+  scanProgress = null
 }: SidebarProps): JSX.Element {
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(() =>
     loadJSON(EXPANDED_KEY, {})
@@ -81,6 +86,7 @@ export default function Sidebar({
 
   return (
     <aside className="sidebar">
+      <div className="sidebar__scroll">
       {/* LIBRARIES */}
       <div className="sidebar__section sidebar__section--top">
         <span>Libraries</span>
@@ -180,6 +186,8 @@ export default function Sidebar({
           <span className="sidebar__coll-count">{col.trackIds.length}</span>
         </div>
       ))}
+      </div>
+      {scanning && <IndexingIndicator progress={scanProgress} />}
     </aside>
   )
 }

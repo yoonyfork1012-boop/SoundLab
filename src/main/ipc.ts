@@ -1,7 +1,8 @@
 import { ipcMain, dialog, shell, clipboard, app, BrowserWindow, nativeImage } from 'electron'
-import { readFile } from 'fs/promises'
+import { readFile, stat } from 'fs/promises'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import { scanLibrary, scanNewFilesOnly } from './scanner'
 import { startWatching, stopWatching } from './watcher'
 import { findCoverInDir, getEmbeddedArtworkDataUrl, getFolderCoverDataUrl } from './artwork'
@@ -158,6 +159,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return url ? { url, source: 'folder' as const } : null
   })
 
+
+  ipcMain.handle('file:getAudioAccess', async (_event, filePath: string) => {
+    if (!hasTrackFilePath(filePath)) {
+      throw new Error('Audio file is not registered in the library')
+    }
+    const info = await stat(filePath)
+    return {
+      url: pathToFileURL(filePath).toString(),
+      size: info.size,
+      mtimeMs: info.mtimeMs
+    }
+  })
   ipcMain.handle('file:readAudio', async (_event, filePath: string) => {
     if (!hasTrackFilePath(filePath)) {
       throw new Error('Audio file is not registered in the library')

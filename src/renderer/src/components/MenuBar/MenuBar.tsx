@@ -13,6 +13,7 @@ interface MenuBarProps {
   view: 'grid' | 'list'
   onSetView: (v: 'grid' | 'list') => void
   onShowShortcuts: () => void
+  onOpenPublisherSettings: () => void
 }
 
 export default function MenuBar({
@@ -20,7 +21,8 @@ export default function MenuBar({
   onToggleMeta,
   view,
   onSetView,
-  onShowShortcuts
+  onShowShortcuts,
+  onOpenPublisherSettings
 }: MenuBarProps): JSX.Element {
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [maximized, setMaximized] = useState(false)
@@ -42,44 +44,45 @@ export default function MenuBar({
 
   const menus: Record<string, MenuItem[]> = {
     File: [
-      { label: '폴더 추가…', action: onAddFolder },
+      { label: 'Add folder', action: onAddFolder },
       { separator: true },
-      { label: '내보내기…', disabled: true },
+      { label: 'Save layout', disabled: true },
       { separator: true },
-      { label: '종료', action: () => window.api?.windowClose() }
+      { label: 'Exit', action: () => window.api?.windowClose() }
     ],
     Edit: [
-      { label: '실행 취소', disabled: true },
-      { label: '다시 실행', disabled: true },
+      { label: 'Undo', disabled: true },
+      { label: 'Redo', disabled: true },
       { separator: true },
-      { label: '복사', disabled: true },
-      { label: '붙여넣기', disabled: true }
+      { label: 'Copy', disabled: true },
+      { label: 'Paste', disabled: true }
     ],
     Database: [
-      { label: '라이브러리 다시 스캔', action: onAddFolder },
-      { label: '데이터베이스 최적화', disabled: true }
+      { label: 'Rescan library', action: onAddFolder },
+      { label: 'Database status', disabled: true }
     ],
     View: [
-      { label: view === 'grid' ? '● 폴더 카드' : '폴더 카드', action: () => onSetView('grid') },
-      { label: view === 'list' ? '● 리스트' : '리스트', action: () => onSetView('list') },
+      { label: view === 'grid' ? 'Folder grid' : 'Folder grid', action: () => onSetView('grid') },
+      { label: view === 'list' ? 'Sound list' : 'Sound list', action: () => onSetView('list') },
       { separator: true },
-      { label: '메타데이터 패널 토글', action: onToggleMeta }
+      { label: 'Metadata panel', action: onToggleMeta }
     ],
     Window: [
-      { label: '최소화', action: () => window.api?.windowMinimize() },
+      { label: 'Minimize', action: () => window.api?.windowMinimize() },
       {
-        label: maximized ? '이전 크기로' : '최대화',
+        label: maximized ? 'Restore' : 'Maximize',
         action: () => window.api?.windowToggleMaximize()
       }
     ],
     User: [
-      { label: '계정 (로컬 전용)', disabled: true },
-      { label: '환경설정', disabled: true }
+      { label: 'Preferences', disabled: true },
+      { label: 'Publisher settings', action: onOpenPublisherSettings },
+      { label: 'Settings', disabled: true }
     ],
     Help: [
-      { label: '키보드 단축키…', action: onShowShortcuts },
+      { label: 'Keyboard shortcuts', action: onShowShortcuts },
       { separator: true },
-      { label: 'SoundLib 정보', disabled: true }
+      { label: 'SoundLib info', disabled: true }
     ]
   }
 
@@ -133,7 +136,7 @@ export default function MenuBar({
         <button
           className="menubar__winbtn"
           onClick={() => window.api?.windowMinimize()}
-          title="최소화"
+          title="Minimize"
         >
           <svg width="10" height="10" viewBox="0 0 10 10">
             <rect x="0" y="4.5" width="10" height="1" fill="currentColor" />
@@ -142,7 +145,7 @@ export default function MenuBar({
         <button
           className="menubar__winbtn"
           onClick={() => window.api?.windowToggleMaximize()}
-          title={maximized ? '이전 크기로' : '최대화'}
+          title={maximized ? 'Restore' : 'Maximize'}
         >
           {maximized ? (
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor">
@@ -158,7 +161,7 @@ export default function MenuBar({
         <button
           className="menubar__winbtn menubar__winbtn--close"
           onClick={() => window.api?.windowClose()}
-          title="닫기"
+          title="Close"
         >
           <svg width="10" height="10" viewBox="0 0 10 10" stroke="currentColor">
             <path d="M0.5 0.5L9.5 9.5M9.5 0.5L0.5 9.5" />

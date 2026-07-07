@@ -39,11 +39,3 @@ export function loadBool(key: string, fallback: boolean): boolean {
 export function saveBool(key: string, value: boolean): void {
   localStorage.setItem(key, value ? '1' : '0')
 }
-
-export function loadStringSet(key: string): Set<string> {
-  return new Set(loadJSON<string[]>(key, []))
-}
-
-export function saveStringSet(key: string, set: Set<string>): void {
-  saveJSON(key, Array.from(set))
-}

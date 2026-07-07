@@ -9,6 +9,7 @@ declare const api: {
         libraries: Library[];
         tracks: Track[];
     }>;
+    notifyReady: () => void;
     removeLibrary: (libraryId: number) => Promise<{
         libraries: Library[];
         tracks: Track[];
@@ -37,6 +38,7 @@ declare const api: {
     addTrackToCollection: (collectionId: number, trackId: number) => Promise<Collection[]>;
     addTracksToCollection: (collectionId: number, trackIds: number[]) => Promise<Collection[]>;
     removeTrackFromCollection: (collectionId: number, trackId: number) => Promise<Collection[]>;
+    getAudioAccess: (filePath: string) => Promise<{ url: string; size: number; mtimeMs: number }>;
     readAudioFile: (filePath: string) => Promise<Uint8Array>;
     writeClipboardText: (text: string) => Promise<void>;
     getTrackArtwork: (filePath: string, folderCoverPath: string | null) => Promise<{ url: string; source: 'embedded' | 'folder' } | null>;
