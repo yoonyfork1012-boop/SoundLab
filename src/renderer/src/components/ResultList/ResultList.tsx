@@ -12,6 +12,7 @@ interface ResultListProps {
   libraries: Library[]
   collections: Collection[]
   selectedTrackId: number | null
+  selectedIds?: Set<number>
   onSelectTrack: (track: Track) => void
   onToggleStar: (track: Track) => void
   onAddToCollection: (collectionId: number, trackId: number) => void
@@ -29,6 +30,7 @@ const COL_WIDTHS_KEY = 'soundlib.columnWidths'
 interface RowData {
   tracks: Track[]
   selectedTrackId: number | null
+  selectedIds?: Set<number>
   columns: ColumnDef[]
   gridTemplate: string
   totalWidth: number
@@ -75,9 +77,9 @@ const HEADER_ICONS: Record<string, () => JSX.Element> = {
 }
 
 const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX.Element => {
-  const { tracks, selectedTrackId, columns, gridTemplate, totalWidth, libraries } = data
+  const { tracks, selectedTrackId, selectedIds, columns, gridTemplate, totalWidth, libraries } = data
   const track = tracks[index]
-  const isSelected = track.id === selectedTrackId
+  const isSelected = track.id === selectedTrackId || (selectedIds?.has(track.id) ?? false)
   const isPreviewed = track.lastPlayedAt != null
   const color = colorForCategory(track.category)
 
@@ -134,6 +136,7 @@ export default function ResultList({
   libraries,
   collections,
   selectedTrackId,
+  selectedIds,
   onSelectTrack,
   onToggleStar,
   onAddToCollection,
@@ -255,7 +258,7 @@ export default function ResultList({
     saveJSON(COL_WIDTHS_KEY, {})
   }
 
-  const itemData: RowData = { tracks, selectedTrackId, columns, gridTemplate, totalWidth, libraries }
+  const itemData: RowData = { tracks, selectedTrackId, selectedIds, columns, gridTemplate, totalWidth, libraries }
 
   return (
     <div className="content">

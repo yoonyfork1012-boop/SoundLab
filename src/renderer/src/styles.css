@@ -66,6 +66,51 @@ button {
   grid-template-rows: var(--menubar-h) var(--topbar-h) 1fr var(--player-h);
   height: 100vh;
   overflow: hidden;
+  position: relative;
+}
+
+/* 리스트/플레이어 경계 가로 리사이즈 핸들 (플레이어 높이 조절) */
+.resizer-h {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 7px;
+  margin-bottom: -3.5px;
+  cursor: row-resize;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.resizer-h::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--border-strong);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.resizer-h::after {
+  content: '';
+  width: 32px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--text-ghost);
+  opacity: 0.55;
+  transition: opacity 0.12s var(--ease), background 0.12s var(--ease);
+  pointer-events: none;
+}
+.resizer-h:hover,
+.resizer-h:active {
+  background: var(--accent-dim);
+}
+.resizer-h:hover::after,
+.resizer-h:active::after {
+  background: var(--accent);
+  opacity: 1;
 }
 
 /* ───────── Menu bar ───────── */
@@ -1467,6 +1512,37 @@ button {
   border-radius: var(--radius);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
   padding: 16px;
+}
+.modal--wide {
+  width: 420px;
+}
+.shortcuts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.shortcuts__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.shortcuts__row:last-child {
+  border-bottom: none;
+}
+.shortcuts__keys {
+  flex-shrink: 0;
+  min-width: 130px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-bright);
+  font-variant-numeric: tabular-nums;
+}
+.shortcuts__desc {
+  font-size: 12px;
+  color: var(--text-dim);
 }
 .modal__title {
   font-size: 12px;

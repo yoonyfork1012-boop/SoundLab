@@ -12,13 +12,15 @@ interface MenuBarProps {
   onToggleMeta: () => void
   view: 'grid' | 'list'
   onSetView: (v: 'grid' | 'list') => void
+  onShowShortcuts: () => void
 }
 
 export default function MenuBar({
   onAddFolder,
   onToggleMeta,
   view,
-  onSetView
+  onSetView,
+  onShowShortcuts
 }: MenuBarProps): JSX.Element {
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [maximized, setMaximized] = useState(false)
@@ -75,8 +77,9 @@ export default function MenuBar({
       { label: '환경설정', disabled: true }
     ],
     Help: [
-      { label: 'SoundLib 정보', disabled: true },
-      { label: '단축키: ↑/↓ 이전·다음, F 즐겨찾기', disabled: true }
+      { label: '키보드 단축키…', action: onShowShortcuts },
+      { separator: true },
+      { label: 'SoundLib 정보', disabled: true }
     ]
   }
 

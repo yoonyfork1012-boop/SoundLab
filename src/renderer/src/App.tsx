@@ -3,13 +3,14 @@ import MenuBar from './components/MenuBar/MenuBar'
 import Sidebar from './components/Sidebar/Sidebar'
 import ResultList from './components/ResultList/ResultList'
 import FolderGrid from './components/FolderGrid/FolderGrid'
-import PlayerBar from './components/PlayerBar/PlayerBar'
+import PlayerBar, { type PlayerHandle } from './components/PlayerBar/PlayerBar'
 import MetadataPanel from './components/MetadataPanel/MetadataPanel'
 import AccentPicker from './components/AccentPicker/AccentPicker'
 import NamePromptModal from './components/NamePromptModal/NamePromptModal'
 import ContextMenu from './components/ContextMenu/ContextMenu'
 import ColorPickerPopover from './components/ColorPickerPopover/ColorPickerPopover'
 import Toast from './components/Toast/Toast'
+import ShortcutsModal from './components/ShortcutsModal/ShortcutsModal'
 import type { Collection, Library, ScanProgress, Track } from '@shared/types'
 import { isBrowserPreview, mockCollections, mockLibrary, mockTracks } from './mockData'
 import { buildFolderTree, tracksUnder, type FolderNode } from './lib/folderTree'
@@ -25,6 +26,8 @@ const SIDEBAR_MIN = 180
 const SIDEBAR_MAX = 440
 const META_MIN = 220
 const META_MAX = 480
+const PLAYER_MIN = 96
+const PLAYER_MAX = 380
 
 export default function App(): JSX.Element {
   const [libraries, setLibraries] = useState<Library[]>([])
@@ -56,8 +59,13 @@ export default function App(): JSX.Element {
     null
   )
   const [toast, setToast] = useState<string | null>(null)
+  const [showShortcuts, setShowShortcuts] = useState(false)
+  // 다중 선택(Ctrl+A 등). 단일 클릭/화살표 이동 시 해당 트랙 하나로 초기화됨.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const toastTimerRef = useRef<number | undefined>(undefined)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const subSearchRef = useRef<HTMLInputElement>(null)
+  const playerRef = useRef<PlayerHandle>(null)
 
   function showToast(message: string): void {
     setToast(message)
@@ -68,6 +76,7 @@ export default function App(): JSX.Element {
   const [accent, setAccentState] = useState<string>(loadAccent())
   const [sidebarWidth, setSidebarWidth] = useState(() => loadNumber('soundlib.sidebarWidth', 246))
   const [metaWidth, setMetaWidth] = useState(() => loadNumber('soundlib.metaWidth', 272))
+  const [playerHeight, setPlayerHeight] = useState(() => loadNumber('soundlib.playerHeight', 140))
   const [sort, setSort] = useState<{ key: string | null; dir: 'asc' | 'desc' }>(() =>
     loadJSON('soundlib.sort', { key: null, dir: 'asc' })
   )
@@ -130,6 +139,29 @@ export default function App(): JSX.Element {
       saveNumber(which === 'sidebar' ? 'soundlib.sidebarWidth' : 'soundlib.metaWidth', latest)
     }
     document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  // 하단 플레이어(웨이브폼) 높이 드래그 조절 — 위로 끌면 커지고, 최소/최대 제한 + 종료 시 저장
+  function startPlayerResize(e: React.MouseEvent): void {
+    e.preventDefault()
+    const startY = e.clientY
+    const startHeight = playerHeight
+    let latest = startHeight
+    function onMove(ev: MouseEvent): void {
+      latest = Math.max(PLAYER_MIN, Math.min(PLAYER_MAX, startHeight + (startY - ev.clientY)))
+      setPlayerHeight(latest)
+    }
+    function onUp(): void {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      saveNumber('soundlib.playerHeight', latest)
+    }
+    document.body.style.cursor = 'row-resize'
     document.body.style.userSelect = 'none'
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
@@ -336,6 +368,7 @@ export default function App(): JSX.Element {
 
   async function handleSelectTrack(track: Track): Promise<void> {
     setSelectedTrack(track)
+    setSelectedIds(new Set([track.id])) // 단일 선택으로 초기화
     // Soundly처럼 미리듣기한 사운드는 회색(previewed) 처리 — 로컬 상태 즉시 반영
     const now = Date.now()
     setTracks((prev) => prev.map((t) => (t.id === track.id ? { ...t, lastPlayedAt: now } : t)))
@@ -411,22 +444,146 @@ export default function App(): JSX.Element {
     setShuffleSeed(Date.now())
   }
 
+  // 단축키 대상 라이브러리: 현재 폴더의 라이브러리 → 선택 트랙의 라이브러리 → 첫 라이브러리
+  const shortcutLibrary = useMemo(() => {
+    if (currentLibrary) return currentLibrary
+    if (selectedTrack) return libraries.find((l) => l.id === selectedTrack.libraryId) ?? null
+    return libraries[0] ?? null
+  }, [currentLibrary, selectedTrack, libraries])
+
+  function selectAllVisible(): void {
+    if (visibleTracks.length === 0) return
+    setSelectedIds(new Set(visibleTracks.map((t) => t.id)))
+    showToast(`${visibleTracks.length.toLocaleString()}개 선택됨`)
+  }
+
+  async function removeTracksFromActiveCollection(ids: number[]): Promise<void> {
+    if (!window.api || !activeCollection) return
+    let cols = collections
+    for (const id of ids) {
+      cols = await window.api.removeTrackFromCollection(activeCollection.id, id)
+    }
+    setCollections(cols)
+    showToast(`${ids.length}개 사운드를 컬렉션에서 제거했습니다`)
+  }
+
+  // Delete: 컬렉션 보기에서는 선택 트랙을 컬렉션에서 제거. (라이브러리 보기에서는 실제 파일을
+  // 삭제하지 않으므로 안전하게 아무 동작도 하지 않음)
+  function handleDeleteShortcut(): void {
+    if (activeCollection) {
+      const ids = selectedIds.size > 0 ? [...selectedIds] : selectedTrack ? [selectedTrack.id] : []
+      if (ids.length > 0) void removeTracksFromActiveCollection(ids)
+    } else if (selectedCollection == null && showStarredOnly) {
+      // 즐겨찾기 보기에서 Delete = 선택 트랙 즐겨찾기 해제
+      if (selectedTrack?.starred) void handleToggleStar(selectedTrack)
+    }
+  }
+
+  // F2: 컬렉션 보기면 컬렉션 이름 변경, 아니면 현재 라이브러리 이름 변경
+  function handleRenameShortcut(): void {
+    if (activeCollection) handleRenameCollection(activeCollection)
+    else if (currentLibrary) handleRenameLibrary(currentLibrary)
+  }
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
-      const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
-      const isNext = e.key === 'ArrowDown' || e.key === 'ArrowRight'
-      const isPrev = e.key === 'ArrowUp' || e.key === 'ArrowLeft'
-      if (isNext || isPrev) {
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName
+      const inEditable = tag === 'INPUT' || tag === 'TEXTAREA' || (target?.isContentEditable ?? false)
+      const mod = e.ctrlKey || e.metaKey
+
+      // ── 포커스 위치와 무관하게 동작 ──
+      // Ctrl+F: 메인 검색 / Ctrl+Shift+F: 서브 검색
+      if (mod && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault()
-        selectRelative(isNext ? 1 : -1)
-      } else if (e.key === 'f' || e.key === 'F') {
-        if (selectedTrack) void handleToggleStar(selectedTrack)
+        const el = e.shiftKey ? subSearchRef.current : searchInputRef.current
+        el?.focus()
+        el?.select()
+        return
+      }
+      // Esc: 정지 + 구간 선택 해제 (입력 중이면 블러)
+      if (e.key === 'Escape') {
+        playerRef.current?.stopAndClear()
+        setSelectedIds((prev) => (prev.size > 0 ? new Set() : prev))
+        if (inEditable) target?.blur()
+        return
+      }
+
+      if (mod && (e.key === 'a' || e.key === 'A')) {
+        if (inEditable) return // 인풋 내 텍스트 전체 선택은 기본 동작 유지
+        e.preventDefault()
+        selectAllVisible()
+        return
+      }
+      if (mod && (e.key === 'r' || e.key === 'R')) {
+        e.preventDefault()
+        if (shortcutLibrary) void handleScanNewFiles(shortcutLibrary)
+        return
+      }
+      if (mod && (e.key === 'o' || e.key === 'O')) {
+        e.preventDefault()
+        const path = selectedFolder ?? shortcutLibrary?.rootPath
+        if (path) void window.api?.showInExplorer(path)
+        return
+      }
+      // 그 외 Ctrl/Meta 조합은 브라우저/OS 기본 동작에 맡김
+      if (mod) return
+      // 입력창에서 편집 중이면 (Ctrl 조합이 아닌) 나머지 단축키는 텍스트 입력을 방해하지 않도록 무시
+      if (inEditable) return
+
+      switch (e.key) {
+        case ' ':
+          e.preventDefault()
+          playerRef.current?.playPause()
+          break
+        case 'Enter':
+          e.preventDefault()
+          playerRef.current?.play()
+          break
+        case 'ArrowDown':
+        case 'ArrowRight':
+          e.preventDefault()
+          selectRelative(1)
+          break
+        case 'ArrowUp':
+        case 'ArrowLeft':
+          e.preventDefault()
+          selectRelative(-1)
+          break
+        case 'Delete':
+        case 'Backspace':
+          e.preventDefault()
+          handleDeleteShortcut()
+          break
+        case 'F2':
+          e.preventDefault()
+          handleRenameShortcut()
+          break
+        case 's':
+        case 'S':
+          handleShuffleClick()
+          break
+        case 'f':
+        case 'F':
+          if (selectedTrack) void handleToggleStar(selectedTrack)
+          break
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [visibleTracks, selectedTrack])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    visibleTracks,
+    selectedTrack,
+    activeCollection,
+    selectedCollection,
+    showStarredOnly,
+    currentLibrary,
+    shortcutLibrary,
+    selectedFolder,
+    selectedIds,
+    collections
+  ])
 
   // 브레드크럼: 라이브러리명 + 선택 폴더 세그먼트 (Home = 루트 그리드)
   const crumbs = useMemo(() => {
@@ -448,12 +605,18 @@ export default function App(): JSX.Element {
   }, [currentLibrary, selectedFolder])
 
   return (
-    <div className="app">
+    <div
+      className="app"
+      style={{
+        gridTemplateRows: `var(--menubar-h) var(--topbar-h) 1fr ${playerHeight}px`
+      }}
+    >
       <MenuBar
         onAddFolder={handleOpenFolder}
         onToggleMeta={() => setShowMeta((v) => !v)}
         view={view}
         onSetView={setView}
+        onShowShortcuts={() => setShowShortcuts(true)}
       />
 
       <div className="topbar">
@@ -521,6 +684,7 @@ export default function App(): JSX.Element {
               <path d="M21 21l-4.3-4.3" />
             </svg>
             <input
+              ref={subSearchRef}
               className="topbar__subsearch"
               placeholder="Filter…"
               value={subSearch}
@@ -585,6 +749,15 @@ export default function App(): JSX.Element {
             setShowStarredOnly((v) => !v)
             setSelectedCollection(null)
           }}
+          onSelectLocalRoot={() => {
+            // Local 클릭 = 최상위 진입점: 모든 선택 해제 + 폴더 그리드 화면으로
+            setSelectedFolder(null)
+            setSelectedCollection(null)
+            setShowStarredOnly(false)
+            setSearch('')
+            setSubSearch('')
+            setView('grid')
+          }}
           onCollectionContextMenu={(e, collection) => setCollectionMenu({ x: e.clientX, y: e.clientY, collection })}
           onLibraryContextMenu={(e, library) => setLibraryMenu({ x: e.clientX, y: e.clientY, library })}
         />
@@ -632,6 +805,7 @@ export default function App(): JSX.Element {
               libraries={libraries}
               collections={collections}
               selectedTrackId={selectedTrack?.id ?? null}
+              selectedIds={selectedIds}
               onSelectTrack={handleSelectTrack}
               onToggleStar={handleToggleStar}
               onAddToCollection={handleAddToCollection}
@@ -659,9 +833,18 @@ export default function App(): JSX.Element {
         {showMeta && <MetadataPanel track={selectedTrack} onToggleStar={handleToggleStar} />}
       </div>
 
+      {/* 리스트/플레이어 경계 높이 조절 핸들 (플레이어 상단 경계에 겹쳐 배치) */}
+      <div
+        className="resizer-h"
+        style={{ bottom: playerHeight }}
+        onMouseDown={startPlayerResize}
+      />
+
       <PlayerBar
+        ref={playerRef}
         track={selectedTrack}
         accent={accent}
+        panelHeight={playerHeight}
         onPrev={() => selectRelative(-1)}
         onNext={() => selectRelative(1)}
       />
@@ -771,6 +954,8 @@ export default function App(): JSX.Element {
           ]}
         />
       )}
+
+      {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
 
       {toast && <Toast message={toast} />}
     </div>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin, { type Region } from 'wavesurfer.js/plugins/regions'
 import type { Track } from '@shared/types'
@@ -6,11 +6,29 @@ import { encodeWavFloat32, sliceAudioBuffer } from '../../lib/wavEncoder'
 
 const MIN_REGION_SEC = 0.05
 
+// 플레이어 패널 전체 높이에서 컨트롤바/여백을 뺀 웨이브폼 가용 높이를 계산해,
+// 스테레오(2채널 스택)/단일 채널 각각의 렌더 높이를 구한다. 패널을 키우면 웨이브폼도 커짐.
+function waveHeightsFor(panelHeight: number): { both: number; single: number } {
+  const waveArea = Math.max(40, panelHeight - 54 /* controls */ - 14 /* padding */)
+  return {
+    both: Math.max(16, Math.floor((waveArea - 2) / 2)),
+    single: Math.max(28, waveArea)
+  }
+}
+
 interface PlayerBarProps {
   track: Track | null
   accent: string
+  panelHeight: number
   onPrev: () => void
   onNext: () => void
+}
+
+// App의 키보드 단축키(Space/Enter/Esc)가 플레이어를 제어할 수 있도록 노출하는 명령형 핸들
+export interface PlayerHandle {
+  playPause: () => void
+  play: () => void
+  stopAndClear: () => void
 }
 
 function mimeTypeFor(filename: string): string {
@@ -131,8 +149,15 @@ const IconStop = (): JSX.Element => (
   </svg>
 )
 
-export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarProps): JSX.Element {
+const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
+  { track, accent, panelHeight, onPrev, onNext },
+  ref
+) {
   const containerRef = useRef<HTMLDivElement>(null)
+  // 현재 패널 높이에 따른 웨이브폼 높이 (setOptions에 항상 이 값을 사용)
+  const panelHeightRef = useRef(panelHeight)
+  panelHeightRef.current = panelHeight
+  const waveH = waveHeightsFor(panelHeight)
   const wavesurferRef = useRef<WaveSurfer | null>(null)
   const loadTokenRef = useRef(0)
   const routeRef = useRef<Route | null>(null)
@@ -166,12 +191,12 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       progressColor: accent,
       cursorColor: '#eceef2',
       cursorWidth: 1,
-      height: 30,
+      height: waveH.both,
       barWidth: 2,
       barGap: 1,
       barRadius: 3,
       normalize: true,
-      splitChannels: [{ height: 30 }, { height: 30 }]
+      splitChannels: [{ height: waveH.both }, { height: waveH.both }]
     })
     ws.on('play', () => setIsPlaying(true))
     ws.on('pause', () => setIsPlaying(false))
@@ -232,6 +257,30 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     wavesurferRef.current?.setVolume(volume)
   }, [volume])
 
+  // 패널 높이가 바뀌면 웨이브폼을 새 높이로 다시 그림 (드래그 중 과도한 리로드 방지 위해 디바운스)
+  useEffect(() => {
+    if (!wavesurferRef.current || !urlRef.current) return
+    const id = window.setTimeout(() => {
+      void renderView(ch1, ch2, mode)
+    }, 130)
+    return () => window.clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelHeight])
+
+  // App 키보드 단축키가 호출하는 명령형 제어 (재생/일시정지, 재생, 정지+구간해제)
+  useImperativeHandle(ref, () => ({
+    playPause: () => wavesurferRef.current?.playPause(),
+    play: () => {
+      void wavesurferRef.current?.play()
+    },
+    stopAndClear: () => {
+      wavesurferRef.current?.stop()
+      regionsPluginRef.current?.clearRegions()
+      activeRegionRef.current = null
+      setRegionBounds(null)
+    }
+  }))
+
   // 현재 채널/모드 → 웨이브폼 뷰
   function viewFor(c1: boolean, c2: boolean, m: 'stereo' | 'mono', numCh: number): WaveView {
     if (numCh < 2) return 'mono'
@@ -271,15 +320,16 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
     const v = viewFor(nCh1, nCh2, nMode, numCh)
     const wasPlaying = ws.isPlaying()
     const time = ws.getCurrentTime()
+    const h = waveHeightsFor(panelHeightRef.current)
     try {
       if (v === 'both') {
         // 스테레오는 WaveSurfer 네이티브 디코드 + splitChannels로 위/아래 2채널 스택
-        ws.setOptions({ height: 30, splitChannels: [{ height: 30 }, { height: 30 }] })
+        ws.setOptions({ height: h.both, splitChannels: [{ height: h.both }, { height: h.both }] })
         await ws.load(url)
       } else {
         const pk = await ensurePeaks()
         if (!pk) return
-        ws.setOptions({ height: 58, splitChannels: [{ height: 58 }] })
+        ws.setOptions({ height: h.single, splitChannels: [{ height: h.single }] })
         await ws.load(url, peaksFor(pk, v), pk.duration)
       }
       if (time > 0) ws.setTime(time)
@@ -472,15 +522,16 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
         urlRef.current = objectUrl
 
         const v = viewFor(ch1, ch2, mode, track.channels ?? 2)
+        const h = waveHeightsFor(panelHeightRef.current)
         if (v === 'both') {
-          ws.setOptions({ height: 30, splitChannels: [{ height: 30 }, { height: 30 }] })
+          ws.setOptions({ height: h.both, splitChannels: [{ height: h.both }, { height: h.both }] })
           await ws.load(objectUrl)
         } else {
           const pk = await decodePeaks(arr)
           if (cancelled || token !== loadTokenRef.current) return
           peaksRef.current = pk
           if (pk) {
-            ws.setOptions({ height: 58, splitChannels: [{ height: 58 }] })
+            ws.setOptions({ height: h.single, splitChannels: [{ height: h.single }] })
             await ws.load(objectUrl, peaksFor(pk, v), pk.duration)
           } else {
             await ws.load(objectUrl)
@@ -624,4 +675,6 @@ export default function PlayerBar({ track, accent, onPrev, onNext }: PlayerBarPr
       </div>
     </div>
   )
-}
+})
+
+export default PlayerBar

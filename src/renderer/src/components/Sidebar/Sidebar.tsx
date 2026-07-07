@@ -26,6 +26,7 @@ interface SidebarProps {
   onDeleteCollection: (id: number) => void
   showStarredOnly: boolean
   onToggleStarredView: () => void
+  onSelectLocalRoot: () => void
   onCollectionContextMenu?: (e: React.MouseEvent, collection: Collection) => void
   onLibraryContextMenu?: (e: React.MouseEvent, library: Library) => void
 }
@@ -52,6 +53,7 @@ export default function Sidebar({
   onDeleteCollection,
   showStarredOnly,
   onToggleStarredView,
+  onSelectLocalRoot,
   onCollectionContextMenu,
   onLibraryContextMenu
 }: SidebarProps): JSX.Element {
@@ -74,6 +76,8 @@ export default function Sidebar({
     })
   }
   const starredCount = tracks.filter((t) => t.starred).length
+  // Local 자체를 클릭하면(=최상위 진입점) 폴더/컬렉션/즐겨찾기 선택이 모두 해제된 Home 상태
+  const atLocalRoot = !selectedFolder && selectedCollection == null && !showStarredOnly
 
   return (
     <aside className="sidebar">
@@ -85,8 +89,20 @@ export default function Sidebar({
         </span>
       </div>
 
-      <div className="ftree__row" style={{ paddingLeft: 10 }} onClick={toggleLocal}>
-        <span className="ftree__toggle">
+      {/* Local = 전체 로컬 라이브러리 최상위 진입점. 행 클릭 시 루트 폴더 그리드로 이동하고,
+          화살표(chevron)로만 하위 트리를 펼치거나 접는다. */}
+      <div
+        className={`ftree__row${atLocalRoot ? ' ftree__row--active' : ''}`}
+        style={{ paddingLeft: 10 }}
+        onClick={onSelectLocalRoot}
+      >
+        <span
+          className="ftree__toggle"
+          onClick={(e) => {
+            e.stopPropagation()
+            toggleLocal()
+          }}
+        >
           <Chevron open={localOpen} />
         </span>
         <span className="ftree__name">Local</span>
