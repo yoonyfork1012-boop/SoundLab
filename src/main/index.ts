@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow } from 'electron'
+import { app, shell, dialog, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { rm } from 'fs/promises'
 import { registerIpcHandlers } from './ipc'
@@ -66,7 +66,18 @@ if (!gotLock) {
   })
 
   app.whenReady().then(async () => {
-    await initDb()
+    try {
+      await initDb()
+    } catch (err) {
+      // 시작 실패(예: 패키지에 네이티브 리소스 누락)를 조용히 삼키지 않고 사용자에게 표시.
+      // 이렇게 하면 창이 안 뜨는 원인을 바로 알 수 있음.
+      dialog.showErrorBox(
+        'SoundLib 시작 오류',
+        `데이터베이스 초기화에 실패했습니다.\n\n${(err as Error)?.stack ?? String(err)}`
+      )
+      app.quit()
+      return
+    }
     createWindow()
 
     app.on('activate', () => {
