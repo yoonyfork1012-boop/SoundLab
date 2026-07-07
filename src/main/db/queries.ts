@@ -84,17 +84,21 @@ export function upsertTrack(track: {
   channels: number | null
   category: string | null
   subcategory: string | null
+  artworkPath?: string | null
+  artworkSource?: string | null
 }): void {
   getDb().run(
-    `INSERT INTO tracks (library_id, file_path, filename, duration_ms, sample_rate, bit_depth, channels, category, subcategory, added_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO tracks (library_id, file_path, filename, duration_ms, sample_rate, bit_depth, channels, category, subcategory, artwork_path, artwork_source, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(file_path) DO UPDATE SET
        duration_ms = excluded.duration_ms,
        sample_rate = excluded.sample_rate,
        bit_depth = excluded.bit_depth,
        channels = excluded.channels,
        category = excluded.category,
-       subcategory = excluded.subcategory`,
+       subcategory = excluded.subcategory,
+       artwork_path = excluded.artwork_path,
+       artwork_source = excluded.artwork_source`,
     [
       track.libraryId,
       track.filePath,
@@ -105,6 +109,8 @@ export function upsertTrack(track: {
       track.channels,
       track.category,
       track.subcategory,
+      track.artworkPath ?? null,
+      track.artworkSource ?? null,
       Date.now()
     ]
   )

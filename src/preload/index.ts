@@ -76,6 +76,17 @@ const api = {
 
   writeClipboardText: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:writeText', text),
 
+  // 커버 아트워크 (임베디드 우선 → 폴더 커버 → null)
+  getTrackArtwork: (
+    filePath: string,
+    folderCoverPath: string | null
+  ): Promise<{ url: string; source: 'embedded' | 'folder' } | null> =>
+    ipcRenderer.invoke('artwork:getForTrack', filePath, folderCoverPath),
+  getFolderCover: (
+    folderPath: string
+  ): Promise<{ url: string; source: 'folder' } | null> =>
+    ipcRenderer.invoke('artwork:getFolderCover', folderPath),
+
   // 리스트 행을 OS 네이티브 드래그로 내보내기 (DAW/탐색기로 드롭)
   startDrag: (filePath: string): void => ipcRenderer.send('drag:start', filePath),
 

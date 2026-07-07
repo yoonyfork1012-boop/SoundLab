@@ -39,6 +39,8 @@ declare const api: {
     removeTrackFromCollection: (collectionId: number, trackId: number) => Promise<Collection[]>;
     readAudioFile: (filePath: string) => Promise<Uint8Array>;
     writeClipboardText: (text: string) => Promise<void>;
+    getTrackArtwork: (filePath: string, folderCoverPath: string | null) => Promise<{ url: string; source: 'embedded' | 'folder' } | null>;
+    getFolderCover: (folderPath: string) => Promise<{ url: string; source: 'folder' } | null>;
     startDrag: (filePath: string) => void;
     startDragFromBuffer: (bytes: Uint8Array, filename: string) => void;
     windowMinimize: () => void;

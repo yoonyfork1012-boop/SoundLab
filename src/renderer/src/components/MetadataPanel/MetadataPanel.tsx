@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { Track } from '@shared/types'
 import { colorForCategory } from '@shared/ucsCategories'
 
@@ -15,6 +16,20 @@ function formatDuration(ms: number | null): string {
 }
 
 export default function MetadataPanel({ track, onToggleStar }: MetadataPanelProps): JSX.Element {
+  // 커버 아트워크: 트랙 선택 시 임베디드 우선 → 폴더 커버 순으로 비동기 로드
+  const [artwork, setArtwork] = useState<{ url: string; source: string } | null>(null)
+  useEffect(() => {
+    setArtwork(null)
+    if (!track || !window.api?.getTrackArtwork) return
+    let cancelled = false
+    void window.api.getTrackArtwork(track.filePath, track.artworkPath).then((res) => {
+      if (!cancelled) setArtwork(res)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [track?.id, track?.filePath, track?.artworkPath])
+
   if (!track) {
     return (
       <aside className="meta">
@@ -30,14 +45,22 @@ export default function MetadataPanel({ track, onToggleStar }: MetadataPanelProp
     <aside className="meta">
       <div
         className="meta__artwork"
-        style={{ background: `linear-gradient(150deg, ${color}44, ${color}12)` }}
+        style={
+          artwork
+            ? undefined
+            : { background: `linear-gradient(150deg, ${color}44, ${color}12)` }
+        }
       >
-        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" opacity="0.9">
-          <path d="M9 18V5l12-2v13" />
-          <circle cx="6" cy="18" r="3" />
-          <circle cx="18" cy="16" r="3" />
-        </svg>
-        {track.artworkSource && <span className="meta__artwork-badge">{track.artworkSource}</span>}
+        {artwork ? (
+          <img className="meta__artwork-img" src={artwork.url} alt="" />
+        ) : (
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" opacity="0.9">
+            <path d="M9 18V5l12-2v13" />
+            <circle cx="6" cy="18" r="3" />
+            <circle cx="18" cy="16" r="3" />
+          </svg>
+        )}
+        {artwork && <span className="meta__artwork-badge">{artwork.source}</span>}
       </div>
 
       <div className="meta__title-row">

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { scanLibrary, scanNewFilesOnly } from './scanner'
 import { startWatching, stopWatching } from './watcher'
+import { findCoverInDir, getEmbeddedArtworkDataUrl, getFolderCoverDataUrl } from './artwork'
 import {
   getAllLibraries,
   getAllTracks,
@@ -128,6 +129,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('clipboard:writeText', (_event, text: string) => {
     clipboard.writeText(text)
+  })
+
+  // 트랙 커버: 임베디드 아트워크 우선 → 폴더 커버(스캔 시 저장한 경로) → null(플레이스홀더)
+  ipcMain.handle(
+    'artwork:getForTrack',
+    async (_event, filePath: string, folderCoverPath: string | null) => {
+      try {
+        const { parseFile } = await import('music-metadata')
+        const embedded = await getEmbeddedArtworkDataUrl(filePath, (p) => parseFile(p))
+        if (embedded) return { url: embedded, source: 'embedded' as const }
+      } catch {
+        /* 임베디드 추출 실패는 무시하고 폴더 커버로 폴백 */
+      }
+      if (folderCoverPath) {
+        const folder = getFolderCoverDataUrl(folderCoverPath)
+        if (folder) return { url: folder, source: 'folder' as const }
+      }
+      return null
+    }
+  )
+
+  // 폴더 커버(그리드 카드용): 폴더 안 커버 이미지 → 리사이즈 data URL
+  ipcMain.handle('artwork:getFolderCover', (_event, folderPath: string) => {
+    const cover = findCoverInDir(folderPath)
+    if (!cover) return null
+    const url = getFolderCoverDataUrl(cover)
+    return url ? { url, source: 'folder' as const } : null
   })
 
   ipcMain.handle('file:readAudio', async (_event, filePath: string) => {

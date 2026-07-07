@@ -9,8 +9,10 @@ import {
   upsertLibrary,
   upsertTrack
 } from '../db/queries'
+import { dirname } from 'path'
 import { categoryFromFilename } from '../../shared/ucsCatId'
 import { classifySound } from '../../shared/soundTaxonomy'
+import { findCoverInDir } from '../artwork'
 import type { Library, ScanProgress } from '../../shared/types'
 
 // music-metadata v10은 ESM 전용. 패키징된 CJS 빌드에서 static import은 parseFile이
@@ -90,14 +92,24 @@ function relativeFolderPath(filePath: string, rootPath: string): string {
   return dir.startsWith(root) ? dir.slice(root.length).replace(/^\/+/, '') : dir
 }
 
+// 트랙이 든 폴더의 커버 이미지 경로 (폴더당 한 번만 탐색 후 캐시)
+function folderCoverFor(filePath: string, cache: Map<string, string | null>): string | null {
+  const dir = dirname(filePath)
+  if (!cache.has(dir)) cache.set(dir, findCoverInDir(dir))
+  return cache.get(dir) ?? null
+}
+
 async function parseAndUpsert(
   filePath: string,
   libraryId: number,
   rootPath: string,
-  loggedErrorRef: { v: boolean }
+  loggedErrorRef: { v: boolean },
+  dirCoverCache: Map<string, string | null>
 ): Promise<void> {
   const filename = filePath.split(/[\\/]/).pop() ?? filePath
   const folderPath = relativeFolderPath(filePath, rootPath)
+  // 스캔 시에는 폴더 커버만 저장(빠름). 임베디드 아트워크는 선택 시 우선 적용됨.
+  const cover = folderCoverFor(filePath, dirCoverCache)
   const { parseFile } = await getMusicMetadata()
   try {
     const meta = await parseFile(filePath, { skipCovers: true, duration: true })
@@ -112,7 +124,9 @@ async function parseAndUpsert(
       bitDepth: meta.format.bitsPerSample ?? null,
       channels: meta.format.numberOfChannels ?? null,
       category,
-      subcategory
+      subcategory,
+      artworkPath: cover,
+      artworkSource: cover ? 'folder' : null
     })
   } catch (err) {
     // 개별 파일 파싱 실패는 무시하되, 첫 오류만 진단용으로 기록
@@ -130,7 +144,9 @@ async function parseAndUpsert(
       bitDepth: null,
       channels: null,
       category,
-      subcategory
+      subcategory,
+      artworkPath: cover,
+      artworkSource: cover ? 'folder' : null
     })
   }
 }
@@ -145,13 +161,14 @@ export async function scanLibrary(
   const files = await collectAudioFiles(rootPath, onProgress)
   const loggedErrorRef = { v: false }
   const presentFilePaths = new Set<string>()
+  const dirCoverCache = new Map<string, string | null>()
 
   beginScanBatch()
   try {
     for (let i = 0; i < files.length; i++) {
       const filePath = files[i]
       presentFilePaths.add(filePath)
-      await parseAndUpsert(filePath, library.id, rootPath, loggedErrorRef)
+      await parseAndUpsert(filePath, library.id, rootPath, loggedErrorRef, dirCoverCache)
       onProgress?.({
         phase: 'parsing',
         scanned: i + 1,
@@ -179,12 +196,13 @@ export async function scanNewFilesOnly(
   const files = await collectAudioFiles(rootPath, onProgress)
   const newFiles = files.filter((f) => !hasTrackFilePath(f))
   const loggedErrorRef = { v: false }
+  const dirCoverCache = new Map<string, string | null>()
 
   beginScanBatch()
   try {
     for (let i = 0; i < newFiles.length; i++) {
       const filePath = newFiles[i]
-      await parseAndUpsert(filePath, libraryId, rootPath, loggedErrorRef)
+      await parseAndUpsert(filePath, libraryId, rootPath, loggedErrorRef, dirCoverCache)
       onProgress?.({
         phase: 'parsing',
         scanned: i + 1,
