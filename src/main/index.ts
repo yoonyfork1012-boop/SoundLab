@@ -1,29 +1,29 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
-import { rm } from 'fs/promises'
-import { readFileSync } from 'fs'
-import { registerIpcHandlers } from './ipc'
-import { closeDb, initDb } from './db'
-import { getAllLibraries } from './db/queries'
-import { startWatching, stopAllWatching } from './watcher'
+import { app, shell, BrowserWindow, ipcMain } from "electron";
+import { join } from "path";
+import { rm } from "fs/promises";
+import { readFileSync } from "fs";
+import { registerIpcHandlers } from "./ipc";
+import { closeDb, initDb } from "./db";
+import { getAllLibraries } from "./db/queries";
+import { startWatching, stopAllWatching } from "./watcher";
 
 // 클릭→IPC 파일읽기→디코딩 사이 비동기 대기로 사용자 제스처가 만료되어
 // Chromium 자동재생 정책이 재생을 막는 문제 해결
-app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
 // 패키징 전에는 프로젝트 루트의 build/icon.png, 패키징 후에는 electron-builder의
 // extraResources로 복사된 resources/icon.png를 사용 — 두 경우 모두 out/main 기준 상대경로가 달라짐
 const ICON_PATH = app.isPackaged
-  ? join(process.resourcesPath, 'icon.png')
-  : join(__dirname, '../../build/icon.png')
+  ? join(process.resourcesPath, "icon.png")
+  : join(__dirname, "../../build/icon.png");
 
 const ICON_DATA_URL = (() => {
   try {
-    return `data:image/png;base64,${readFileSync(ICON_PATH).toString('base64')}`
+    return `data:image/png;base64,${readFileSync(ICON_PATH).toString("base64")}`;
   } catch {
-    return ''
+    return "";
   }
-})()
+})();
 
 // data: URL로 띄우는 최소 스플래시 창 — 별도 빌드 산출물 없이 메인 프로세스
 // 번들 안에만 존재해서, DB 로딩 등 무거운 초기화 작업 중에도 항상 즉시 뜬다.
@@ -92,10 +92,10 @@ const SPLASH_HTML = `<!doctype html>
     }
   </script>
 </body>
-</html>`
+</html>`;
 
-let splashWindow: BrowserWindow | null = null
-let mainWindowRef: BrowserWindow | null = null
+let splashWindow: BrowserWindow | null = null;
+let mainWindowRef: BrowserWindow | null = null;
 
 async function createSplashWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
@@ -106,38 +106,44 @@ async function createSplashWindow(): Promise<BrowserWindow> {
     movable: true,
     show: false,
     transparent: true,
-    backgroundColor: '#00000000',
+    backgroundColor: "#00000000",
     icon: ICON_PATH,
-    webPreferences: { sandbox: true }
-  })
+    webPreferences: { sandbox: true },
+  });
   const shown = new Promise<void>((resolve) => {
-    win.once('ready-to-show', () => {
-      win.show()
-      resolve()
-    })
-  })
-  win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(SPLASH_HTML)}`)
-  await shown
-  return win
+    win.once("ready-to-show", () => {
+      win.show();
+      resolve();
+    });
+  });
+  win.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(SPLASH_HTML)}`,
+  );
+  await shown;
+  return win;
 }
 
 function setSplashStatus(text: string): void {
-  if (!splashWindow || splashWindow.isDestroyed()) return
+  if (!splashWindow || splashWindow.isDestroyed()) return;
   splashWindow.webContents
-    .executeJavaScript(`window.__setStatus && window.__setStatus(${JSON.stringify(text)})`)
-    .catch(() => {})
+    .executeJavaScript(
+      `window.__setStatus && window.__setStatus(${JSON.stringify(text)})`,
+    )
+    .catch(() => {});
 }
 
 function setSplashError(message: string): void {
-  if (!splashWindow || splashWindow.isDestroyed()) return
+  if (!splashWindow || splashWindow.isDestroyed()) return;
   splashWindow.webContents
-    .executeJavaScript(`window.__setError && window.__setError(${JSON.stringify(message)})`)
-    .catch(() => {})
+    .executeJavaScript(
+      `window.__setError && window.__setError(${JSON.stringify(message)})`,
+    )
+    .catch(() => {});
 }
 
 function closeSplash(): void {
-  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close()
-  splashWindow = null
+  if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
+  splashWindow = null;
 }
 
 function createWindow(): BrowserWindow {
@@ -148,123 +154,132 @@ function createWindow(): BrowserWindow {
     minHeight: 640,
     show: false,
     frame: false,
-    backgroundColor: '#0e0f11',
+    backgroundColor: "#0e0f11",
     icon: ICON_PATH,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
       // electron-vite dev에서는 렌더러가 http://localhost 오리진으로 뜨는데, 그 상태에서
       // file:// 오디오(webPreviewURL)를 재생하려 하면 크로미움이 "Not allowed to load
       // local resource"로 막는다. 패키징된 빌드는 렌더러도 file:// 오리진이라 문제가 없으므로
       // 이 완화는 개발 모드(ELECTRON_RENDERER_URL이 설정된 경우)에서만 적용한다.
-      webSecurity: !process.env.ELECTRON_RENDERER_URL
-    }
-  })
+      webSecurity: !process.env.ELECTRON_RENDERER_URL,
+    },
+  });
 
   // 커스텀 타이틀바 최대화 상태 동기화
-  mainWindow.on('maximize', () => mainWindow.webContents.send('window:maximized', true))
-  mainWindow.on('unmaximize', () => mainWindow.webContents.send('window:maximized', false))
+  mainWindow.on("maximize", () =>
+    mainWindow.webContents.send("window:maximized", true),
+  );
+  mainWindow.on("unmaximize", () =>
+    mainWindow.webContents.send("window:maximized", false),
+  );
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
+    shell.openExternal(details.url);
+    return { action: "deny" };
+  });
 
-  registerIpcHandlers(mainWindow)
+  registerIpcHandlers(mainWindow);
 
   // 앱 시작 시 "Monitor for changes"가 켜져 있던 라이브러리는 감시 재개
   for (const lib of getAllLibraries()) {
-    if (lib.monitor) startWatching(lib.id, lib.rootPath, mainWindow)
+    startWatching(lib.id, lib.rootPath, mainWindow);
   }
 
   if (process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
   }
 
-  return mainWindow
+  return mainWindow;
 }
 
 // 중복 실행 방지 — 두 인스턴스가 동시에 DB 파일을 덮어써 손상되는 것을 막음
-const gotLock = app.requestSingleInstanceLock()
+const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  app.quit()
+  app.quit();
 } else {
-  app.on('second-instance', () => {
-    const win = mainWindowRef
+  app.on("second-instance", () => {
+    const win = mainWindowRef;
     if (win) {
-      if (win.isMinimized()) win.restore()
-      win.focus()
+      if (win.isMinimized()) win.restore();
+      win.focus();
     }
-  })
+  });
 
   app.whenReady().then(async () => {
-    splashWindow = await createSplashWindow()
+    splashWindow = await createSplashWindow();
 
     try {
-      setSplashStatus('Loading metadata cache...')
-      await initDb()
+      setSplashStatus("Loading metadata cache...");
+      await initDb();
     } catch (err) {
       // 시작 실패(예: 패키지에 네이티브 리소스 누락)를 조용히 삼키지 않고 스플래시에 표시.
       // 창이 아예 안 뜨는 대신 원인을 바로 보여주고, 앱은 멈추지 않고 Quit으로 종료 가능.
       setSplashError(
-        `데이터베이스 초기화에 실패했습니다.\n\n${(err as Error)?.stack ?? String(err)}`
-      )
-      return
+        `데이터베이스 초기화에 실패했습니다.\n\n${(err as Error)?.stack ?? String(err)}`,
+      );
+      return;
     }
 
-    setSplashStatus('Loading sound library...')
+    setSplashStatus("Loading sound library...");
 
-    let mainWindow: BrowserWindow
+    let mainWindow: BrowserWindow;
     try {
-      mainWindow = createWindow()
+      mainWindow = createWindow();
     } catch (err) {
-      setSplashError(`메인 창을 여는 데 실패했습니다.\n\n${(err as Error)?.stack ?? String(err)}`)
-      return
+      setSplashError(
+        `메인 창을 여는 데 실패했습니다.\n\n${(err as Error)?.stack ?? String(err)}`,
+      );
+      return;
     }
-    mainWindowRef = mainWindow
+    mainWindowRef = mainWindow;
 
-    let contentReady = false
-    let rendererReady = false
+    let contentReady = false;
+    let rendererReady = false;
     function tryReveal(): void {
-      if (!contentReady || !rendererReady) return
-      if (!mainWindow.isDestroyed()) mainWindow.show()
-      closeSplash()
+      if (!contentReady || !rendererReady) return;
+      if (!mainWindow.isDestroyed()) mainWindow.show();
+      closeSplash();
     }
 
-    mainWindow.once('ready-to-show', () => {
-      contentReady = true
-      tryReveal()
-    })
+    mainWindow.once("ready-to-show", () => {
+      contentReady = true;
+      tryReveal();
+    });
 
     // 렌더러가 초기 라이브러리/트랙 로드를 마치면 신호를 보내온다 — 그 전에 창을 보여주면
     // 빈 리스트가 잠깐 보였다가 채워지는 "멈춘 것 같은" 느낌을 준다.
-    ipcMain.once('app:renderer-ready', () => {
-      rendererReady = true
-      tryReveal()
-    })
+    ipcMain.once("app:renderer-ready", () => {
+      rendererReady = true;
+      tryReveal();
+    });
 
     // 안전장치: 렌더러가 어떤 이유로든 준비 신호를 못 보내는 경우(예외 등) 무한정
     // 스플래시에 갇히지 않도록 일정 시간 후에는 그냥 보여준다.
     setTimeout(() => {
-      rendererReady = true
-      tryReveal()
-    }, 10000)
+      rendererReady = true;
+      tryReveal();
+    }, 10000);
 
-    app.on('activate', () => {
+    app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        mainWindowRef = createWindow()
-        mainWindowRef.once('ready-to-show', () => mainWindowRef?.show())
+        mainWindowRef = createWindow();
+        mainWindowRef.once("ready-to-show", () => mainWindowRef?.show());
       }
-    })
-  })
+    });
+  });
 
-  app.on('window-all-closed', () => {
-    stopAllWatching()
-    closeDb()
+  app.on("window-all-closed", () => {
+    stopAllWatching();
+    closeDb();
     // Waveform 구간 드래그로 만든 임시 오디오 파일 정리 (실패해도 무시)
-    void rm(join(app.getPath('temp'), 'soundlib-dragexports'), { recursive: true, force: true }).catch(() => {})
-    if (process.platform !== 'darwin') app.quit()
-  })
+    void rm(join(app.getPath("temp"), "soundlib-dragexports"), {
+      recursive: true,
+      force: true,
+    }).catch(() => {});
+    if (process.platform !== "darwin") app.quit();
+  });
 }

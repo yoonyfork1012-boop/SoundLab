@@ -1,42 +1,48 @@
-import initSqlJs, { Database, SqlJsStatic } from 'sql.js'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs'
-import { join } from 'path'
-import { homedir } from 'os'
+import initSqlJs, { Database, SqlJsStatic } from "sql.js";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+} from "fs";
+import { join } from "path";
+import { homedir } from "os";
 
-const SOUNDLIB_DIR = join(homedir(), '.soundlib')
-export const ARTWORK_DIR = join(SOUNDLIB_DIR, 'artwork')
-const DB_PATH = join(SOUNDLIB_DIR, 'soundlib.db')
+const SOUNDLIB_DIR = join(homedir(), ".soundlib");
+export const ARTWORK_DIR = join(SOUNDLIB_DIR, "artwork");
+const DB_PATH = join(SOUNDLIB_DIR, "soundlib.db");
 
-let db: Database | null = null
+let db: Database | null = null;
 
 function ensureDirs(): void {
-  if (!existsSync(SOUNDLIB_DIR)) mkdirSync(SOUNDLIB_DIR, { recursive: true })
-  if (!existsSync(ARTWORK_DIR)) mkdirSync(ARTWORK_DIR, { recursive: true })
+  if (!existsSync(SOUNDLIB_DIR)) mkdirSync(SOUNDLIB_DIR, { recursive: true });
+  if (!existsSync(ARTWORK_DIR)) mkdirSync(ARTWORK_DIR, { recursive: true });
 }
 
 export async function initDb(): Promise<void> {
-  if (db) return
-  ensureDirs()
+  if (db) return;
+  ensureDirs();
 
-  const wasmPath = require.resolve('sql.js/dist/sql-wasm.wasm')
-  const SQL: SqlJsStatic = await initSqlJs({ locateFile: () => wasmPath })
+  const wasmPath = require.resolve("sql.js/dist/sql-wasm.wasm");
+  const SQL: SqlJsStatic = await initSqlJs({ locateFile: () => wasmPath });
 
   // 손상된 DB(예: 비정상 종료/동시 쓰기)로 앱이 아예 안 켜지는 것을 방지 —
   // 로드 실패 시 손상 파일을 백업으로 옮기고 새 DB로 시작
   if (existsSync(DB_PATH)) {
     try {
-      db = new SQL.Database(readFileSync(DB_PATH))
+      db = new SQL.Database(readFileSync(DB_PATH));
     } catch (err) {
       try {
-        renameSync(DB_PATH, `${DB_PATH}.corrupt-${Date.now()}`)
+        renameSync(DB_PATH, `${DB_PATH}.corrupt-${Date.now()}`);
       } catch {
         /* noop */
       }
-      console.error('손상된 DB 감지 → 새 DB로 시작:', (err as Error)?.message)
-      db = new SQL.Database()
+      console.error("손상된 DB 감지 → 새 DB로 시작:", (err as Error)?.message);
+      db = new SQL.Database();
     }
   } else {
-    db = new SQL.Database()
+    db = new SQL.Database();
   }
 
   db.run(`
@@ -84,70 +90,78 @@ export async function initDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_tracks_category ON tracks(category);
     CREATE INDEX IF NOT EXISTS idx_tracks_filename ON tracks(filename);
     CREATE INDEX IF NOT EXISTS idx_tracks_library ON tracks(library_id);
-  `)
+  `);
 
-  runMigrations()
-  persistDb()
+  runMigrations();
+  persistDb();
 }
 
 // CREATE TABLE IF NOT EXISTS는 기존 DB에 새 컬럼을 추가해주지 않으므로,
 // 이미 테이블이 있던 예전 DB에도 새 컬럼이 생기도록 직접 확인 후 ALTER TABLE
 function runMigrations(): void {
-  const d = getDb()
+  const d = getDb();
 
   function hasColumn(table: string, column: string): boolean {
-    const stmt = d.prepare(`PRAGMA table_info(${table})`)
-    let found = false
+    const stmt = d.prepare(`PRAGMA table_info(${table})`);
+    let found = false;
     while (stmt.step()) {
-      const row = stmt.getAsObject()
+      const row = stmt.getAsObject();
       if (row.name === column) {
-        found = true
-        break
+        found = true;
+        break;
       }
     }
-    stmt.free()
-    return found
+    stmt.free();
+    return found;
   }
 
-  if (!hasColumn('collections', 'color')) {
-    d.run('ALTER TABLE collections ADD COLUMN color TEXT')
+  if (!hasColumn("collections", "color")) {
+    d.run("ALTER TABLE collections ADD COLUMN color TEXT");
   }
-  if (!hasColumn('libraries', 'monitor')) {
-    d.run('ALTER TABLE libraries ADD COLUMN monitor INTEGER DEFAULT 0')
+  if (!hasColumn("libraries", "monitor")) {
+    d.run("ALTER TABLE libraries ADD COLUMN monitor INTEGER DEFAULT 0");
   }
-  if (!hasColumn('libraries', 'analyzed_at')) {
-    d.run('ALTER TABLE libraries ADD COLUMN analyzed_at INTEGER')
+  if (!hasColumn("libraries", "analyzed_at")) {
+    d.run("ALTER TABLE libraries ADD COLUMN analyzed_at INTEGER");
   }
-  if (!hasColumn('tracks', 'similarity_key')) {
-    d.run('ALTER TABLE tracks ADD COLUMN similarity_key TEXT')
+  if (!hasColumn("tracks", "similarity_key")) {
+    d.run("ALTER TABLE tracks ADD COLUMN similarity_key TEXT");
   }
-  if (!hasColumn('tracks', 'mtime_ms')) {
-    d.run('ALTER TABLE tracks ADD COLUMN mtime_ms REAL')
+  if (!hasColumn("tracks", "mtime_ms")) {
+    d.run("ALTER TABLE tracks ADD COLUMN mtime_ms REAL");
   }
-  if (!hasColumn('tracks', 'file_size')) {
-    d.run('ALTER TABLE tracks ADD COLUMN file_size INTEGER')
+  if (!hasColumn("tracks", "file_size")) {
+    d.run("ALTER TABLE tracks ADD COLUMN file_size INTEGER");
   }
-  if (!hasColumn('tracks', 'publisher')) {
-    d.run('ALTER TABLE tracks ADD COLUMN publisher TEXT')
+  if (!hasColumn("tracks", "publisher")) {
+    d.run("ALTER TABLE tracks ADD COLUMN publisher TEXT");
   }
-  if (!hasColumn('tracks', 'is_float')) {
-    d.run('ALTER TABLE tracks ADD COLUMN is_float INTEGER DEFAULT 0')
+  if (!hasColumn("tracks", "is_float")) {
+    d.run("ALTER TABLE tracks ADD COLUMN is_float INTEGER DEFAULT 0");
   }
+  if (!hasColumn("tracks", "file_hash")) {
+    d.run("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
+  }
+  // 이름변경/이동 후보 탐색(size+hash) 성능을 위한 인덱스 — 대용량 라이브러리에서 매 add 이벤트마다
+  // 풀스캔하지 않도록 함
+  d.run(
+    "CREATE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(file_hash, file_size)",
+  );
 }
 
 export function getDb(): Database {
-  if (!db) throw new Error('Database not initialized — call initDb() first')
-  return db
+  if (!db) throw new Error("Database not initialized — call initDb() first");
+  return db;
 }
 
 export function persistDb(): void {
-  if (!db) return
-  writeFileSync(DB_PATH, Buffer.from(db.export()))
+  if (!db) return;
+  writeFileSync(DB_PATH, Buffer.from(db.export()));
 }
 
 export function closeDb(): void {
-  if (!db) return
-  persistDb()
-  db.close()
-  db = null
+  if (!db) return;
+  persistDb();
+  db.close();
+  db = null;
 }

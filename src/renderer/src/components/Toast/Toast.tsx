@@ -1,5 +1,5 @@
 interface ToastProps {
-  message: string
+  message: string;
 }
 
 export default function Toast({ message }: ToastProps): JSX.Element {
@@ -7,5 +7,5 @@ export default function Toast({ message }: ToastProps): JSX.Element {
     <div className="toast">
       <span>{message}</span>
     </div>
-  )
+  );
 }

@@ -1,5 +1,9 @@
 {
-  "include": ["src/renderer/src/**/*", "src/shared/**/*", "src/preload/index.d.ts"],
+  "include": [
+    "src/renderer/src/**/*",
+    "src/shared/**/*",
+    "src/preload/index.d.ts"
+  ],
   "compilerOptions": {
     "composite": true,
     "target": "ES2022",

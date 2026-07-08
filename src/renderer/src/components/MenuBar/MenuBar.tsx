@@ -1,22 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
-import logo from '@renderer/assets/logo.png'
+import { useEffect, useRef, useState } from "react";
+import logo from "@renderer/assets/logo.png";
 
 interface MenuItem {
-  label?: string
-  action?: () => void
-  separator?: boolean
-  disabled?: boolean
+  label?: string;
+  action?: () => void;
+  separator?: boolean;
+  disabled?: boolean;
 }
 
 interface MenuBarProps {
-  onAddFolder: () => void
-  onToggleMeta: () => void
-  view: 'grid' | 'list'
-  onSetView: (v: 'grid' | 'list') => void
-  onShowShortcuts: () => void
-  onOpenPublisherSettings: () => void
-  dockMode?: boolean
-  onUndock?: () => void
+  onAddFolder: () => void;
+  onToggleMeta: () => void;
+  view: "grid" | "list";
+  onSetView: (v: "grid" | "list") => void;
+  onShowShortcuts: () => void;
+  onOpenPublisherSettings: () => void;
+  dockMode?: boolean;
+  onUndock?: () => void;
 }
 
 export default function MenuBar({
@@ -27,25 +27,26 @@ export default function MenuBar({
   onShowShortcuts,
   onOpenPublisherSettings,
   dockMode = false,
-  onUndock
+  onUndock,
 }: MenuBarProps): JSX.Element {
-  const [openMenu, setOpenMenu] = useState<string | null>(null)
-  const [maximized, setMaximized] = useState(false)
-  const barRef = useRef<HTMLDivElement>(null)
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [maximized, setMaximized] = useState(false);
+  const barRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!window.api?.onWindowMaximized) return
-    window.api.windowIsMaximized().then(setMaximized)
-    return window.api.onWindowMaximized(setMaximized)
-  }, [])
+    if (!window.api?.onWindowMaximized) return;
+    window.api.windowIsMaximized().then(setMaximized);
+    return window.api.onWindowMaximized(setMaximized);
+  }, []);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent): void {
-      if (barRef.current && !barRef.current.contains(e.target as Node)) setOpenMenu(null)
+      if (barRef.current && !barRef.current.contains(e.target as Node))
+        setOpenMenu(null);
     }
-    document.addEventListener('mousedown', onDocClick)
-    return () => document.removeEventListener('mousedown', onDocClick)
-  }, [])
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
 
   // Dock Mode: 메뉴 없이 브랜드 + 언독 + 닫기만 남긴 얇은 타이틀바. PlayerBar는 그대로
   // 마운트 상태를 유지하므로 재생이 끊기지 않는다(App.tsx에서 조건부로 감싸지 않음).
@@ -57,8 +58,21 @@ export default function MenuBar({
           SoundLib
         </div>
         <div className="menubar__spacer" />
-        <button className="menubar__undock" onClick={onUndock} title="창 모드로 되돌리기">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <button
+          className="menubar__undock"
+          onClick={onUndock}
+          title="창 모드로 되돌리기"
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
             <path d="M15 3h6v6" />
             <path d="M9 21H3v-6" />
             <path d="M21 3l-7 7" />
@@ -67,64 +81,79 @@ export default function MenuBar({
           Undock
         </button>
         <div className="menubar__winctrls">
-          <button className="menubar__winbtn menubar__winbtn--close" onClick={() => window.api?.windowClose()} title="Close">
-            <svg width="10" height="10" viewBox="0 0 10 10" stroke="currentColor">
+          <button
+            className="menubar__winbtn menubar__winbtn--close"
+            onClick={() => window.api?.windowClose()}
+            title="Close"
+          >
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 10 10"
+              stroke="currentColor"
+            >
               <path d="M0.5 0.5L9.5 9.5M9.5 0.5L0.5 9.5" />
             </svg>
           </button>
         </div>
       </div>
-    )
+    );
   }
 
   const menus: Record<string, MenuItem[]> = {
     File: [
-      { label: 'Add folder', action: onAddFolder },
+      { label: "Add folder", action: onAddFolder },
       { separator: true },
-      { label: 'Save layout', disabled: true },
+      { label: "Save layout", disabled: true },
       { separator: true },
-      { label: 'Exit', action: () => window.api?.windowClose() }
+      { label: "Exit", action: () => window.api?.windowClose() },
     ],
     Edit: [
-      { label: 'Undo', disabled: true },
-      { label: 'Redo', disabled: true },
+      { label: "Undo", disabled: true },
+      { label: "Redo", disabled: true },
       { separator: true },
-      { label: 'Copy', disabled: true },
-      { label: 'Paste', disabled: true }
+      { label: "Copy", disabled: true },
+      { label: "Paste", disabled: true },
     ],
     Database: [
-      { label: 'Rescan library', action: onAddFolder },
-      { label: 'Database status', disabled: true }
+      { label: "Rescan library", action: onAddFolder },
+      { label: "Database status", disabled: true },
     ],
     View: [
-      { label: view === 'grid' ? 'Folder grid' : 'Folder grid', action: () => onSetView('grid') },
-      { label: view === 'list' ? 'Sound list' : 'Sound list', action: () => onSetView('list') },
+      {
+        label: view === "grid" ? "Folder grid" : "Folder grid",
+        action: () => onSetView("grid"),
+      },
+      {
+        label: view === "list" ? "Sound list" : "Sound list",
+        action: () => onSetView("list"),
+      },
       { separator: true },
-      { label: 'Metadata panel', action: onToggleMeta }
+      { label: "Metadata panel", action: onToggleMeta },
     ],
     Window: [
-      { label: 'Minimize', action: () => window.api?.windowMinimize() },
+      { label: "Minimize", action: () => window.api?.windowMinimize() },
       {
-        label: maximized ? 'Restore' : 'Maximize',
-        action: () => window.api?.windowToggleMaximize()
-      }
+        label: maximized ? "Restore" : "Maximize",
+        action: () => window.api?.windowToggleMaximize(),
+      },
     ],
     User: [
-      { label: 'Preferences', disabled: true },
-      { label: 'Publisher settings', action: onOpenPublisherSettings },
-      { label: 'Settings', disabled: true }
+      { label: "Preferences", disabled: true },
+      { label: "Publisher settings", action: onOpenPublisherSettings },
+      { label: "Settings", disabled: true },
     ],
     Help: [
-      { label: 'Keyboard shortcuts', action: onShowShortcuts },
+      { label: "Keyboard shortcuts", action: onShowShortcuts },
       { separator: true },
-      { label: 'SoundLib info', disabled: true }
-    ]
-  }
+      { label: "SoundLib info", disabled: true },
+    ],
+  };
 
   function handleItem(item: MenuItem): void {
-    if (item.disabled || item.separator) return
-    item.action?.()
-    setOpenMenu(null)
+    if (item.disabled || item.separator) return;
+    item.action?.();
+    setOpenMenu(null);
   }
 
   return (
@@ -138,7 +167,7 @@ export default function MenuBar({
         {Object.keys(menus).map((name) => (
           <div className="menubar__menu" key={name}>
             <button
-              className={`menubar__menu-btn${openMenu === name ? ' menubar__menu-btn--open' : ''}`}
+              className={`menubar__menu-btn${openMenu === name ? " menubar__menu-btn--open" : ""}`}
               onClick={() => setOpenMenu(openMenu === name ? null : name)}
               onMouseEnter={() => openMenu && setOpenMenu(name)}
             >
@@ -152,12 +181,12 @@ export default function MenuBar({
                   ) : (
                     <button
                       key={i}
-                      className={`menubar__item${item.disabled ? ' menubar__item--disabled' : ''}`}
+                      className={`menubar__item${item.disabled ? " menubar__item--disabled" : ""}`}
                       onClick={() => handleItem(item)}
                     >
                       {item.label}
                     </button>
-                  )
+                  ),
                 )}
               </div>
             )}
@@ -180,15 +209,27 @@ export default function MenuBar({
         <button
           className="menubar__winbtn"
           onClick={() => window.api?.windowToggleMaximize()}
-          title={maximized ? 'Restore' : 'Maximize'}
+          title={maximized ? "Restore" : "Maximize"}
         >
           {maximized ? (
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor">
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 10 10"
+              fill="none"
+              stroke="currentColor"
+            >
               <rect x="0.5" y="2.5" width="6" height="6" />
               <path d="M2.5 2.5V0.5H9.5V7.5H7.5" />
             </svg>
           ) : (
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor">
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 10 10"
+              fill="none"
+              stroke="currentColor"
+            >
               <rect x="0.5" y="0.5" width="9" height="9" />
             </svg>
           )}
@@ -204,5 +245,5 @@ export default function MenuBar({
         </button>
       </div>
     </div>
-  )
+  );
 }

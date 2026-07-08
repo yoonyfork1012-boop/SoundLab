@@ -50,7 +50,13 @@ body,
 body {
   background: var(--bg-app);
   color: var(--text);
-  font-family: 'Inter', -apple-system, 'Segoe UI', 'Malgun Gothic', Roboto, sans-serif;
+  font-family:
+    "Inter",
+    -apple-system,
+    "Segoe UI",
+    "Malgun Gothic",
+    Roboto,
+    sans-serif;
   font-size: 12.5px;
   letter-spacing: 0.01em;
   user-select: none;
@@ -68,6 +74,43 @@ button {
   overflow: hidden;
   position: relative;
 }
+.app--folder-drag {
+  cursor: copy;
+}
+
+.folder-drop-overlay {
+  position: fixed;
+  inset: var(--menubar-h) 0 0 0;
+  z-index: 220;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 9, 11, 0.58);
+  border: 1px solid var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent-dim);
+  pointer-events: none;
+}
+.folder-drop-overlay__panel {
+  min-width: 270px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: rgba(25, 28, 34, 0.94);
+  color: var(--text);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 20px 24px;
+}
+.folder-drop-overlay__panel svg {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.folder-drop-overlay__title {
+  font-size: 14px;
+  font-weight: 650;
+}
 
 /* 리스???�레?�어 경계 가�?리사?�즈 ?�들 (?�레?�어 ?�이 조절) */
 .resizer-h {
@@ -83,7 +126,7 @@ button {
   justify-content: center;
 }
 .resizer-h::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   right: 0;
@@ -94,13 +137,15 @@ button {
   pointer-events: none;
 }
 .resizer-h::after {
-  content: '';
+  content: "";
   width: 32px;
   height: 3px;
   border-radius: 3px;
   background: var(--text-ghost);
   opacity: 0.55;
-  transition: opacity 0.12s var(--ease), background 0.12s var(--ease);
+  transition:
+    opacity 0.12s var(--ease),
+    background 0.12s var(--ease);
   pointer-events: none;
 }
 .resizer-h:hover,
@@ -160,7 +205,9 @@ button {
   height: var(--menubar-h);
   font-size: 12px;
   cursor: pointer;
-  transition: color 0.12s var(--ease), background 0.12s var(--ease);
+  transition:
+    color 0.12s var(--ease),
+    background 0.12s var(--ease);
 }
 .menubar__menu-btn:hover,
 .menubar__menu-btn--open {
@@ -226,7 +273,9 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease);
 }
 .menubar__winbtn:hover {
   background: var(--surface-hover);
@@ -256,7 +305,9 @@ button {
   padding: 0 12px;
   height: 34px;
   width: 360px;
-  transition: border-color 0.14s var(--ease), box-shadow 0.14s var(--ease);
+  transition:
+    border-color 0.14s var(--ease),
+    box-shadow 0.14s var(--ease);
 }
 .topbar__search-wrap:focus-within {
   border-color: var(--accent);
@@ -287,7 +338,9 @@ button {
   padding: 0 9px;
   height: 28px;
   width: 130px;
-  transition: border-color 0.14s var(--ease), box-shadow 0.14s var(--ease);
+  transition:
+    border-color 0.14s var(--ease),
+    box-shadow 0.14s var(--ease);
 }
 .topbar__subsearch-wrap:focus-within {
   border-color: var(--accent);
@@ -373,6 +426,44 @@ button {
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
+/* 실시간 감시 상태 — 큰 로딩바 없이 사이드바 하단에 한 줄만 표시 */
+.watch-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+.watch-status__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+.watch-status--updating .watch-status__dot {
+  background: var(--accent-bright);
+  animation: watch-status-pulse 1s ease-in-out infinite;
+}
+.watch-status--indexed .watch-status__dot,
+.watch-status--removed .watch-status__dot {
+  background: var(--accent);
+}
+.watch-status--error .watch-status__dot {
+  background: #e5484d;
+}
+@keyframes watch-status-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
 .topbar__viewtoggle {
   margin-left: auto;
   display: flex;
@@ -393,7 +484,9 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease);
 }
 .icon-btn:hover {
   color: var(--text);
@@ -451,7 +544,7 @@ button {
 }
 /* ??�� 보이??고정 경계????리스???�널?????�을 ?��? ?��? ?�음 */
 .resizer::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   bottom: 0;
@@ -463,13 +556,15 @@ button {
 }
 /* ?�래�?가?�함???�려주는 ?��? 그립 ?�시 */
 .resizer::after {
-  content: '';
+  content: "";
   width: 3px;
   height: 32px;
   border-radius: 3px;
   background: var(--text-ghost);
   opacity: 0.55;
-  transition: opacity 0.12s var(--ease), background 0.12s var(--ease);
+  transition:
+    opacity 0.12s var(--ease),
+    background 0.12s var(--ease);
   pointer-events: none;
 }
 .resizer:hover,
@@ -526,7 +621,9 @@ button {
   cursor: pointer;
   color: var(--text-dim);
   position: relative;
-  transition: background 0.1s var(--ease), color 0.1s var(--ease);
+  transition:
+    background 0.1s var(--ease),
+    color 0.1s var(--ease);
 }
 .ftree__row:hover {
   background: var(--surface-hover);
@@ -537,7 +634,7 @@ button {
   color: var(--text);
 }
 .ftree__row--active::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   top: 4px;
@@ -572,6 +669,32 @@ button {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+.ftree__refresh {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease),
+    opacity 0.12s var(--ease);
+}
+.ftree__row:hover .ftree__refresh,
+.ftree__row--active .ftree__refresh {
+  opacity: 1;
+}
+.ftree__refresh:hover {
+  background: var(--accent-dim);
+  color: var(--accent-bright);
+}
 .ftree__remove {
   display: none;
   color: var(--text-faint);
@@ -596,7 +719,9 @@ button {
   cursor: pointer;
   color: var(--text-dim);
   position: relative;
-  transition: background 0.1s var(--ease), color 0.1s var(--ease);
+  transition:
+    background 0.1s var(--ease),
+    color 0.1s var(--ease);
 }
 .sidebar__coll:hover {
   background: var(--surface-hover);
@@ -607,7 +732,7 @@ button {
   color: var(--text);
 }
 .sidebar__coll--active::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   top: 5px;
@@ -683,7 +808,7 @@ button {
   z-index: 2;
 }
 .right-panel__resizer::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   right: 0;
@@ -694,7 +819,7 @@ button {
   pointer-events: none;
 }
 .right-panel__resizer::after {
-  content: '';
+  content: "";
   position: absolute;
   left: 50%;
   top: 50%;
@@ -778,8 +903,11 @@ button {
   justify-content: center;
   color: var(--text-ghost);
   overflow: hidden;
-  transition: border-color 0.15s var(--ease), color 0.15s var(--ease),
-    transform 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  transition:
+    border-color 0.15s var(--ease),
+    color 0.15s var(--ease),
+    transform 0.15s var(--ease),
+    box-shadow 0.15s var(--ease);
 }
 .fgrid__thumb-img {
   width: 100%;
@@ -919,7 +1047,7 @@ button {
   z-index: 3;
 }
 .list-header__resize::after {
-  content: '';
+  content: "";
   position: absolute;
   left: 5px;
   top: 6px;
@@ -936,7 +1064,9 @@ button {
   height: var(--row-h);
   cursor: pointer;
   color: var(--text-dim);
-  transition: background 0.08s var(--ease), color 0.08s var(--ease);
+  transition:
+    background 0.08s var(--ease),
+    color 0.08s var(--ease);
 }
 /* 좌표 기반 hover 박스 (???�크�?중에??커서 추적) */
 .list-hoverbox {
@@ -951,7 +1081,7 @@ button {
   color: #fff;
 }
 .list-row--selected::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   width: 2px;
@@ -1084,7 +1214,9 @@ button {
   color: var(--text-faint);
   font-size: 18px;
   flex-shrink: 0;
-  transition: color 0.12s var(--ease), transform 0.12s var(--ease);
+  transition:
+    color 0.12s var(--ease),
+    transform 0.12s var(--ease);
 }
 .meta__star:hover {
   transform: scale(1.15);
@@ -1135,7 +1267,9 @@ button {
   border-radius: 20px;
   padding: 3px 10px;
   font-size: 11px;
-  transition: border-color 0.12s var(--ease), color 0.12s var(--ease);
+  transition:
+    border-color 0.12s var(--ease),
+    color 0.12s var(--ease);
 }
 .meta__tag:hover {
   border-color: var(--border-strong);
@@ -1180,7 +1314,10 @@ button {
   color: var(--text-ghost);
   font-size: 10px;
   cursor: pointer;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease), border-color 0.12s var(--ease);
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease),
+    border-color 0.12s var(--ease);
 }
 .analysis__chip:hover {
   color: var(--text-dim);
@@ -1300,7 +1437,13 @@ button {
   bottom: 0;
   left: 0;
   width: 0%;
-  background: linear-gradient(90deg, var(--accent) 0%, var(--accent) 70%, #d9a441 86%, #e5484d 100%);
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent) 70%,
+    #d9a441 86%,
+    #e5484d 100%
+  );
   border-radius: 3px;
 }
 .analysis__hbar-fill--clip {
@@ -1355,7 +1498,13 @@ button {
   position: relative;
   height: 8px;
   border-radius: 4px;
-  background: linear-gradient(90deg, #e5484d 0%, var(--bg-elevated-2) 42%, var(--bg-elevated-2) 58%, var(--accent) 100%);
+  background: linear-gradient(
+    90deg,
+    #e5484d 0%,
+    var(--bg-elevated-2) 42%,
+    var(--bg-elevated-2) 58%,
+    var(--accent) 100%
+  );
   overflow: visible;
 }
 .analysis__corr-center {
@@ -1500,7 +1649,9 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease);
 }
 .player__tbtn:hover {
   background: var(--surface-hover);
@@ -1515,7 +1666,9 @@ button {
   width: 42px;
   height: 42px;
   box-shadow: 0 2px 10px var(--accent-glow);
-  transition: transform 0.12s var(--ease), background 0.12s var(--ease);
+  transition:
+    transform 0.12s var(--ease),
+    background 0.12s var(--ease);
 }
 .player__tbtn--play:hover {
   background: var(--accent-bright);
@@ -1634,7 +1787,9 @@ button {
   border-radius: var(--radius-sm);
   color: var(--text-faint);
   cursor: pointer;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease);
 }
 .accent__btn:hover {
   background: var(--surface-hover);
@@ -1694,7 +1849,7 @@ button {
   font-size: 11.5px;
   color: var(--text-dim);
 }
-.accent__custom input[type='color'] {
+.accent__custom input[type="color"] {
   width: 34px;
   height: 24px;
   padding: 0;
@@ -1977,7 +2132,9 @@ button {
   border-radius: var(--radius-sm);
   background: var(--bg-input);
   cursor: pointer;
-  transition: border-color 0.12s var(--ease), box-shadow 0.12s var(--ease);
+  transition:
+    border-color 0.12s var(--ease),
+    box-shadow 0.12s var(--ease);
 }
 .publisher-modal__choice input {
   margin-top: 2px;
@@ -2104,7 +2261,10 @@ button {
   color: var(--text-dim);
   font-size: 11px;
   cursor: pointer;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease), border-color 0.12s var(--ease);
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease),
+    border-color 0.12s var(--ease);
 }
 .menubar__undock:hover {
   background: var(--accent-dim);
@@ -2256,7 +2416,9 @@ button {
   cursor: grabbing;
 }
 .list-row--dragover {
-  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 transparent;
+  box-shadow:
+    inset 0 2px 0 var(--accent),
+    inset 0 -2px 0 transparent;
 }
 
 /* ══════════════ FX panel (Pitch / Speed / Reverse) ══════════════ */
@@ -2385,7 +2547,10 @@ button {
   color: var(--text-dim);
   font-size: 11px;
   cursor: pointer;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease), border-color 0.12s var(--ease);
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s var(--ease),
+    border-color 0.12s var(--ease);
 }
 .fx__reverse-btn:hover {
   border-color: var(--text-faint);
@@ -2403,6 +2568,3 @@ button {
   border-top: 1px solid var(--border);
   padding-top: 10px;
 }
-
-
-

@@ -1,11 +1,24 @@
-import { ipcMain, dialog, shell, clipboard, app, BrowserWindow, nativeImage, screen } from 'electron'
-import { readFile, stat, rename, copyFile } from 'fs/promises'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
-import { join, dirname, basename, extname } from 'path'
-import { pathToFileURL } from 'url'
-import { scanLibrary, scanNewFilesOnly } from './scanner'
-import { startWatching, stopWatching } from './watcher'
-import { findCoverInDir, getEmbeddedArtworkDataUrl, getFolderCoverDataUrl } from './artwork'
+import {
+  ipcMain,
+  dialog,
+  shell,
+  clipboard,
+  app,
+  BrowserWindow,
+  nativeImage,
+  screen,
+} from "electron";
+import { readFile, stat, rename, copyFile } from "fs/promises";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { join, dirname, basename, extname } from "path";
+import { pathToFileURL } from "url";
+import { scanLibrary, scanNewFilesOnly } from "./scanner";
+import { startWatching, stopWatching } from "./watcher";
+import {
+  findCoverInDir,
+  getEmbeddedArtworkDataUrl,
+  getFolderCoverDataUrl,
+} from "./artwork";
 import {
   getAllLibraries,
   getAllTracks,
@@ -27,278 +40,351 @@ import {
   markLibraryAnalyzed,
   computeSimilarityKeys,
   removeTrack,
-  renameTrackFile
-} from './db/queries'
-import type { ScanProgress } from '../shared/types'
+  renameTrackFile,
+} from "./db/queries";
+import type { ScanProgress } from "../shared/types";
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
-  ipcMain.handle('dialog:selectFolder', async () => {
+  ipcMain.handle("dialog:selectFolder", async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openDirectory']
-    })
-    if (result.canceled || result.filePaths.length === 0) return null
-    return result.filePaths[0]
-  })
+      properties: ["openDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle("file:isDirectory", async (_event, filePath: string) => {
+    try {
+      return (await stat(filePath)).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 
   // 폴더 추가 = 라이브러리 누적. 스캔 후 전체(모든 라이브러리/트랙)를 반환.
-  ipcMain.handle('library:scan', async (_event, rootPath: string) => {
-    await scanLibrary(rootPath, (progress: ScanProgress) => {
-      mainWindow.webContents.send('library:scanProgress', progress)
-    })
-    return { libraries: getAllLibraries(), tracks: getAllTracks() }
-  })
+  ipcMain.handle("library:scan", async (_event, rootPath: string) => {
+    const library = await scanLibrary(rootPath, (progress: ScanProgress) => {
+      mainWindow.webContents.send("library:scanProgress", progress);
+    });
+    startWatching(library.id, library.rootPath, mainWindow);
+    return { libraries: getAllLibraries(), tracks: getAllTracks() };
+  });
 
   // 앱 시작 시 저장돼 있던 전체 라이브러리/트랙 로드
-  ipcMain.handle('app:loadAll', () => {
-    return { libraries: getAllLibraries(), tracks: getAllTracks() }
-  })
+  ipcMain.handle("app:loadAll", () => {
+    return { libraries: getAllLibraries(), tracks: getAllTracks() };
+  });
 
-  ipcMain.handle('library:remove', (_event, libraryId: number) => {
-    stopWatching(libraryId)
-    deleteLibrary(libraryId)
-    return { libraries: getAllLibraries(), tracks: getAllTracks() }
-  })
+  ipcMain.handle("library:remove", (_event, libraryId: number) => {
+    stopWatching(libraryId);
+    deleteLibrary(libraryId);
+    return { libraries: getAllLibraries(), tracks: getAllTracks() };
+  });
 
-  ipcMain.handle('library:rename', (_event, libraryId: number, name: string) => {
-    renameLibrary(libraryId, name)
-    return getAllLibraries()
-  })
+  ipcMain.handle(
+    "library:rename",
+    (_event, libraryId: number, name: string) => {
+      renameLibrary(libraryId, name);
+      return getAllLibraries();
+    },
+  );
 
   // "Scan for new files" — DB에 없는 새 파일만 추가 (기존 파일/삭제 정리는 건드리지 않음)
-  ipcMain.handle('library:scanNew', async (_event, libraryId: number, rootPath: string) => {
-    const addedCount = await scanNewFilesOnly(rootPath, libraryId, (progress: ScanProgress) => {
-      mainWindow.webContents.send('library:scanProgress', progress)
-    })
-    return { libraries: getAllLibraries(), tracks: getAllTracks(), addedCount }
-  })
+  ipcMain.handle(
+    "library:scanNew",
+    async (_event, libraryId: number, rootPath: string) => {
+      const addedCount = await scanNewFilesOnly(
+        rootPath,
+        libraryId,
+        (progress: ScanProgress) => {
+          mainWindow.webContents.send("library:scanProgress", progress);
+        },
+      );
+      return {
+        libraries: getAllLibraries(),
+        tracks: getAllTracks(),
+        addedCount,
+      };
+    },
+  );
 
-  ipcMain.handle('library:showInExplorer', async (_event, rootPath: string) => {
-    const err = await shell.openPath(rootPath)
-    if (err) console.error('openPath failed:', err)
-  })
+  // 수동 "Refresh / Rescan" — 실시간 감시와 별개로, 사용자가 선택한 라이브러리 폴더 하나만
+  // 다시 훑어 추가/삭제/변경을 한 번에 반영한다. scanLibrary는 mtime/size가 그대로인 파일은
+  // 건너뛰므로(증분) 대용량 폴더에서도 전체 재파싱이 아니다.
+  ipcMain.handle("library:rescan", async (_event, rootPath: string) => {
+    const library = await scanLibrary(rootPath, (progress: ScanProgress) => {
+      mainWindow.webContents.send("library:scanProgress", progress);
+    });
+    startWatching(library.id, library.rootPath, mainWindow);
+    return { libraries: getAllLibraries(), tracks: getAllTracks() };
+  });
+
+  ipcMain.handle("library:refreshAll", async () => {
+    const libraries = getAllLibraries();
+    for (const library of libraries) {
+      await scanLibrary(library.rootPath, (progress: ScanProgress) => {
+        mainWindow.webContents.send("library:scanProgress", progress);
+      });
+      startWatching(library.id, library.rootPath, mainWindow);
+    }
+    return { libraries: getAllLibraries(), tracks: getAllTracks() };
+  });
+
+  ipcMain.handle("library:showInExplorer", async (_event, rootPath: string) => {
+    const err = await shell.openPath(rootPath);
+    if (err) console.error("openPath failed:", err);
+  });
 
   // "Monitor for changes" On/Off — 켜면 폴더 변경 감시 시작, 끄면 감시 중단
-  ipcMain.handle('library:setMonitor', (_event, libraryId: number, rootPath: string, on: boolean) => {
-    setLibraryMonitor(libraryId, on)
-    if (on) startWatching(libraryId, rootPath, mainWindow)
-    else stopWatching(libraryId)
-    return getAllLibraries()
-  })
+  ipcMain.handle(
+    "library:setMonitor",
+    (_event, libraryId: number, rootPath: string, on: boolean) => {
+      setLibraryMonitor(libraryId, on);
+      if (on) startWatching(libraryId, rootPath, mainWindow);
+      else stopWatching(libraryId);
+      return getAllLibraries();
+    },
+  );
 
   // "Analyze for Find Similar" — 메타데이터(길이/채널/샘플레이트/비트뎁스) 기반 근사 유사도 키 생성
-  ipcMain.handle('library:analyze', (_event, libraryId: number) => {
-    const analyzedCount = computeSimilarityKeys(libraryId)
-    markLibraryAnalyzed(libraryId, Date.now())
-    return { libraries: getAllLibraries(), analyzedCount }
-  })
+  ipcMain.handle("library:analyze", (_event, libraryId: number) => {
+    const analyzedCount = computeSimilarityKeys(libraryId);
+    markLibraryAnalyzed(libraryId, Date.now());
+    return { libraries: getAllLibraries(), analyzedCount };
+  });
 
-  ipcMain.handle('track:toggleStar', (_event, trackId: number) => {
-    return toggleStarred(trackId)
-  })
+  ipcMain.handle("track:toggleStar", (_event, trackId: number) => {
+    return toggleStarred(trackId);
+  });
 
-  ipcMain.handle('track:updateLastPlayed', (_event, trackId: number) => {
-    updateLastPlayed(trackId)
-  })
+  ipcMain.handle("track:updateLastPlayed", (_event, trackId: number) => {
+    updateLastPlayed(trackId);
+  });
 
   // 리스트 우클릭 메뉴 "Remove" — 실제 파일은 그대로 두고 인덱스에서만 제거
-  ipcMain.handle('track:remove', (_event, trackId: number) => {
-    removeTrack(trackId)
-  })
+  ipcMain.handle("track:remove", (_event, trackId: number) => {
+    removeTrack(trackId);
+  });
 
   // 리스트 우클릭 메뉴 "Rename" — 실제 파일을 같은 폴더 안에서 리네임하고 DB 경로를 갱신
   ipcMain.handle(
-    'track:rename',
+    "track:rename",
     async (_event, trackId: number, filePath: string, newName: string) => {
-      const dir = dirname(filePath)
-      const ext = extname(filePath)
-      const trimmed = newName.trim()
-      if (!trimmed) throw new Error('File name cannot be empty')
-      const finalName = trimmed.toLowerCase().endsWith(ext.toLowerCase()) ? trimmed : `${trimmed}${ext}`
-      const newPath = join(dir, finalName)
+      const dir = dirname(filePath);
+      const ext = extname(filePath);
+      const trimmed = newName.trim();
+      if (!trimmed) throw new Error("File name cannot be empty");
+      const finalName = trimmed.toLowerCase().endsWith(ext.toLowerCase())
+        ? trimmed
+        : `${trimmed}${ext}`;
+      const newPath = join(dir, finalName);
       if (newPath !== filePath) {
-        if (existsSync(newPath)) throw new Error('A file with that name already exists')
-        await rename(filePath, newPath)
+        if (existsSync(newPath))
+          throw new Error("A file with that name already exists");
+        await rename(filePath, newPath);
       }
-      renameTrackFile(trackId, newPath, finalName)
-      return { filePath: newPath, filename: finalName }
-    }
-  )
+      renameTrackFile(trackId, newPath, finalName);
+      return { filePath: newPath, filename: finalName };
+    },
+  );
 
   // 우클릭 메뉴 "Open in external editor" — OS 기본 연결 프로그램으로 열기
-  ipcMain.handle('file:openExternal', async (_event, filePath: string) => {
-    const err = await shell.openPath(filePath)
-    if (err) console.error('openPath failed:', err)
-  })
+  ipcMain.handle("file:openExternal", async (_event, filePath: string) => {
+    const err = await shell.openPath(filePath);
+    if (err) console.error("openPath failed:", err);
+  });
 
   // 우클릭 메뉴 "Show in File Explorer" — 탐색기에서 해당 파일을 선택된 상태로 표시
-  ipcMain.handle('file:showItemInFolder', (_event, filePath: string) => {
-    shell.showItemInFolder(filePath)
-  })
+  ipcMain.handle("file:showItemInFolder", (_event, filePath: string) => {
+    shell.showItemInFolder(filePath);
+  });
 
   // 우클릭 메뉴 "Send to folder" — 대상 폴더를 고른 뒤 파일을 그 폴더로 복사
-  ipcMain.handle('file:copyToFolder', async (_event, filePath: string) => {
-    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
-    if (result.canceled || result.filePaths.length === 0) return null
-    const destDir = result.filePaths[0]
-    const dest = join(destDir, basename(filePath))
-    await copyFile(filePath, dest)
-    return dest
-  })
+  ipcMain.handle("file:copyToFolder", async (_event, filePath: string) => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ["openDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const destDir = result.filePaths[0];
+    const dest = join(destDir, basename(filePath));
+    await copyFile(filePath, dest);
+    return dest;
+  });
 
   // Collections
-  ipcMain.handle('collections:getAll', () => getCollections())
-  ipcMain.handle('collections:create', (_event, name: string) => {
-    createCollection(name)
-    return getCollections()
-  })
-  ipcMain.handle('collections:delete', (_event, id: number) => {
-    deleteCollection(id)
-    return getCollections()
-  })
-  ipcMain.handle('collections:rename', (_event, id: number, name: string) => {
-    renameCollection(id, name)
-    return getCollections()
-  })
-  ipcMain.handle('collections:setColor', (_event, id: number, color: string | null) => {
-    setCollectionColor(id, color)
-    return getCollections()
-  })
-  ipcMain.handle('collections:addTrack', (_event, collectionId: number, trackId: number) => {
-    addTrackToCollection(collectionId, trackId)
-    return getCollections()
-  })
-  ipcMain.handle('collections:addTracks', (_event, collectionId: number, trackIds: number[]) => {
-    addTracksToCollection(collectionId, trackIds)
-    return getCollections()
-  })
-  ipcMain.handle('collections:removeTrack', (_event, collectionId: number, trackId: number) => {
-    removeTrackFromCollection(collectionId, trackId)
-    return getCollections()
-  })
-  ipcMain.handle('collections:reorder', (_event, collectionId: number, orderedTrackIds: number[]) => {
-    reorderCollectionTracks(collectionId, orderedTrackIds)
-    return getCollections()
-  })
+  ipcMain.handle("collections:getAll", () => getCollections());
+  ipcMain.handle("collections:create", (_event, name: string) => {
+    createCollection(name);
+    return getCollections();
+  });
+  ipcMain.handle("collections:delete", (_event, id: number) => {
+    deleteCollection(id);
+    return getCollections();
+  });
+  ipcMain.handle("collections:rename", (_event, id: number, name: string) => {
+    renameCollection(id, name);
+    return getCollections();
+  });
+  ipcMain.handle(
+    "collections:setColor",
+    (_event, id: number, color: string | null) => {
+      setCollectionColor(id, color);
+      return getCollections();
+    },
+  );
+  ipcMain.handle(
+    "collections:addTrack",
+    (_event, collectionId: number, trackId: number) => {
+      addTrackToCollection(collectionId, trackId);
+      return getCollections();
+    },
+  );
+  ipcMain.handle(
+    "collections:addTracks",
+    (_event, collectionId: number, trackIds: number[]) => {
+      addTracksToCollection(collectionId, trackIds);
+      return getCollections();
+    },
+  );
+  ipcMain.handle(
+    "collections:removeTrack",
+    (_event, collectionId: number, trackId: number) => {
+      removeTrackFromCollection(collectionId, trackId);
+      return getCollections();
+    },
+  );
+  ipcMain.handle(
+    "collections:reorder",
+    (_event, collectionId: number, orderedTrackIds: number[]) => {
+      reorderCollectionTracks(collectionId, orderedTrackIds);
+      return getCollections();
+    },
+  );
 
-  ipcMain.handle('clipboard:writeText', (_event, text: string) => {
-    clipboard.writeText(text)
-  })
+  ipcMain.handle("clipboard:writeText", (_event, text: string) => {
+    clipboard.writeText(text);
+  });
 
   // 트랙 커버: 임베디드 아트워크 우선 → 폴더 커버(스캔 시 저장한 경로) → null(플레이스홀더)
   ipcMain.handle(
-    'artwork:getForTrack',
+    "artwork:getForTrack",
     async (_event, filePath: string, folderCoverPath: string | null) => {
       try {
-        const { parseFile } = await import('music-metadata')
-        const embedded = await getEmbeddedArtworkDataUrl(filePath, (p) => parseFile(p))
-        if (embedded) return { url: embedded, source: 'embedded' as const }
+        const { parseFile } = await import("music-metadata");
+        const embedded = await getEmbeddedArtworkDataUrl(filePath, (p) =>
+          parseFile(p),
+        );
+        if (embedded) return { url: embedded, source: "embedded" as const };
       } catch {
         /* 임베디드 추출 실패는 무시하고 폴더 커버로 폴백 */
       }
       if (folderCoverPath) {
-        const folder = getFolderCoverDataUrl(folderCoverPath)
-        if (folder) return { url: folder, source: 'folder' as const }
+        const folder = getFolderCoverDataUrl(folderCoverPath);
+        if (folder) return { url: folder, source: "folder" as const };
       }
-      return null
-    }
-  )
+      return null;
+    },
+  );
 
   // 폴더 커버(그리드 카드용): 폴더 안 커버 이미지 → 리사이즈 data URL
-  ipcMain.handle('artwork:getFolderCover', (_event, folderPath: string) => {
-    const cover = findCoverInDir(folderPath)
-    if (!cover) return null
-    const url = getFolderCoverDataUrl(cover)
-    return url ? { url, source: 'folder' as const } : null
-  })
+  ipcMain.handle("artwork:getFolderCover", (_event, folderPath: string) => {
+    const cover = findCoverInDir(folderPath);
+    if (!cover) return null;
+    const url = getFolderCoverDataUrl(cover);
+    return url ? { url, source: "folder" as const } : null;
+  });
 
-
-  ipcMain.handle('file:getAudioAccess', async (_event, filePath: string) => {
+  ipcMain.handle("file:getAudioAccess", async (_event, filePath: string) => {
     if (!hasTrackFilePath(filePath)) {
-      throw new Error('Audio file is not registered in the library')
+      throw new Error("Audio file is not registered in the library");
     }
-    const info = await stat(filePath)
+    const info = await stat(filePath);
     return {
       url: pathToFileURL(filePath).toString(),
       size: info.size,
-      mtimeMs: info.mtimeMs
-    }
-  })
-  ipcMain.handle('file:readAudio', async (_event, filePath: string) => {
+      mtimeMs: info.mtimeMs,
+    };
+  });
+  ipcMain.handle("file:readAudio", async (_event, filePath: string) => {
     if (!hasTrackFilePath(filePath)) {
-      throw new Error('Audio file is not registered in the library')
+      throw new Error("Audio file is not registered in the library");
     }
-    const buffer = await readFile(filePath)
-    return new Uint8Array(buffer)
-  })
+    const buffer = await readFile(filePath);
+    return new Uint8Array(buffer);
+  });
 
   // 리스트에서 바로 끌어다 DAW/탐색기로 놓는 네이티브 드래그아웃 (Soundly 방식)
   // Windows는 비어있지 않은 드래그 아이콘이 필수 (24x24 RGBA PNG)
   const dragIcon = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAJUlEQVR4nGOIWtV0gpaYYdSCUQtGLRi1YNSCUQtGLRi1YGhYAAAehC/M66tF4QAAAABJRU5ErkJggg=='
-  )
-  ipcMain.on('drag:start', (event, filePaths: string | string[]) => {
-    const files = Array.isArray(filePaths) ? filePaths : [filePaths]
-    if (files.length === 0) return
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAJUlEQVR4nGOIWtV0gpaYYdSCUQtGLRi1YNSCUQtGLRi1YGhYAAAehC/M66tF4QAAAABJRU5ErkJggg==",
+  );
+  ipcMain.on("drag:start", (event, filePaths: string | string[]) => {
+    const files = Array.isArray(filePaths) ? filePaths : [filePaths];
+    if (files.length === 0) return;
     try {
       event.sender.startDrag({
         file: files[0],
         files: files.length > 1 ? files : undefined,
-        icon: dragIcon
-      })
+        icon: dragIcon,
+      });
     } catch (err) {
-      console.error('startDrag failed:', (err as Error)?.message)
+      console.error("startDrag failed:", (err as Error)?.message);
     }
-  })
+  });
 
   // Waveform에서 선택한 구간만 잘라 만든 임시 오디오를 DAW로 드래그 아웃.
   // 드래그 제스처가 끊기지 않도록 파일 쓰기부터 startDrag까지 전부 동기로 처리.
-  const dragExportDir = join(app.getPath('temp'), 'soundlib-dragexports')
-  ipcMain.on('drag:startFromBuffer', (event, bytes: Uint8Array, filename: string) => {
-    try {
-      if (!existsSync(dragExportDir)) mkdirSync(dragExportDir, { recursive: true })
-      const filePath = join(dragExportDir, filename)
-      writeFileSync(filePath, Buffer.from(bytes))
-      event.sender.startDrag({ file: filePath, icon: dragIcon })
-    } catch (err) {
-      console.error('drag:startFromBuffer failed:', (err as Error)?.message)
-    }
-  })
+  const dragExportDir = join(app.getPath("temp"), "soundlib-dragexports");
+  ipcMain.on(
+    "drag:startFromBuffer",
+    (event, bytes: Uint8Array, filename: string) => {
+      try {
+        if (!existsSync(dragExportDir))
+          mkdirSync(dragExportDir, { recursive: true });
+        const filePath = join(dragExportDir, filename);
+        writeFileSync(filePath, Buffer.from(bytes));
+        event.sender.startDrag({ file: filePath, icon: dragIcon });
+      } catch (err) {
+        console.error("drag:startFromBuffer failed:", (err as Error)?.message);
+      }
+    },
+  );
 
   // 커스텀 타이틀바 창 제어
-  ipcMain.on('window:minimize', () => mainWindow.minimize())
-  ipcMain.on('window:toggleMaximize', () => {
-    if (mainWindow.isMaximized()) mainWindow.unmaximize()
-    else mainWindow.maximize()
-  })
-  ipcMain.on('window:close', () => mainWindow.close())
-  ipcMain.handle('window:isMaximized', () => mainWindow.isMaximized())
+  ipcMain.on("window:minimize", () => mainWindow.minimize());
+  ipcMain.on("window:toggleMaximize", () => {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
+  });
+  ipcMain.on("window:close", () => mainWindow.close());
+  ipcMain.handle("window:isMaximized", () => mainWindow.isMaximized());
 
   // Dock Mode: 창을 화면 하단에 눕힌 얇은 트랜스포트 바로 축소해 다른 앱(DAW) 위에 항상 띄운다.
   // 이전 창 크기/위치를 기억해뒀다가 해제 시 그대로 복원한다.
-  let dockPrevBounds: Electron.Rectangle | null = null
-  ipcMain.handle('window:setDockMode', (_event, on: boolean) => {
-    const isDocked = dockPrevBounds !== null
-    if (on === isDocked) return
+  let dockPrevBounds: Electron.Rectangle | null = null;
+  ipcMain.handle("window:setDockMode", (_event, on: boolean) => {
+    const isDocked = dockPrevBounds !== null;
+    if (on === isDocked) return;
     if (on) {
-      dockPrevBounds = mainWindow.getBounds()
-      const { workArea } = screen.getDisplayMatching(mainWindow.getBounds())
-      const width = Math.min(880, workArea.width - 32)
-      const height = 92
-      mainWindow.setMinimumSize(360, height)
-      mainWindow.setResizable(false)
+      dockPrevBounds = mainWindow.getBounds();
+      const { workArea } = screen.getDisplayMatching(mainWindow.getBounds());
+      const width = Math.min(880, workArea.width - 32);
+      const height = 92;
+      mainWindow.setMinimumSize(360, height);
+      mainWindow.setResizable(false);
       mainWindow.setBounds({
         x: Math.round(workArea.x + (workArea.width - width) / 2),
         y: workArea.y + workArea.height - height - 14,
         width,
-        height
-      })
-      mainWindow.setAlwaysOnTop(true, 'floating')
+        height,
+      });
+      mainWindow.setAlwaysOnTop(true, "floating");
     } else {
-      mainWindow.setAlwaysOnTop(false)
-      mainWindow.setResizable(true)
-      mainWindow.setMinimumSize(980, 640)
-      if (dockPrevBounds) mainWindow.setBounds(dockPrevBounds)
-      dockPrevBounds = null
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.setResizable(true);
+      mainWindow.setMinimumSize(980, 640);
+      if (dockPrevBounds) mainWindow.setBounds(dockPrevBounds);
+      dockPrevBounds = null;
     }
-  })
+  });
 }

@@ -3,39 +3,39 @@
 
 export function loadJSON<T>(key: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem(key)
-    if (raw == null) return fallback
-    return JSON.parse(raw) as T
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return JSON.parse(raw) as T;
   } catch {
-    return fallback
+    return fallback;
   }
 }
 
 export function saveJSON(key: string, value: unknown): void {
   try {
-    localStorage.setItem(key, JSON.stringify(value))
+    localStorage.setItem(key, JSON.stringify(value));
   } catch {
     /* noop */
   }
 }
 
 export function loadNumber(key: string, fallback: number): number {
-  const raw = localStorage.getItem(key)
-  if (raw == null) return fallback
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : fallback
+  const raw = localStorage.getItem(key);
+  if (raw == null) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 export function saveNumber(key: string, value: number): void {
-  localStorage.setItem(key, String(value))
+  localStorage.setItem(key, String(value));
 }
 
 export function loadBool(key: string, fallback: boolean): boolean {
-  const raw = localStorage.getItem(key)
-  if (raw == null) return fallback
-  return raw === '1'
+  const raw = localStorage.getItem(key);
+  if (raw == null) return fallback;
+  return raw === "1";
 }
 
 export function saveBool(key: string, value: boolean): void {
-  localStorage.setItem(key, value ? '1' : '0')
+  localStorage.setItem(key, value ? "1" : "0");
 }

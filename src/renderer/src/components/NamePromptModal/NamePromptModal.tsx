@@ -1,32 +1,32 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from "react";
 
 interface NamePromptModalProps {
-  title: string
-  confirmLabel?: string
-  defaultValue?: string
-  onSubmit: (name: string) => void
-  onCancel: () => void
+  title: string;
+  confirmLabel?: string;
+  defaultValue?: string;
+  onSubmit: (name: string) => void;
+  onCancel: () => void;
 }
 
 export default function NamePromptModal({
   title,
-  confirmLabel = '만들기',
-  defaultValue = '',
+  confirmLabel = "만들기",
+  defaultValue = "",
   onSubmit,
-  onCancel
+  onCancel,
 }: NamePromptModalProps): JSX.Element {
-  const [value, setValue] = useState(defaultValue)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [value, setValue] = useState(defaultValue);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    inputRef.current?.focus()
-    inputRef.current?.select()
+    inputRef.current?.focus();
+    inputRef.current?.select();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, []);
 
   function submit(): void {
-    const trimmed = value.trim()
-    if (trimmed) onSubmit(trimmed)
+    const trimmed = value.trim();
+    if (trimmed) onSubmit(trimmed);
   }
 
   return (
@@ -39,8 +39,8 @@ export default function NamePromptModal({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') submit()
-            if (e.key === 'Escape') onCancel()
+            if (e.key === "Enter") submit();
+            if (e.key === "Escape") onCancel();
           }}
         />
         <div className="modal__actions">
@@ -53,5 +53,5 @@ export default function NamePromptModal({
         </div>
       </div>
     </div>
-  )
+  );
 }
