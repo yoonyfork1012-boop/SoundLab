@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { rm } from 'fs/promises'
+import { readFileSync } from 'fs'
 import { registerIpcHandlers } from './ipc'
 import { closeDb, initDb } from './db'
 import { getAllLibraries } from './db/queries'
@@ -9,6 +10,20 @@ import { startWatching, stopAllWatching } from './watcher'
 // 클릭→IPC 파일읽기→디코딩 사이 비동기 대기로 사용자 제스처가 만료되어
 // Chromium 자동재생 정책이 재생을 막는 문제 해결
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
+// 패키징 전에는 프로젝트 루트의 build/icon.png, 패키징 후에는 electron-builder의
+// extraResources로 복사된 resources/icon.png를 사용 — 두 경우 모두 out/main 기준 상대경로가 달라짐
+const ICON_PATH = app.isPackaged
+  ? join(process.resourcesPath, 'icon.png')
+  : join(__dirname, '../../build/icon.png')
+
+const ICON_DATA_URL = (() => {
+  try {
+    return `data:image/png;base64,${readFileSync(ICON_PATH).toString('base64')}`
+  } catch {
+    return ''
+  }
+})()
 
 // data: URL로 띄우는 최소 스플래시 창 — 별도 빌드 산출물 없이 메인 프로세스
 // 번들 안에만 존재해서, DB 로딩 등 무거운 초기화 작업 중에도 항상 즉시 뜬다.
@@ -27,6 +42,7 @@ const SPLASH_HTML = `<!doctype html>
     box-sizing: border-box;
   }
   .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+  .brand-logo { width: 22px; height: 22px; border-radius: 6px; display: block; }
   .brand-dot { width: 10px; height: 10px; border-radius: 50%; background: #a3e3c1; }
   .brand-name { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
   .spinner {
@@ -53,7 +69,7 @@ const SPLASH_HTML = `<!doctype html>
 </style>
 </head>
 <body>
-  <div class="brand"><span class="brand-dot"></span><span class="brand-name">SoundLib</span></div>
+  <div class="brand">${ICON_DATA_URL ? `<img class="brand-logo" src="${ICON_DATA_URL}" />` : '<span class="brand-dot"></span>'}<span class="brand-name">SoundLib</span></div>
   <div class="normal" id="normal">
     <div class="spinner"></div>
     <div class="loading">Loading...</div>
@@ -91,6 +107,7 @@ async function createSplashWindow(): Promise<BrowserWindow> {
     show: false,
     transparent: true,
     backgroundColor: '#00000000',
+    icon: ICON_PATH,
     webPreferences: { sandbox: true }
   })
   const shown = new Promise<void>((resolve) => {
@@ -132,6 +149,7 @@ function createWindow(): BrowserWindow {
     show: false,
     frame: false,
     backgroundColor: '#0e0f11',
+    icon: ICON_PATH,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,

@@ -24,13 +24,25 @@ interface ResultListProps {
   previewedIds: Set<number>
   reorderable?: boolean
   onReorder?: (orderedTrackIds: number[]) => void
+  onBrowseFolder?: (track: Track) => void
+  onRenameTrack?: (track: Track) => void
+  onOpenMetadataPanel?: () => void
+  onRemoveTrack?: (track: Track) => void
+  onNotify?: (message: string) => void
 }
 
-const ROW_HEIGHT = 30
 const SCROLLBAR_GUARD = 14
 const MIN_COL_WIDTH = 48
 const COL_WIDTHS_KEY = 'soundlib.columnWidths'
 const COL_ORDER_KEY = 'soundlib.columnOrder'
+const FONT_SIZE_KEY = 'soundlib.listFontSize'
+
+const FONT_SIZE_OPTIONS = [
+  { key: 'small', label: 'Small', rowHeight: 26, fontSize: 11 },
+  { key: 'medium', label: 'Medium', rowHeight: 32, fontSize: 12.5 },
+  { key: 'large', label: 'Large', rowHeight: 40, fontSize: 14.5 }
+] as const
+type FontSizeKey = (typeof FONT_SIZE_OPTIONS)[number]['key']
 
 interface RowData {
   tracks: Track[]
@@ -219,7 +231,12 @@ export default function ResultList({
   publisherRule,
   previewedIds,
   reorderable = false,
-  onReorder
+  onReorder,
+  onBrowseFolder,
+  onRenameTrack,
+  onOpenMetadataPanel,
+  onRemoveTrack,
+  onNotify
 }: ResultListProps): JSX.Element {
   const listRef = useRef<FixedSizeList>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -240,6 +257,14 @@ export default function ResultList({
   const [viewportWidth, setViewportWidth] = useState(0)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [rowMenu, setRowMenu] = useState<{ x: number; y: number; track: Track } | null>(null)
+  const [activeSubmenu, setActiveSubmenu] = useState<'collection' | 'fontsize' | null>(null)
+  const [fontSizeKey, setFontSizeKeyState] = useState<FontSizeKey>(() => loadJSON(FONT_SIZE_KEY, 'medium' as FontSizeKey))
+  const fontSizeOpt = FONT_SIZE_OPTIONS.find((o) => o.key === fontSizeKey) ?? FONT_SIZE_OPTIONS[1]
+  const rowHeight = fontSizeOpt.rowHeight
+  function setFontSizeKey(key: FontSizeKey): void {
+    setFontSizeKeyState(key)
+    saveJSON(FONT_SIZE_KEY, key)
+  }
   const [dragRowId, setDragRowId] = useState<number | null>(null)
   const [dragOverId, setDragOverId] = useState<number | null>(null)
   const dragRowIdRef = useRef<number | null>(null)
@@ -275,6 +300,7 @@ export default function ResultList({
 
   useEffect(() => {
     if (!rowMenu) return
+    setActiveSubmenu(null)
     const close = (): void => setRowMenu(null)
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
@@ -364,7 +390,7 @@ export default function ResultList({
     const wrap = wrapRef.current
     if (!wrap) return -1
     const rect = wrap.getBoundingClientRect()
-    const idx = Math.floor((clientY - rect.top + scrollOffsetRef.current) / ROW_HEIGHT)
+    const idx = Math.floor((clientY - rect.top + scrollOffsetRef.current) / rowHeight)
     return idx >= 0 && idx < tracksRef.current.length ? idx : -1
   }
 
@@ -378,7 +404,7 @@ export default function ResultList({
       return
     }
     box.style.display = 'block'
-    box.style.top = `${idx * ROW_HEIGHT - scrollOffsetRef.current}px`
+    box.style.top = `${idx * rowHeight - scrollOffsetRef.current}px`
   }
 
   useEffect(() => {
@@ -400,6 +426,17 @@ export default function ResultList({
   function autoResizeColumns(): void {
     setColWidths({})
     saveJSON(COL_WIDTHS_KEY, {})
+  }
+
+  async function handleSendToFolder(track: Track): Promise<void> {
+    if (!window.api) return
+    const dest = await window.api.copyToFolder(track.filePath)
+    if (dest) onNotify?.(`Copied to ${dest}`)
+  }
+
+  async function handleRemoveTrack(track: Track): Promise<void> {
+    await window.api?.removeTrack(track.id)
+    onRemoveTrack?.(track)
   }
 
   function handleHorizontalWheel(e: React.WheelEvent<HTMLDivElement>): void {
@@ -443,7 +480,10 @@ export default function ResultList({
   }
 
   return (
-    <div className="content">
+    <div
+      className="content"
+      style={{ '--row-h': `${rowHeight}px`, '--list-font-size': `${fontSizeOpt.fontSize}px` } as React.CSSProperties}
+    >
       {tracks.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state__big">No sounds to display</div>
@@ -534,7 +574,7 @@ export default function ResultList({
               <div
                 ref={hoverBoxRef}
                 className="list-hoverbox"
-                style={{ height: ROW_HEIGHT, width: totalWidth, display: 'none' }}
+                style={{ height: rowHeight, width: totalWidth, display: 'none' }}
               />
               <AutoSizer>
                 {({ height, width }: { height: number; width: number }) => (
@@ -543,7 +583,7 @@ export default function ResultList({
                     height={height}
                     width={Math.max(1, viewportWidth || width)}
                     itemCount={tracks.length}
-                    itemSize={ROW_HEIGHT}
+                    itemSize={rowHeight}
                     itemData={itemData}
                     itemKey={(index, data) => data.tracks[index].id}
                     overscanCount={12}
@@ -574,51 +614,194 @@ export default function ResultList({
         />
       )}
 
-      {rowMenu && (
-        <div
-          className="colmenu"
-          style={{ left: Math.min(rowMenu.x, window.innerWidth - 230), top: Math.min(rowMenu.y, window.innerHeight - 300) }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <button
-            className="colmenu__item"
-            onClick={() => {
-              onToggleStar(rowMenu.track)
-              setRowMenu(null)
+      {rowMenu && (() => {
+        const menuWidth = 230
+        const submenuWidth = 210
+        const flipSubmenu = rowMenu.x + menuWidth + submenuWidth > window.innerWidth
+        return (
+          <div
+            className="colmenu"
+            style={{
+              left: Math.min(rowMenu.x, window.innerWidth - menuWidth - 8),
+              top: Math.min(rowMenu.y, window.innerHeight - 380)
             }}
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            <span className="colmenu__check">{rowMenu.track.starred ? '*' : ''}</span>
-            <span>{rowMenu.track.starred ? 'Remove favorite' : 'Favorite'}</span>
-          </button>
-          <div className="colmenu__sep" />
-          <div className="colmenu__section">Add to collection</div>
-          <div className="colmenu__scroll">
-            {collections.map((col) => (
-              <button
-                key={col.id}
-                className="colmenu__item"
-                onClick={() => {
-                  onAddToCollection(col.id, rowMenu.track.id)
-                  setRowMenu(null)
-                }}
-              >
-                <span className="colmenu__check" />
-                <span>{col.name}</span>
-              </button>
-            ))}
+            {/* Add to collection ▶ */}
+            <div
+              className="colmenu__item colmenu__item--action colmenu__item--haschildren"
+              onMouseEnter={() => setActiveSubmenu('collection')}
+              onMouseLeave={() => setActiveSubmenu((s) => (s === 'collection' ? null : s))}
+            >
+              <span>Add to collection</span>
+              <span className="colmenu__arrow">▶</span>
+              {activeSubmenu === 'collection' && (
+                <div
+                  className={`colmenu colmenu__submenu${flipSubmenu ? ' colmenu__submenu--left' : ''}`}
+                  style={{ width: submenuWidth }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  {collections.length > 0 && (
+                    <div className="colmenu__scroll">
+                      {collections.map((col) => (
+                        <button
+                          key={col.id}
+                          className="colmenu__item"
+                          onClick={() => {
+                            onAddToCollection(col.id, rowMenu.track.id)
+                            setRowMenu(null)
+                          }}
+                        >
+                          <span>{col.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {collections.length > 0 && <div className="colmenu__sep" />}
+                  <button
+                    className="colmenu__item"
+                    onClick={() => {
+                      onCreateCollectionWith(rowMenu.track.id)
+                      setRowMenu(null)
+                    }}
+                  >
+                    <span className="colmenu__check">+</span>
+                    <span>New collection</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="colmenu__sep" />
+
+            <button
+              className="colmenu__item colmenu__item--action"
+              onClick={() => {
+                onToggleStar(rowMenu.track)
+                setRowMenu(null)
+              }}
+            >
+              <span>{rowMenu.track.starred ? 'Unflag' : 'Flag'}</span>
+              <span className="colmenu__shortcut">F</span>
+            </button>
+            <button
+              className="colmenu__item colmenu__item--action"
+              onClick={() => {
+                onBrowseFolder?.(rowMenu.track)
+                setRowMenu(null)
+              }}
+            >
+              <span>Browse this folder</span>
+              <span className="colmenu__shortcut">Ctrl+Shift+F</span>
+            </button>
+            <button
+              className="colmenu__item colmenu__item--action"
+              onClick={() => {
+                void window.api?.showItemInFolder(rowMenu.track.filePath)
+                setRowMenu(null)
+              }}
+            >
+              <span>Show in File Explorer</span>
+              <span className="colmenu__shortcut">Ctrl+Shift+R</span>
+            </button>
+
+            <div className="colmenu__sep" />
+
+            <button
+              className="colmenu__item colmenu__item--action"
+              draggable
+              title="Cubase 창으로 직접 끌어다 놓으면 트랙에 추가됩니다"
+              onDragStart={(e) => {
+                e.preventDefault()
+                window.api?.startDrag(rowMenu.track.filePath)
+              }}
+              onClick={() => setRowMenu(null)}
+            >
+              <span>Send to Cubase</span>
+              <span className="colmenu__shortcut">S</span>
+            </button>
+            <button
+              className="colmenu__item"
+              onClick={() => {
+                void window.api?.openExternal(rowMenu.track.filePath)
+                setRowMenu(null)
+              }}
+            >
+              <span>Open in external editor</span>
+            </button>
+            <button
+              className="colmenu__item"
+              onClick={() => {
+                void handleSendToFolder(rowMenu.track)
+                setRowMenu(null)
+              }}
+            >
+              <span>Send to folder</span>
+            </button>
+
+            <div className="colmenu__sep" />
+
+            <button
+              className="colmenu__item colmenu__item--action"
+              onClick={() => {
+                onRenameTrack?.(rowMenu.track)
+                setRowMenu(null)
+              }}
+            >
+              <span>Rename</span>
+              <span className="colmenu__shortcut">Ctrl+E</span>
+            </button>
+            <button
+              className="colmenu__item"
+              onClick={() => {
+                onOpenMetadataPanel?.()
+                setRowMenu(null)
+              }}
+            >
+              <span>Open metadata panel</span>
+            </button>
+
+            <div className="colmenu__sep" />
+
+            <button
+              className="colmenu__item colmenu__item--action colmenu__item--danger"
+              onClick={() => {
+                void handleRemoveTrack(rowMenu.track)
+                setRowMenu(null)
+              }}
+            >
+              <span>Remove</span>
+              <span className="colmenu__shortcut">Backspace</span>
+            </button>
+
+            <div className="colmenu__sep" />
+
+            {/* Font size ▶ */}
+            <div
+              className="colmenu__item colmenu__item--action colmenu__item--haschildren"
+              onMouseEnter={() => setActiveSubmenu('fontsize')}
+              onMouseLeave={() => setActiveSubmenu((s) => (s === 'fontsize' ? null : s))}
+            >
+              <span>Font size</span>
+              <span className="colmenu__arrow">▶</span>
+              {activeSubmenu === 'fontsize' && (
+                <div
+                  className={`colmenu colmenu__submenu${flipSubmenu ? ' colmenu__submenu--left' : ''}`}
+                  style={{ width: 140 }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  {FONT_SIZE_OPTIONS.map((opt) => (
+                    <button key={opt.key} className="colmenu__item" onClick={() => setFontSizeKey(opt.key)}>
+                      <span className="colmenu__check">{fontSizeKey === opt.key ? '✓' : ''}</span>
+                      <span>{opt.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-          <button
-            className="colmenu__item"
-            onClick={() => {
-              onCreateCollectionWith(rowMenu.track.id)
-              setRowMenu(null)
-            }}
-          >
-            <span className="colmenu__check">+</span>
-            <span>New collection</span>
-          </button>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }

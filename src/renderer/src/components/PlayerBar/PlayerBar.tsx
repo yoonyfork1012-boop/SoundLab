@@ -476,6 +476,13 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         if (ws.isPlaying()) void ws.play()
       }
     })
+    // 사용자가 파형을 클릭/드래그해 직접 이동한 위치 — 'timeupdate'와 달리 프로그램적
+    // seek(setTime)가 아니라 사용자 상호작용에서만 발생한다. 이 값을 즉시 저장해두지
+    // 않으면, 정지(Stop) 후 클릭으로 새 위치를 잡아도 startPlayback()의 "resume" 로직이
+    // localStorage에 남아있던 정지 시점의 예전 위치를 읽어와 클릭 위치를 덮어써버린다.
+    ws.on('interaction', (newTime: number) => {
+      savePlaybackPosition(newTime)
+    })
     ws.on('ready', () => setDuration(ws.getDuration()))
     ws.on('finish', () => {
       savePlaybackPosition(ws.getDuration())

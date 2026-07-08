@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import logo from '@renderer/assets/logo.png'
 
 interface MenuItem {
   label?: string
@@ -52,7 +53,7 @@ export default function MenuBar({
     return (
       <div className="menubar menubar--dock">
         <div className="menubar__brand">
-          <span className="menubar__brand-dot" />
+          <img className="menubar__brand-logo" src={logo} alt="" />
           SoundLib
         </div>
         <div className="menubar__spacer" />
@@ -129,7 +130,7 @@ export default function MenuBar({
   return (
     <div className="menubar" ref={barRef}>
       <div className="menubar__brand">
-        <span className="menubar__brand-dot" />
+        <img className="menubar__brand-logo" src={logo} alt="" />
         SoundLib
       </div>
 

@@ -464,6 +464,52 @@ export default function App(): JSX.Element {
     setSelectedTrack((prev) => (prev && prev.id === track.id ? { ...prev, starred } : prev))
   }
 
+  // 우클릭 메뉴 "Browse this folder" — 사이드바/리스트를 해당 트랙이 들어있는 폴더로 이동
+  function handleBrowseFolder(track: Track): void {
+    const dir = norm(track.filePath).split('/').slice(0, -1).join('/')
+    setSelectedFolder(dir)
+    setSelectedCollection(null)
+    setShowStarredOnly(false)
+  }
+
+  // 우클릭 메뉴 / Ctrl+E "Rename" — 실제 파일을 같은 폴더 안에서 리네임
+  function handleRenameTrackFile(track: Track): void {
+    const dot = track.filename.lastIndexOf('.')
+    const base = dot > 0 ? track.filename.slice(0, dot) : track.filename
+    setNamePrompt({
+      title: 'Rename file',
+      defaultValue: base,
+      confirmLabel: 'Rename',
+      onSubmit: async (name) => {
+        if (window.api) {
+          try {
+            const { filePath, filename } = await window.api.renameTrackFile(track.id, track.filePath, name)
+            setTracks((prev) => prev.map((t) => (t.id === track.id ? { ...t, filePath, filename } : t)))
+            setSelectedTrack((prev) => (prev && prev.id === track.id ? { ...prev, filePath, filename } : prev))
+            showToast('Renamed')
+          } catch (err) {
+            showToast(`Rename failed: ${(err as Error)?.message ?? 'unknown error'}`)
+          }
+        }
+        setNamePrompt(null)
+      }
+    })
+  }
+
+  // 우클릭 메뉴 / Backspace "Remove" — 실제 IPC 호출은 ResultList가 수행하고,
+  // 여기서는 로컬 상태(트랙 목록/선택)만 정리한다
+  function handleRemoveTrackFromLibrary(track: Track): void {
+    setTracks((prev) => prev.filter((t) => t.id !== track.id))
+    setSelectedTrack((prev) => (prev && prev.id === track.id ? null : prev))
+    setSelectedIds((prev) => {
+      if (!prev.has(track.id)) return prev
+      const next = new Set(prev)
+      next.delete(track.id)
+      return next
+    })
+    showToast('Removed from library')
+  }
+
   async function handleSelectTrack(track: Track): Promise<void> {
     setSelectedTrack(track)
     setSelectedIds(new Set([track.id])) // ?�일 ?�택?�로 초기??    // Soundly처럼 미리?�기???�운?�는 ?�색(previewed) 처리 ??tracks 배열은 건드리지 않고
@@ -629,6 +675,11 @@ export default function App(): JSX.Element {
         e.preventDefault()
         const path = selectedFolder ?? shortcutLibrary?.rootPath
         if (path) void window.api?.showInExplorer(path)
+        return
+      }
+      if (mod && (e.key === 'e' || e.key === 'E')) {
+        e.preventDefault()
+        if (selectedTrack) handleRenameTrackFile(selectedTrack)
         return
       }
       // �???Ctrl/Meta 조합?� 브라?��?/OS 기본 ?�작??맡�?
@@ -920,6 +971,11 @@ export default function App(): JSX.Element {
               previewedIds={previewedIds}
               reorderable={collectionReorderable}
               onReorder={activeCollection ? (ids) => void handleReorderCollection(activeCollection.id, ids) : undefined}
+              onBrowseFolder={handleBrowseFolder}
+              onRenameTrack={handleRenameTrackFile}
+              onOpenMetadataPanel={() => setShowMeta(true)}
+              onRemoveTrack={handleRemoveTrackFromLibrary}
+              onNotify={showToast}
               onCreateCollectionWith={(trackId) => {
                 setNamePrompt({
                   title: 'New collection name',

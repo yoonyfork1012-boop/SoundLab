@@ -241,6 +241,21 @@ export function updateLastPlayed(trackId: number): void {
   persistDb()
 }
 
+// "Remove" (컨텍스트 메뉴) — 실제 파일은 건드리지 않고 라이브러리 인덱스에서만 제거.
+// 다시 스캔하면 그대로 재인덱싱되므로 되돌릴 수 있는 안전한 동작이다.
+export function removeTrack(trackId: number): void {
+  const db = getDb()
+  db.run('DELETE FROM collection_tracks WHERE track_id = ?', [trackId])
+  db.run('DELETE FROM tracks WHERE id = ?', [trackId])
+  persistDb()
+}
+
+// 파일 리네임 후 DB에 반영된 새 경로/파일명을 기록
+export function renameTrackFile(trackId: number, filePath: string, filename: string): void {
+  getDb().run('UPDATE tracks SET file_path = ?, filename = ? WHERE id = ?', [filePath, filename, trackId])
+  persistDb()
+}
+
 // ── Collections ──
 export function getCollections(): Collection[] {
   return selectRows('SELECT * FROM collections ORDER BY created_at').map((row) => {

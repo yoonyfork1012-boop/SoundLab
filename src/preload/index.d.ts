@@ -42,6 +42,11 @@ declare const api: {
     getAudioAccess: (filePath: string) => Promise<{ url: string; size: number; mtimeMs: number }>;
     readAudioFile: (filePath: string) => Promise<Uint8Array>;
     writeClipboardText: (text: string) => Promise<void>;
+    removeTrack: (trackId: number) => Promise<void>;
+    renameTrackFile: (trackId: number, filePath: string, newName: string) => Promise<{ filePath: string; filename: string }>;
+    openExternal: (filePath: string) => Promise<void>;
+    showItemInFolder: (filePath: string) => Promise<void>;
+    copyToFolder: (filePath: string) => Promise<string | null>;
     getTrackArtwork: (filePath: string, folderCoverPath: string | null) => Promise<{ url: string; source: 'embedded' | 'folder' } | null>;
     getFolderCover: (folderPath: string) => Promise<{ url: string; source: 'folder' } | null>;
     startDrag: (filePath: string) => void;

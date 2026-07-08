@@ -8,11 +8,23 @@ files:
 # sql.js WASM 파일은 asar 안에서 읽으면 문제가 생길 수 있어 압축 해제
 asarUnpack:
   - node_modules/sql.js/dist/sql-wasm.wasm
+# 단일 PNG(256x256 이상)만 있으면 electron-builder가 빌드 시 ico/icns를 자동 생성
+icon: build/icon.png
+# BrowserWindow 아이콘/스플래시 로고에서 런타임에 읽을 수 있도록 리소스로 함께 배포
+extraResources:
+  - from: build/icon.png
+    to: icon.png
 win:
+  icon: build/icon.png
   target:
     - target: nsis
       arch:
         - x64
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: SoundLib-${version}-portable.exe
 nsis:
   # 클릭 한 번짜리 설치가 아니라 일반적인 설치 마법사(Next/Install/Finish) 형태
   oneClick: false

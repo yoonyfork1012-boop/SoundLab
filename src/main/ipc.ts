@@ -1,7 +1,7 @@
 import { ipcMain, dialog, shell, clipboard, app, BrowserWindow, nativeImage, screen } from 'electron'
-import { readFile, stat } from 'fs/promises'
+import { readFile, stat, rename, copyFile } from 'fs/promises'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { join, dirname, basename, extname } from 'path'
 import { pathToFileURL } from 'url'
 import { scanLibrary, scanNewFilesOnly } from './scanner'
 import { startWatching, stopWatching } from './watcher'
@@ -25,7 +25,9 @@ import {
   renameLibrary,
   setLibraryMonitor,
   markLibraryAnalyzed,
-  computeSimilarityKeys
+  computeSimilarityKeys,
+  removeTrack,
+  renameTrackFile
 } from './db/queries'
 import type { ScanProgress } from '../shared/types'
 
@@ -96,6 +98,51 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('track:updateLastPlayed', (_event, trackId: number) => {
     updateLastPlayed(trackId)
+  })
+
+  // 리스트 우클릭 메뉴 "Remove" — 실제 파일은 그대로 두고 인덱스에서만 제거
+  ipcMain.handle('track:remove', (_event, trackId: number) => {
+    removeTrack(trackId)
+  })
+
+  // 리스트 우클릭 메뉴 "Rename" — 실제 파일을 같은 폴더 안에서 리네임하고 DB 경로를 갱신
+  ipcMain.handle(
+    'track:rename',
+    async (_event, trackId: number, filePath: string, newName: string) => {
+      const dir = dirname(filePath)
+      const ext = extname(filePath)
+      const trimmed = newName.trim()
+      if (!trimmed) throw new Error('File name cannot be empty')
+      const finalName = trimmed.toLowerCase().endsWith(ext.toLowerCase()) ? trimmed : `${trimmed}${ext}`
+      const newPath = join(dir, finalName)
+      if (newPath !== filePath) {
+        if (existsSync(newPath)) throw new Error('A file with that name already exists')
+        await rename(filePath, newPath)
+      }
+      renameTrackFile(trackId, newPath, finalName)
+      return { filePath: newPath, filename: finalName }
+    }
+  )
+
+  // 우클릭 메뉴 "Open in external editor" — OS 기본 연결 프로그램으로 열기
+  ipcMain.handle('file:openExternal', async (_event, filePath: string) => {
+    const err = await shell.openPath(filePath)
+    if (err) console.error('openPath failed:', err)
+  })
+
+  // 우클릭 메뉴 "Show in File Explorer" — 탐색기에서 해당 파일을 선택된 상태로 표시
+  ipcMain.handle('file:showItemInFolder', (_event, filePath: string) => {
+    shell.showItemInFolder(filePath)
+  })
+
+  // 우클릭 메뉴 "Send to folder" — 대상 폴더를 고른 뒤 파일을 그 폴더로 복사
+  ipcMain.handle('file:copyToFolder', async (_event, filePath: string) => {
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const destDir = result.filePaths[0]
+    const dest = join(destDir, basename(filePath))
+    await copyFile(filePath, dest)
+    return dest
   })
 
   // Collections

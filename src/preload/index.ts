@@ -84,6 +84,20 @@ const api = {
 
   writeClipboardText: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:writeText', text),
 
+  // 리스트 우클릭 메뉴: 파일 시스템 액션
+  removeTrack: (trackId: number): Promise<void> => ipcRenderer.invoke('track:remove', trackId),
+  renameTrackFile: (
+    trackId: number,
+    filePath: string,
+    newName: string
+  ): Promise<{ filePath: string; filename: string }> =>
+    ipcRenderer.invoke('track:rename', trackId, filePath, newName),
+  openExternal: (filePath: string): Promise<void> => ipcRenderer.invoke('file:openExternal', filePath),
+  showItemInFolder: (filePath: string): Promise<void> =>
+    ipcRenderer.invoke('file:showItemInFolder', filePath),
+  copyToFolder: (filePath: string): Promise<string | null> =>
+    ipcRenderer.invoke('file:copyToFolder', filePath),
+
   // 커버 아트워크 (임베디드 우선 → 폴더 커버 → null)
   getTrackArtwork: (
     filePath: string,
