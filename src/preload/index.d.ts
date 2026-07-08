@@ -38,6 +38,7 @@ declare const api: {
     addTrackToCollection: (collectionId: number, trackId: number) => Promise<Collection[]>;
     addTracksToCollection: (collectionId: number, trackIds: number[]) => Promise<Collection[]>;
     removeTrackFromCollection: (collectionId: number, trackId: number) => Promise<Collection[]>;
+    reorderCollectionTracks: (collectionId: number, orderedTrackIds: number[]) => Promise<Collection[]>;
     getAudioAccess: (filePath: string) => Promise<{ url: string; size: number; mtimeMs: number }>;
     readAudioFile: (filePath: string) => Promise<Uint8Array>;
     writeClipboardText: (text: string) => Promise<void>;
@@ -50,6 +51,7 @@ declare const api: {
     windowClose: () => void;
     windowIsMaximized: () => Promise<boolean>;
     onWindowMaximized: (callback: (maximized: boolean) => void) => (() => void);
+    setDockMode: (on: boolean) => Promise<void>;
 };
 export type SoundLibApi = typeof api;
 declare global {

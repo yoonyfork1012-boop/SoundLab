@@ -1,5 +1,5 @@
 :root {
-  /* ?�교???�크 ?�리미엄 ???�이?�드 ?�피??+ ?�제??블루 ?�센??*/
+  /* ?�교???�크 ?�리미엄 ???�이?�드 ?�피??+ ?�제??블루 ?�센??*/
   --bg-app: #0b0c0e;
   --bg-menubar: #101216;
   --bg-sidebar: #0d0f12;
@@ -19,12 +19,12 @@
   --text-faint: #616874;
   --text-ghost: #454b55;
 
-  /* 기본 ?�센?? ?�스??그린 (?�단 ???�택기에??변�?가?? JS가 ?�버?�이?? */
+  /* 기본 ?�센?? ?�스??그린 (?�단 ???�택기에??변�?가?? JS가 ?�버?�이?? */
   --accent: #7fd6a6;
   --accent-bright: #a3e3c1;
   --accent-dim: rgba(127, 214, 166, 0.17);
   --accent-glow: rgba(127, 214, 166, 0.35);
-  --on-accent: #0c1410; /* ?�스???�센?????�스???�이�?(?�둡�? */
+  --on-accent: #0c1410; /* ?�스???�센?????�스???�이�?(?�둡�? */
   --star: #f2c14e;
   --close: #e5484d;
 
@@ -69,7 +69,7 @@ button {
   position: relative;
 }
 
-/* 리스???�레?�어 경계 가�?리사?�즈 ?�들 (?�레?�어 ?�이 조절) */
+/* 리스???�레?�어 경계 가�?리사?�즈 ?�들 (?�레?�어 ?�이 조절) */
 .resizer-h {
   position: absolute;
   left: 0;
@@ -113,7 +113,7 @@ button {
   opacity: 1;
 }
 
-/* ?�?�?�?�?�?�?�?�?� Menu bar ?�?�?�?�?�?�?�?�?� */
+/* ?�?�?�?�?�?�?�?�?� Menu bar ?�?�?�?�?�?�?�?�?� */
 .menubar {
   display: flex;
   align-items: center;
@@ -230,7 +230,7 @@ button {
   color: #fff;
 }
 
-/* ?�?�?�?�?�?�?�?�?� Top bar ?�?�?�?�?�?�?�?�?� */
+/* ?�?�?�?�?�?�?�?�?� Top bar ?�?�?�?�?�?�?�?�?� */
 .topbar {
   display: flex;
   align-items: center;
@@ -307,7 +307,7 @@ button {
   font-size: 12px;
 }
 
-/* ?�덱??진행 ?�시 (?�이?�바 ?�단 고정, ?�형 ?�로그레?? */
+/* ?�덱??진행 ?�시 (?�이?�바 ?�단 고정, ?�형 ?�로그레?? */
 .sidebar__scroll {
   flex: 1;
   min-height: 0;
@@ -417,14 +417,14 @@ button {
   font-weight: 600;
 }
 
-/* ?�?�?�?�?�?�?�?�?� Main grid ?�?�?�?�?�?�?�?�?� */
+/* ?�?�?�?�?�?�?�?�?� Main grid ?�?�?�?�?�?�?�?�?� */
 .main {
   display: grid;
   min-height: 0;
   position: relative;
 }
 
-/* �????�널 ?�래�?리사?�즈 ?�들 (?��? ?�치, 경계???�에 겹쳐 배치) */
+/* �????�널 ?�래�?리사?�즈 ?�들 (?��? ?�치, 경계???�에 겹쳐 배치) */
 .resizer {
   position: absolute;
   top: 0;
@@ -442,7 +442,7 @@ button {
 .resizer--right {
   margin-right: -3.5px;
 }
-/* ??�� 보이??고정 경계????리스???�널?????�을 ?��? ?��? ?�음 */
+/* ??�� 보이??고정 경계????리스???�널?????�을 ?��? ?��? ?�음 */
 .resizer::before {
   content: '';
   position: absolute;
@@ -454,7 +454,7 @@ button {
   transform: translateX(-50%);
   pointer-events: none;
 }
-/* ?�래�?가?�함???�려주는 ?��? 그립 ?�시 */
+/* ?�래�?가?�함???�려주는 ?��? 그립 ?�시 */
 .resizer::after {
   content: '';
   width: 3px;
@@ -475,7 +475,7 @@ button {
   opacity: 1;
 }
 
-/* ?�?�?�?�?�?�?�?�?� Sidebar ?�?�?�?�?�?�?�?�?� */
+/* ?�?�?�?�?�?�?�?�?� Sidebar ?�?�?�?�?�?�?�?�?� */
 .sidebar {
   grid-column: 1;
   grid-row: 1;
@@ -636,7 +636,7 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
-/* ?�?�?�?�?�?�?�?�?� Content ?�?�?�?�?�?�?�?�?� */
+/* ?�?�?�?�?�?�?�?�?� Content ?�?�?�?�?�?�?�?�?� */
 .content-wrap {
   grid-column: 2;
   grid-row: 1;
@@ -647,8 +647,8 @@ button {
   background: var(--bg-content);
   overflow: hidden;
 }
-/* Metadata(?? + Analysis(?�래)�??�나???�속???�측 컬럼?�로 묶는????
-   콘텐�??�과 ?�레?�어 ????줄에 걸쳐 ?�어, ?�이브폼 ?�른�?�?공간까�? ?�용?�다 */
+/* Metadata(?? + Analysis(?�래)�??�나???�속???�측 컬럼?�로 묶는????
+   콘텐�??�과 ?�레?�어 ????줄에 걸쳐 ?�어, ?�이브폼 ?�른�?�?공간까�? ?�용?�다 */
 .right-panel {
   grid-column: 3;
   grid-row: 1 / 3;
@@ -665,8 +665,8 @@ button {
   min-height: 0;
   overflow: hidden;
 }
-/* Metadata/Analysis ?�이 ?�이 조절 ?�들 ???�측 컬럼 ?�름 ?�의 ?�반 ?�소???��? ?�치가
-   ?�닌 ?�범??flex ?�이?�으�??�다(?�단 ?�레?�어 ?�이??.resizer-h?�??별개) */
+/* Metadata/Analysis ?�이 ?�이 조절 ?�들 ???�측 컬럼 ?�름 ?�의 ?�반 ?�소???��? ?�치가
+   ?�닌 ?�범??flex ?�이?�으�??�다(?�단 ?�레?�어 ?�이??.resizer-h?�??별개) */
 .right-panel__resizer {
   height: 7px;
   margin: -3.5px 0;
@@ -809,7 +809,7 @@ button {
   overflow: hidden;
   position: relative;
 }
-/* ?�더 + 리스?��? ?�나??가�??�크�??�역?�로 묶어 ??�� ??�� ?�전???�치?�게 ??*/
+/* ?�더 + 리스?��? ?�나??가�??�크�??�역?�로 묶어 ??�� ??�� ?�전???�치?�게 ??*/
 .list-scroll {
   flex: 1;
   min-width: 0;
@@ -847,7 +847,7 @@ button {
   display: grid;
   align-items: stretch;
 }
-/* Soundly??컬럼 구분??(?� ?�른�??�로?? */
+/* Soundly??컬럼 구분??(?� ?�른�??�로?? */
 .list-header__cell,
 .list-row__cell {
   border-right: 1px solid var(--border);
@@ -931,7 +931,7 @@ button {
   color: var(--text-dim);
   transition: background 0.08s var(--ease), color 0.08s var(--ease);
 }
-/* 좌표 기반 hover 박스 (???�크�?중에??커서 추적) */
+/* 좌표 기반 hover 박스 (???�크�?중에??커서 추적) */
 .list-hoverbox {
   position: absolute;
   left: 0;
@@ -952,7 +952,7 @@ button {
   background: var(--accent-bright);
   box-shadow: 0 0 10px var(--accent-glow);
 }
-/* 미리?�기(previewed) ?�색 처리 */
+/* 미리?�기(previewed) ?�색 처리 */
 .list-row--previewed .list-row__filename,
 .list-row--previewed .list-row__cell {
   color: var(--text-ghost);
@@ -1011,7 +1011,7 @@ button {
   color: var(--text-dim);
 }
 
-/* ?�?�?�?�?�?�?�?�?� Metadata panel ?�?�?�?�?�?�?�?�?� */
+/* ?�?�?�?�?�?�?�?�?� Metadata panel ?�?�?�?�?�?�?�?�?� */
 .meta {
   height: 100%;
   overflow-y: auto;
@@ -1134,7 +1134,7 @@ button {
   color: var(--text);
 }
 
-/* ?�?�?�?�?�?�?�?�?� Analysis panel (Metadata ?�래, ?�이브폼 ?�른쪽까지 ?�어지???�역) ?�?�?�?�?�?�?�?�?� */
+/* ?�?�?�?�?�?�?�?�?� Analysis panel (Metadata ?�래, ?�이브폼 ?�른쪽까지 ?�어지???�역) ?�?�?�?�?�?�?�?�?� */
 .analysis {
   flex: 1;
   min-height: 0;
@@ -1218,10 +1218,10 @@ button {
   text-align: center;
   margin-top: 24px;
 }
-/* flex:1�??�면 그룹 콘텐�?막�? 2�???가 ?�기 ?�이만큼�??�요?�데???�는 공간??
-   ?��?�?채우???�어?�면???�음 그룹과의 ?�이??불필?�한 �?간격???�겼??
-   ?�용�??�이만큼�?차�??�도�??�연 ?�이(auto)�??�고, 그룹 ?�이 ?�백?�
-   .analysis__body??gap???�당?�다. ?�치�?body??overflow-y:auto�??�크롤된?? */
+/* flex:1�??�면 그룹 콘텐�?막�? 2�???가 ?�기 ?�이만큼�??�요?�데???�는 공간??
+   ?��?�?채우???�어?�면???�음 그룹과의 ?�이??불필?�한 �?간격???�겼??
+   ?�용�??�이만큼�?차�??�도�??�연 ?�이(auto)�??�고, 그룹 ?�이 ?�백?�
+   .analysis__body??gap???�당?�다. ?�치�?body??overflow-y:auto�??�크롤된?? */
 .analysis__group {
   display: flex;
   flex-direction: column;
@@ -1315,7 +1315,7 @@ button {
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
-/* Soundminer ?��???Stereo Image(반원 고니?��??? + Phase Correlation */
+/* Soundminer ?��???Stereo Image(반원 고니?��??? + Phase Correlation */
 .analysis__gonio {
   display: flex;
   flex-direction: column;
@@ -1379,7 +1379,7 @@ button {
   letter-spacing: 0.02em;
 }
 
-/* ?�?�?�?�?�?�?�?�?� Player ?�?�?�?�?�?�?�?�?� */
+/* ?�?�?�?�?�?�?�?�?� Player ?�?�?�?�?�?�?�?�?� */
 .player {
   grid-column: 1 / 3;
   grid-row: 2;
@@ -1415,7 +1415,7 @@ button {
   font-size: 12px;
   pointer-events: none;
 }
-/* Waveform 구간 ?�택 ???��??�는 DAW ?�래�??�들 */
+/* Waveform 구간 ?�택 ???��??�는 DAW ?�래�??�들 */
 .player__region-drag {
   position: absolute;
   top: 4px;
@@ -1603,7 +1603,7 @@ button {
   cursor: default;
 }
 
-/* topbar ?�측 ?�션 (???�택�?+ ?�널 ?��?) */
+/* topbar ?�측 ?�션 (???�택�?+ ?�널 ?��?) */
 .topbar__actions {
   margin-left: auto;
   display: flex;
@@ -1611,7 +1611,7 @@ button {
   gap: 6px;
 }
 
-/* ?�센???�마 ?? ?�택�?*/
+/* ?�센???�마 ?? ?�택�?*/
 .accent {
   position: relative;
 }
@@ -1696,7 +1696,7 @@ button {
   cursor: pointer;
 }
 
-/* ?�?�?�?�?�?�?�?�?� Column context menu ?�?�?�?�?�?�?�?�?� */
+/* ?�?�?�?�?�?�?�?�?� Column context menu ?�?�?�?�?�?�?�?�?� */
 .colmenu {
   position: fixed;
   z-index: 500;
@@ -1800,7 +1800,7 @@ button {
   background-clip: content-box;
 }
 
-/* 짧�? ?�션 ?�료 ?�림 (Share 복사?? ?�캔 ?�료 ?? */
+/* 짧�? ?�션 ?�료 ?�림 (Share 복사?? ?�캔 ?�료 ?? */
 .toast {
   position: fixed;
   left: 50%;
@@ -2052,6 +2052,325 @@ button {
 }
 .player__opt-item input {
   accent-color: var(--accent);
+}
+
+/* ══════════════ Dock Mode ══════════════ */
+/* 창을 화면 하단의 얇은 트랜스포트 바로 축소했을 때의 타이틀바 변형 —
+   메뉴 없이 브랜드 + Undock + 닫기만 남긴다 */
+.menubar--dock {
+  padding-left: 10px;
+}
+.menubar__undock {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s var(--ease), color 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+.menubar__undock:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-bright);
+}
+
+/* 도킹 시 사이드바/리스트/메타 패널은 렌더 트리에서 빠지지만 PlayerBar는 항상
+   마운트 상태를 유지해(App.tsx) 재생 중이던 오디오가 끊기지 않는다. 여기서는
+   그 안에서 컨트롤을 한 줄짜리 얇은 트랜스포트로 압축하는 시각적 변형만 담당한다. */
+.player--dock {
+  border-top: none;
+}
+.player--dock .player__wave-band {
+  padding: 5px 16px 0;
+  flex: 0 0 auto;
+}
+.player--dock .player__controls {
+  height: 46px;
+  gap: 10px;
+}
+.player--dock .player__srbit,
+.player--dock .player__mode,
+.player--dock .player__channels,
+.player--dock .player__options,
+.player--dock .player__fx {
+  display: none;
+}
+.player--dock .player__tbtn {
+  width: 28px;
+  height: 28px;
+}
+.player--dock .player__tbtn--play {
+  width: 34px;
+  height: 34px;
+}
+.player--dock .player__vol {
+  gap: 6px;
+}
+.player--dock .player__slider {
+  width: 60px;
+}
+
+/* ══════════════ Collection Hero ══════════════ */
+/* 컬렉션을 열었을 때 리스트 위에 보이는 요약 헤더 — 실제 아트워크 대신 구성 사운드들의
+   카테고리 색으로 만든 모자이크가 "이 크레이트가 어떤 소리들로 채워졌는지"를 즉시 보여준다 */
+.coll-hero {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.coll-hero__mosaic {
+  width: 60px;
+  height: 60px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.coll-hero__quad {
+  min-width: 0;
+  min-height: 0;
+}
+.coll-hero__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+.coll-hero__name {
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coll-hero__stats {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.coll-hero__bar {
+  display: flex;
+  width: 100%;
+  max-width: 420px;
+  height: 5px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg-elevated-2);
+}
+.coll-hero__bar-seg {
+  height: 100%;
+  min-width: 2px;
+}
+.coll-hero__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  row-gap: 4px;
+}
+.coll-hero__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.coll-hero__legend-item--rest {
+  color: var(--text-faint);
+}
+.coll-hero__legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.coll-hero__legend-count {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ══════════════ Collection drag-to-reorder ══════════════ */
+.list-row__grip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--text-ghost);
+  cursor: grab;
+  transition: color 0.12s var(--ease);
+}
+.list-row__grip:hover {
+  color: var(--accent-bright);
+}
+.list-row__grip:active {
+  cursor: grabbing;
+}
+.list-row--dragover {
+  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 transparent;
+}
+
+/* ══════════════ FX panel (Pitch / Speed / Reverse) ══════════════ */
+.player__fx {
+  position: relative;
+}
+.player__fx-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+.player__fx-btn--active {
+  color: var(--accent-bright);
+  border-color: var(--accent-dim);
+}
+.player__fx-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-bright);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+.player__fx-menu {
+  position: absolute;
+  right: 0;
+  bottom: 34px;
+  width: 260px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  z-index: 120;
+}
+.fx__row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fx__row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.fx__label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.fx__value {
+  font-size: 11.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.fx__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  text-transform: none;
+  font-weight: 400;
+  letter-spacing: 0;
+  font-size: 10.5px;
+  color: var(--text-ghost);
+  cursor: pointer;
+}
+.fx__link input {
+  accent-color: var(--accent);
+}
+.fx__slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 3px;
+  background: var(--bg-elevated-2);
+  outline: none;
+}
+.fx__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent-bright);
+  cursor: pointer;
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+.fx__slider:disabled {
+  opacity: 0.35;
+}
+.fx__slider:disabled::-webkit-slider-thumb {
+  cursor: default;
+  box-shadow: none;
+}
+.fx__ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--text-ghost);
+  font-variant-numeric: tabular-nums;
+}
+.fx__row--reverse {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.fx__reverse-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.12s var(--ease), color 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+.fx__reverse-btn:hover {
+  border-color: var(--text-faint);
+  color: var(--text);
+}
+.fx__reverse-btn--on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-bright);
+}
+.fx__note {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-ghost);
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
 }
 
 

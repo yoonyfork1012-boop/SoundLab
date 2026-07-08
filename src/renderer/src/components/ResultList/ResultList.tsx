@@ -22,6 +22,8 @@ interface ResultListProps {
   onSort: (key: string) => void
   publisherRule: PublisherRule
   previewedIds: Set<number>
+  reorderable?: boolean
+  onReorder?: (orderedTrackIds: number[]) => void
 }
 
 const ROW_HEIGHT = 30
@@ -40,6 +42,25 @@ interface RowData {
   libraries: Library[]
   publisherRule: PublisherRule
   previewedIds: Set<number>
+  reorderable: boolean
+  dragOverId: number | null
+  onReorderStart: (id: number) => void
+  onReorderOver: (id: number) => void
+  onReorderDrop: () => void
+  onReorderCancel: () => void
+}
+
+function GripIcon(): JSX.Element {
+  return (
+    <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
+      <circle cx="2.5" cy="2.5" r="1.3" />
+      <circle cx="7.5" cy="2.5" r="1.3" />
+      <circle cx="2.5" cy="7" r="1.3" />
+      <circle cx="7.5" cy="7" r="1.3" />
+      <circle cx="2.5" cy="11.5" r="1.3" />
+      <circle cx="7.5" cy="11.5" r="1.3" />
+    </svg>
+  )
 }
 
 function SpeakerIcon({ color }: { color: string }): JSX.Element {
@@ -82,27 +103,84 @@ const HEADER_ICONS: Record<string, () => JSX.Element> = {
 }
 
 const Row = memo(({ index, style, data }: ListChildComponentProps<RowData>): JSX.Element => {
-  const { tracks, selectedTrackId, selectedIds, columns, gridTemplate, totalWidth, libraries, publisherRule, previewedIds } = data
+  const {
+    tracks,
+    selectedTrackId,
+    selectedIds,
+    columns,
+    gridTemplate,
+    totalWidth,
+    libraries,
+    publisherRule,
+    previewedIds,
+    reorderable,
+    dragOverId,
+    onReorderStart,
+    onReorderOver,
+    onReorderDrop,
+    onReorderCancel
+  } = data
   const track = tracks[index]
   const isSelected = track.id === selectedTrackId || (selectedIds?.has(track.id) ?? false)
   const isPreviewed = track.lastPlayedAt != null || previewedIds.has(track.id)
+  const isDragOver = reorderable && dragOverId === track.id
   const color = colorForCategory(track.category)
 
   return (
     <div
       style={{ ...style, gridTemplateColumns: gridTemplate, width: totalWidth }}
-      className={`list-row${isSelected ? ' list-row--selected' : ''}${isPreviewed ? ' list-row--previewed' : ''}`}
+      className={`list-row${isSelected ? ' list-row--selected' : ''}${isPreviewed ? ' list-row--previewed' : ''}${isDragOver ? ' list-row--dragover' : ''}`}
       draggable
       onDragStart={(e) => {
         // ?�택 ?��??� 무�??�게 ?�떤 ?�이??즉시 OS ?�이?�브 ?�래�?DAW/?�색기로 ?�롭)
         e.preventDefault()
         window.api?.startDrag(track.filePath)
       }}
+      onDragOver={
+        reorderable
+          ? (e) => {
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              onReorderOver(track.id)
+            }
+          : undefined
+      }
+      onDrop={
+        reorderable
+          ? (e) => {
+              e.preventDefault()
+              onReorderDrop()
+            }
+          : undefined
+      }
     >
       {columns.map((col) => {
         if (col.key === 'name') {
           return (
             <div className="list-row__cell list-row__name" key={col.key}>
+              {reorderable && (
+                <span
+                  className="list-row__grip"
+                  draggable
+                  title="드래그해서 순서 바꾸기"
+                  onDragStart={(e) => {
+                    // 부모 row의 OS 네이티브 드래그(startDrag)로 이벤트가 버블링되지 않도록 막는다 —
+                    // 그러지 않으면 e.preventDefault()가 이 순서 재정렬 드래그까지 취소시킨다.
+                    e.stopPropagation()
+                    e.dataTransfer.effectAllowed = 'move'
+                    onReorderStart(track.id)
+                  }}
+                  onDragEnd={(e) => {
+                    // 유효한 행 위에서 놓였으면 onDrop이 이미 순서를 커밋하고 상태를 비웠다 —
+                    // 여기서는 목록 밖에 놓거나 취소된 경우를 위한 안전한 상태 초기화만 한다
+                    e.stopPropagation()
+                    onReorderCancel()
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <GripIcon />
+                </span>
+              )}
               <SpeakerIcon color={color} />
               <span className="list-row__filename" title={track.filePath}>
                 {track.filename}
@@ -139,7 +217,9 @@ export default function ResultList({
   sortDir,
   onSort,
   publisherRule,
-  previewedIds
+  previewedIds,
+  reorderable = false,
+  onReorder
 }: ResultListProps): JSX.Element {
   const listRef = useRef<FixedSizeList>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -160,6 +240,38 @@ export default function ResultList({
   const [viewportWidth, setViewportWidth] = useState(0)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [rowMenu, setRowMenu] = useState<{ x: number; y: number; track: Track } | null>(null)
+  const [dragRowId, setDragRowId] = useState<number | null>(null)
+  const [dragOverId, setDragOverId] = useState<number | null>(null)
+  const dragRowIdRef = useRef<number | null>(null)
+  const dragOverIdRef = useRef<number | null>(null)
+  dragRowIdRef.current = dragRowId
+  dragOverIdRef.current = dragOverId
+
+  function handleReorderStart(id: number): void {
+    setDragRowId(id)
+  }
+  function handleReorderOver(id: number): void {
+    if (dragOverIdRef.current !== id) setDragOverId(id)
+  }
+  function handleReorderDrop(): void {
+    const fromId = dragRowIdRef.current
+    const toId = dragOverIdRef.current
+    setDragRowId(null)
+    setDragOverId(null)
+    if (fromId == null || toId == null || fromId === toId || !onReorder) return
+    const ids = tracksRef.current.map((t) => t.id)
+    const from = ids.indexOf(fromId)
+    const to = ids.indexOf(toId)
+    if (from < 0 || to < 0) return
+    const next = [...ids]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    onReorder(next)
+  }
+  function handleReorderCancel(): void {
+    setDragRowId(null)
+    setDragOverId(null)
+  }
 
   useEffect(() => {
     if (!rowMenu) return
@@ -312,7 +424,23 @@ export default function ResultList({
     return () => ro.disconnect()
   }, [])
 
-  const itemData: RowData = { tracks, selectedTrackId, selectedIds, columns, gridTemplate, totalWidth, libraries, publisherRule, previewedIds }
+  const itemData: RowData = {
+    tracks,
+    selectedTrackId,
+    selectedIds,
+    columns,
+    gridTemplate,
+    totalWidth,
+    libraries,
+    publisherRule,
+    previewedIds,
+    reorderable,
+    dragOverId,
+    onReorderStart: handleReorderStart,
+    onReorderOver: handleReorderOver,
+    onReorderDrop: handleReorderDrop,
+    onReorderCancel: handleReorderCancel
+  }
 
   return (
     <div className="content">

@@ -10,8 +10,17 @@ asarUnpack:
   - node_modules/sql.js/dist/sql-wasm.wasm
 win:
   target:
-    - target: portable
+    - target: nsis
       arch:
         - x64
-portable:
-  artifactName: SoundLib-${version}-portable.exe
+nsis:
+  # 클릭 한 번짜리 설치가 아니라 일반적인 설치 마법사(Next/Install/Finish) 형태
+  oneClick: false
+  # Program Files(시스템 전역 경로)에 설치 — 꺼지면 사용자별 AppData 경로로 바뀜
+  perMachine: true
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: SoundLib
+  uninstallDisplayName: SoundLib
+  artifactName: SoundLib-${version}-setup.exe

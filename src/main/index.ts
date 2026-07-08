@@ -134,7 +134,12 @@ function createWindow(): BrowserWindow {
     backgroundColor: '#0e0f11',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      // electron-vite dev에서는 렌더러가 http://localhost 오리진으로 뜨는데, 그 상태에서
+      // file:// 오디오(webPreviewURL)를 재생하려 하면 크로미움이 "Not allowed to load
+      // local resource"로 막는다. 패키징된 빌드는 렌더러도 file:// 오리진이라 문제가 없으므로
+      // 이 완화는 개발 모드(ELECTRON_RENDERER_URL이 설정된 경우)에서만 적용한다.
+      webSecurity: !process.env.ELECTRON_RENDERER_URL
     }
   })
 

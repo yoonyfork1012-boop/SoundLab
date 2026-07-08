@@ -73,6 +73,8 @@ const api = {
     ipcRenderer.invoke('collections:addTracks', collectionId, trackIds),
   removeTrackFromCollection: (collectionId: number, trackId: number): Promise<Collection[]> =>
     ipcRenderer.invoke('collections:removeTrack', collectionId, trackId),
+  reorderCollectionTracks: (collectionId: number, orderedTrackIds: number[]): Promise<Collection[]> =>
+    ipcRenderer.invoke('collections:reorder', collectionId, orderedTrackIds),
 
   readAudioFile: (filePath: string): Promise<Uint8Array> =>
     ipcRenderer.invoke('file:readAudio', filePath),
@@ -110,7 +112,10 @@ const api = {
       callback(maximized)
     ipcRenderer.on('window:maximized', listener)
     return () => ipcRenderer.removeListener('window:maximized', listener)
-  }
+  },
+
+  // Dock Mode: 창을 화면 하단의 얇은 트랜스포트 바로 축소/복원
+  setDockMode: (on: boolean): Promise<void> => ipcRenderer.invoke('window:setDockMode', on)
 }
 
 contextBridge.exposeInMainWorld('api', api)

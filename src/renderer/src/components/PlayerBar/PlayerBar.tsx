@@ -4,9 +4,11 @@ import RegionsPlugin, { type Region } from 'wavesurfer.js/plugins/regions'
 import type { Track } from '@shared/types'
 import { encodeWavFloat32, sliceAudioBuffer } from '../../lib/wavEncoder'
 import { audioCacheKey, type AudioAccess } from '../../lib/audioCacheKey'
+import { decodeAiffToWav, isAiffPath } from '../../lib/aiffDecoder'
 
 const MIN_REGION_SEC = 0.05
 const PLAYBACK_OPTIONS_KEY = 'soundlib.playbackOptions'
+const FX_OPTIONS_KEY = 'soundlib.fxOptions'
 const WAVE_COLOR = 'rgba(245, 247, 250, 0.82)'
 const PLAYHEAD_COLOR = '#ffffff'
 const WAVE_CACHE_DB = 'soundlib-wave-cache'
@@ -51,6 +53,41 @@ function savePlaybackOptions(options: PlaybackOptions): void {
   }
 }
 
+interface FxOptions {
+  speedPct: number // 50-200, wired to real playback rate
+  pitchSemitones: number // -12..12, UI preview only (독립 피치 시프트 DSP는 추후 구현)
+  pitchLinked: boolean // true = "tape" varispeed: 속도 변화에 피치가 자연스럽게 따라감 (실제 재생에 반영)
+  reversed: boolean // UI 프리뷰만 — 역재생 렌더링은 추후 구현
+}
+
+const DEFAULT_FX_OPTIONS: FxOptions = { speedPct: 100, pitchSemitones: 0, pitchLinked: false, reversed: false }
+
+function loadFxOptions(): FxOptions {
+  try {
+    const raw = localStorage.getItem(FX_OPTIONS_KEY)
+    if (!raw) return DEFAULT_FX_OPTIONS
+    return { ...DEFAULT_FX_OPTIONS, ...JSON.parse(raw) }
+  } catch {
+    return DEFAULT_FX_OPTIONS
+  }
+}
+
+function saveFxOptions(options: FxOptions): void {
+  try {
+    localStorage.setItem(FX_OPTIONS_KEY, JSON.stringify(options))
+  } catch {
+    /* noop */
+  }
+}
+
+// 디코딩(WaveSurfer/Web Audio) 목적으로 파일 바이트를 읽는 단일 지점 — AIFF는 브라우저가
+// 컨테이너 자체를 이해하지 못하므로 여기서 항상 WAV로 먼저 변환해 넘긴다.
+async function readPcmBytesForDecode(filePath: string): Promise<Uint8Array> {
+  const raw = await window.api!.readAudioFile(filePath)
+  const bytes = new Uint8Array(raw)
+  return isAiffPath(filePath) ? decodeAiffToWav(bytes) : bytes
+}
+
 // 플레이어 패널 전체 높이에서 컨트롤바/여백을 뺀 웨이브폼 가용 높이를 계산해,
 // 스테레오(2채널 스택)/단일 채널 각각의 렌더 높이를 구한다. 패널을 키우면 웨이브폼도 커짐.
 function waveHeightsFor(panelHeight: number): { both: number; single: number } {
@@ -68,6 +105,7 @@ interface PlayerBarProps {
   onPrev: () => void
   onNext: () => void
   queueTracks?: Track[]
+  dockMode?: boolean
 }
 
 export interface MeterTap {
@@ -264,9 +302,27 @@ const IconStop = (): JSX.Element => (
     <rect x="5" y="5" width="14" height="14" rx="2.5" />
   </svg>
 )
+const IconFx = (): JSX.Element => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 21V14" /><path d="M4 10V3" /><circle cx="4" cy="12" r="2" />
+    <path d="M12 21V16" /><path d="M12 12V3" /><circle cx="12" cy="14" r="2" />
+    <path d="M20 21V10" /><path d="M20 6V3" /><circle cx="20" cy="8" r="2" />
+  </svg>
+)
+// Reverse 토글의 시각적 시그니처 — 오름차순 막대(정재생)가 켜지면 좌우로 뒤집힌다(역재생)
+function ReverseGlyph({ flipped }: { flipped: boolean }): JSX.Element {
+  const heights = [4, 7, 11, 15, 9, 6]
+  return (
+    <svg width="26" height="15" viewBox="0 0 26 15" style={{ transform: flipped ? 'scaleX(-1)' : 'none', transition: 'transform 0.22s var(--ease)' }}>
+      {heights.map((h, i) => (
+        <rect key={i} x={i * 4.4} y={15 - h} width="3" height={h} rx="1" fill="currentColor" />
+      ))}
+    </svg>
+  )
+}
 
 const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
-  { track, accent, panelHeight, onPrev, onNext, queueTracks = [] },
+  { track, accent, panelHeight, onPrev, onNext, queueTracks = [], dockMode = false },
   ref
 ) {
   const waveBandRef = useRef<HTMLDivElement>(null)
@@ -281,6 +337,9 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   const decodeCtxRef = useRef<AudioContext | null>(null)
   const peaksRef = useRef<Peaks | null>(null)
   const urlRef = useRef<string | null>(null)
+  // AIFF는 file:// URL을 직접 재생할 수 없어 WAV로 변환한 Blob URL을 쓴다 — 파일 URL과 달리
+  // 명시적으로 revoke해야 메모리가 안 새므로 트랙이 바뀔 때마다/언마운트 시 여기서 정리한다
+  const aiffBlobUrlRef = useRef<string | null>(null)
   const regionsPluginRef = useRef<RegionsPlugin | null>(null)
   const activeRegionRef = useRef<Region | null>(null)
   // 구간 드래그(DAW export)용 원본 해상도 디코딩 캐시 — peaksRef(다운샘플)와는 별개로 유지
@@ -301,6 +360,10 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   const [mode, setMode] = useState<'stereo' | 'mono'>('stereo')
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [playbackOptions, setPlaybackOptions] = useState<PlaybackOptions>(() => loadPlaybackOptions())
+  const [fxOpen, setFxOpen] = useState(false)
+  const [fx, setFx] = useState<FxOptions>(() => loadFxOptions())
+  const fxRef = useRef(fx)
+  fxRef.current = fx
   const loopRef = useRef(loop)
   loopRef.current = loop
   const playbackOptionsRef = useRef(playbackOptions)
@@ -314,6 +377,14 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     setPlaybackOptions((prev) => {
       const next = { ...prev, ...patch }
       savePlaybackOptions(next)
+      return next
+    })
+  }
+
+  function updateFx(patch: Partial<FxOptions>): void {
+    setFx((prev) => {
+      const next = { ...prev, ...patch }
+      saveFxOptions(next)
       return next
     })
   }
@@ -474,6 +545,24 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     wavesurferRef.current?.setVolume(volume)
   }, [volume])
 
+  // Speed는 브라우저 네이티브 playbackRate로 실제 재생에 반영된다. pitchLinked가 켜지면
+  // preservePitch=false를 줘서 속도 변화에 피치가 테이프처럼 자연스럽게 따라가게 한다
+  // (독립적인 피치 전용 시프트는 페이즈 보코더가 필요해 이후 단계로 남겨둔다).
+  useEffect(() => {
+    wavesurferRef.current?.setPlaybackRate(fx.speedPct / 100, !fx.pitchLinked)
+  }, [fx.speedPct, fx.pitchLinked])
+
+  useEffect(() => {
+    if (!fxOpen) return
+    function handleClickOutside(e: MouseEvent): void {
+      const target = e.target as HTMLElement | null
+      if (!target) return
+      if (!target.closest('.player__fx')) setFxOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [fxOpen])
+
   // 패널 높이가 바뀌면 웨이브폼을 새 높이로 다시 그림 (드래그 중 과도한 리로드 방지 위해 디바운스)
   useEffect(() => {
     if (!wavesurferRef.current || !urlRef.current) return
@@ -529,8 +618,8 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     const t = trackRef.current
     if (!t || !window.api) return null
     try {
-      const bytes = await window.api.readAudioFile(t.filePath)
-      peaksRef.current = await decodePeaks(new Uint8Array(bytes))
+      const bytes = await readPcmBytesForDecode(t.filePath)
+      peaksRef.current = await decodePeaks(bytes)
     } catch {
       peaksRef.current = null
     }
@@ -558,6 +647,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         ws.setOptions({ height: h.single, splitChannels: [{ height: h.single }] })
         await ws.load(url, peaksFor(pk, v), pk.duration)
       }
+      ws.setPlaybackRate(fxRef.current.speedPct / 100, !fxRef.current.pitchLinked)
       if (time > 0) ws.setTime(time)
       if (wasPlaying) await ws.play()
     } catch {
@@ -678,9 +768,9 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     if (!t || !window.api) return null
     if (rawBufferRef.current && rawBufferTrackIdRef.current === t.id) return rawBufferRef.current
     try {
-      const bytes = await window.api.readAudioFile(t.filePath)
+      const bytes = await readPcmBytesForDecode(t.filePath)
       if (!decodeCtxRef.current) decodeCtxRef.current = new AudioContext()
-      const buf = await decodeCtxRef.current.decodeAudioData(new Uint8Array(bytes).buffer)
+      const buf = await decodeCtxRef.current.decodeAudioData(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer)
       if (trackRef.current?.id === t.id) {
         rawBufferRef.current = buf
         rawBufferTrackIdRef.current = t.id
@@ -725,6 +815,10 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     if (!track || !window.api) {
       peaksRef.current = null
       if (urlRef.current) urlRef.current = null
+      if (aiffBlobUrlRef.current) {
+        URL.revokeObjectURL(aiffBlobUrlRef.current)
+        aiffBlobUrlRef.current = null
+      }
       try {
         ws.empty()
       } catch {
@@ -741,8 +835,20 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         const access = await window.api!.getAudioAccess(track.filePath)
         if (cancelled || token !== loadTokenRef.current) return
 
-        urlRef.current = access.url
-        preloadUrlCache.set(track.filePath, access.url)
+        // AIFF는 <audio>가 컨테이너를 이해하지 못해 file:// URL을 직접 재생할 수 없다 —
+        // 파일을 통째로 읽어 WAV로 변환한 뒤 그 결과를 Blob URL로 재생한다.
+        let playUrl = access.url
+        let aiffWavBytes: Uint8Array | null = null
+        if (isAiffPath(track.filePath)) {
+          aiffWavBytes = await readPcmBytesForDecode(track.filePath)
+          if (cancelled || token !== loadTokenRef.current) return
+          playUrl = URL.createObjectURL(new Blob([new Uint8Array(aiffWavBytes)], { type: 'audio/wav' }))
+        }
+        if (aiffBlobUrlRef.current) URL.revokeObjectURL(aiffBlobUrlRef.current)
+        aiffBlobUrlRef.current = playUrl !== access.url ? playUrl : null
+
+        urlRef.current = playUrl
+        if (playUrl === access.url) preloadUrlCache.set(track.filePath, access.url)
         const key = audioCacheKey(track.filePath, access)
         const cached = await getCachedPeaks(key)
         if (cancelled || token !== loadTokenRef.current) return
@@ -754,10 +860,12 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           height: cached && viewFor(ch1, ch2, cached.numCh) === 'both' ? waveHeightsFor(panelHeightRef.current).both : waveHeightsFor(panelHeightRef.current).single,
           splitChannels: cached && viewFor(ch1, ch2, cached.numCh) === 'both' ? [{ height: waveHeightsFor(panelHeightRef.current).both }, { height: waveHeightsFor(panelHeightRef.current).both }] : [{ height: waveHeightsFor(panelHeightRef.current).single }]
         })
-        await ws.load(access.url, initialPeaks, durationSec)
+        await ws.load(playUrl, initialPeaks, durationSec)
         if (cancelled || token !== loadTokenRef.current) return
 
         ws.setVolume(volume)
+        // ws.load()가 재생 속도를 기본값으로 되돌리므로, 트랙마다 저장된 Speed 설정을 다시 건다
+        ws.setPlaybackRate(fxRef.current.speedPct / 100, !fxRef.current.pitchLinked)
         // 분석 패널이 첫 재생부터 실시간 레벨을 읽을 수 있도록, 채널 토글을 누르기 전에도
         // Web Audio 라우트(+분석 탭)를 미리 만들어 둔다
         ensureRoute()
@@ -773,22 +881,24 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         if (!cached) {
           void (async () => {
             try {
-              const bytes = await window.api!.readAudioFile(track.filePath)
+              // AIFF는 위에서 이미 WAV로 변환해뒀으니 재사용하고, 그 외 포맷만 새로 읽는다
+              const bytes = aiffWavBytes ?? (await readPcmBytesForDecode(track.filePath))
               if (cancelled || token !== loadTokenRef.current) return
-              const pk = await decodePeaks(new Uint8Array(bytes))
+              const pk = await decodePeaks(bytes)
               if (!pk) return
               await putCachedPeaks(key, pk)
               peaksRef.current = pk
               // 재생 중이어도(자동재생 켜짐+최초 디코딩) 실제 웨이브폼으로 반드시 교체한다.
               // 재생 위치/재생 상태를 캡처했다가 로드 후 복원해 재생이 끊기지 않게 한다.
-              if (token === loadTokenRef.current && urlRef.current === access.url && wavesurferRef.current) {
+              if (token === loadTokenRef.current && urlRef.current === playUrl && wavesurferRef.current) {
                 const ws2 = wavesurferRef.current
                 const wasPlaying = ws2.isPlaying()
                 const time = ws2.getCurrentTime()
                 const v = viewFor(ch1, ch2, pk.numCh)
                 const h = waveHeightsFor(panelHeightRef.current)
                 ws2.setOptions({ height: v === 'both' ? h.both : h.single, splitChannels: v === 'both' ? [{ height: h.both }, { height: h.both }] : [{ height: h.single }] })
-                await ws2.load(access.url, peaksFor(pk, v), pk.duration)
+                await ws2.load(playUrl, peaksFor(pk, v), pk.duration)
+                ws2.setPlaybackRate(fxRef.current.speedPct / 100, !fxRef.current.pitchLinked)
                 if (time > 0) ws2.setTime(time)
                 if (wasPlaying) await ws2.play()
               }
@@ -861,8 +971,11 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [optionsOpen])
 
+  const linkedSemitones = 12 * Math.log2(fx.speedPct / 100)
+  const fxActive = fx.speedPct !== 100 || fx.pitchSemitones !== 0 || fx.reversed
+
   return (
-    <div className="player">
+    <div className={`player${dockMode ? ' player--dock' : ''}`}>
       <div className="player__wave-band" ref={waveBandRef}>
         <div className={`player__waveform${track && !ch1 && !ch2 ? ' is-muted' : ''}`} ref={containerRef} />
         {!track && <div className="player__wave-empty">Select a sound to preview</div>}
@@ -924,6 +1037,94 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         </div>
 
         <div className="player__right">
+          <div className="player__fx">
+            <button
+              className={`player__opt-btn player__fx-btn${fxOpen ? ' player__opt-btn--open' : ''}${fxActive ? ' player__fx-btn--active' : ''}`}
+              title="Pitch / Speed / Reverse"
+              onClick={() => setFxOpen((v) => !v)}
+            >
+              <IconFx />
+              FX
+              {fxActive && <span className="player__fx-dot" />}
+            </button>
+            {fxOpen && (
+              <div className="player__fx-menu" onMouseDown={(e) => e.stopPropagation()}>
+                <div className="fx__row">
+                  <div className="fx__row-head">
+                    <span className="fx__label">Speed</span>
+                    <span className="fx__value">{(fx.speedPct / 100).toFixed(2)}x</span>
+                  </div>
+                  <input
+                    className="fx__slider"
+                    type="range"
+                    min={50}
+                    max={200}
+                    step={1}
+                    value={fx.speedPct}
+                    onChange={(e) => updateFx({ speedPct: parseInt(e.target.value, 10) })}
+                  />
+                  <div className="fx__ticks">
+                    <span>0.5x</span>
+                    <span>1x</span>
+                    <span>1.5x</span>
+                    <span>2x</span>
+                  </div>
+                </div>
+
+                <div className="fx__row">
+                  <div className="fx__row-head">
+                    <span className="fx__label">
+                      Pitch
+                      <label className="fx__link">
+                        <input
+                          type="checkbox"
+                          checked={fx.pitchLinked}
+                          onChange={(e) => updateFx({ pitchLinked: e.target.checked })}
+                        />
+                        Link to speed
+                      </label>
+                    </span>
+                    <span className="fx__value">
+                      {fx.pitchLinked
+                        ? `${linkedSemitones >= 0 ? '+' : ''}${linkedSemitones.toFixed(1)} st`
+                        : `${fx.pitchSemitones > 0 ? '+' : ''}${fx.pitchSemitones} st`}
+                    </span>
+                  </div>
+                  <input
+                    className="fx__slider"
+                    type="range"
+                    min={-12}
+                    max={12}
+                    step={1}
+                    disabled={fx.pitchLinked}
+                    value={fx.pitchLinked ? Math.round(linkedSemitones) : fx.pitchSemitones}
+                    onChange={(e) => updateFx({ pitchSemitones: parseInt(e.target.value, 10) })}
+                  />
+                  <div className="fx__ticks">
+                    <span>-12</span>
+                    <span>0</span>
+                    <span>+12</span>
+                  </div>
+                </div>
+
+                <div className="fx__row fx__row--reverse">
+                  <span className="fx__label">Reverse</span>
+                  <button
+                    className={`fx__reverse-btn${fx.reversed ? ' fx__reverse-btn--on' : ''}`}
+                    onClick={() => updateFx({ reversed: !fx.reversed })}
+                  >
+                    <ReverseGlyph flipped={fx.reversed} />
+                    {fx.reversed ? 'Reversed' : 'Normal'}
+                  </button>
+                </div>
+
+                <div className="fx__note">
+                  Speed is live. Independent pitch shift and reversed playback are previewed here and land in a future update.
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="player__options">
             <button
               className={`player__opt-btn${optionsOpen ? ' player__opt-btn--open' : ''}`}

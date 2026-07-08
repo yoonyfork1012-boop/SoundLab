@@ -317,3 +317,15 @@ export function removeTrackFromCollection(collectionId: number, trackId: number)
   ])
   persistDb()
 }
+
+// 드래그로 사용자가 지정한 새 순서를 position 컬럼에 그대로 기록
+export function reorderCollectionTracks(collectionId: number, orderedTrackIds: number[]): void {
+  const db = getDb()
+  orderedTrackIds.forEach((trackId, position) => {
+    db.run(
+      'UPDATE collection_tracks SET position = ? WHERE collection_id = ? AND track_id = ?',
+      [position, collectionId, trackId]
+    )
+  })
+  persistDb()
+}

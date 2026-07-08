@@ -1,4 +1,4 @@
-import { ipcMain, dialog, shell, clipboard, app, BrowserWindow, nativeImage } from 'electron'
+import { ipcMain, dialog, shell, clipboard, app, BrowserWindow, nativeImage, screen } from 'electron'
 import { readFile, stat } from 'fs/promises'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -20,6 +20,7 @@ import {
   addTrackToCollection,
   addTracksToCollection,
   removeTrackFromCollection,
+  reorderCollectionTracks,
   hasTrackFilePath,
   renameLibrary,
   setLibraryMonitor,
@@ -127,6 +128,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     removeTrackFromCollection(collectionId, trackId)
     return getCollections()
   })
+  ipcMain.handle('collections:reorder', (_event, collectionId: number, orderedTrackIds: number[]) => {
+    reorderCollectionTracks(collectionId, orderedTrackIds)
+    return getCollections()
+  })
 
   ipcMain.handle('clipboard:writeText', (_event, text: string) => {
     clipboard.writeText(text)
@@ -220,4 +225,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   })
   ipcMain.on('window:close', () => mainWindow.close())
   ipcMain.handle('window:isMaximized', () => mainWindow.isMaximized())
+
+  // Dock Mode: 창을 화면 하단에 눕힌 얇은 트랜스포트 바로 축소해 다른 앱(DAW) 위에 항상 띄운다.
+  // 이전 창 크기/위치를 기억해뒀다가 해제 시 그대로 복원한다.
+  let dockPrevBounds: Electron.Rectangle | null = null
+  ipcMain.handle('window:setDockMode', (_event, on: boolean) => {
+    const isDocked = dockPrevBounds !== null
+    if (on === isDocked) return
+    if (on) {
+      dockPrevBounds = mainWindow.getBounds()
+      const { workArea } = screen.getDisplayMatching(mainWindow.getBounds())
+      const width = Math.min(880, workArea.width - 32)
+      const height = 92
+      mainWindow.setMinimumSize(360, height)
+      mainWindow.setResizable(false)
+      mainWindow.setBounds({
+        x: Math.round(workArea.x + (workArea.width - width) / 2),
+        y: workArea.y + workArea.height - height - 14,
+        width,
+        height
+      })
+      mainWindow.setAlwaysOnTop(true, 'floating')
+    } else {
+      mainWindow.setAlwaysOnTop(false)
+      mainWindow.setResizable(true)
+      mainWindow.setMinimumSize(980, 640)
+      if (dockPrevBounds) mainWindow.setBounds(dockPrevBounds)
+      dockPrevBounds = null
+    }
+  })
 }

@@ -7,6 +7,7 @@ import PlayerBar, { type PlayerHandle } from './components/PlayerBar/PlayerBar'
 import MetadataPanel from './components/MetadataPanel/MetadataPanel'
 import AnalysisPanel from './components/AnalysisPanel/AnalysisPanel'
 import AccentPicker from './components/AccentPicker/AccentPicker'
+import CollectionHero from './components/CollectionHero/CollectionHero'
 import NamePromptModal from './components/NamePromptModal/NamePromptModal'
 import ContextMenu from './components/ContextMenu/ContextMenu'
 import ColorPickerPopover from './components/ColorPickerPopover/ColorPickerPopover'
@@ -91,6 +92,7 @@ export default function App(): JSX.Element {
     toastTimerRef.current = window.setTimeout(() => setToast(null), 2200)
   }
   const [view, setView] = useState<'grid' | 'list'>('grid')
+  const [dockMode, setDockModeState] = useState(false)
   const [accent, setAccentState] = useState<string>(loadAccent())
   const [sidebarWidth, setSidebarWidth] = useState(() => loadNumber('soundlib.sidebarWidth', 246))
   const [metaWidth, setMetaWidth] = useState(() => loadNumber('soundlib.metaWidth', 272))
@@ -139,6 +141,14 @@ export default function App(): JSX.Element {
   function setAccent(hex: string): void {
     setAccentState(hex)
     saveAccent(hex)
+  }
+
+  // Dock Mode: 창을 화면 하단의 얇은 트랜스포트 바로 축소한다. PlayerBar는 항상 마운트된
+  // 상태를 유지해(App.tsx의 렌더 트리에서 조건부로 제거하지 않음) 재생이 끊기지 않는다.
+  function handleToggleDockMode(): void {
+    const next = !dockMode
+    setDockModeState(next)
+    void window.api?.setDockMode(next)
   }
 
   function handleSavePublisherRule(next: PublisherRule): void {
@@ -296,6 +306,13 @@ export default function App(): JSX.Element {
   async function handleSetCollectionColor(collectionId: number, color: string | null): Promise<void> {
     if (!window.api) return
     setCollections(await window.api.setCollectionColor(collectionId, color))
+  }
+
+  // 컬렉션 안에서 사용자가 드래그로 지정한 순서를 낙관적으로 먼저 반영한 뒤 서버 결과로 동기화
+  async function handleReorderCollection(collectionId: number, orderedTrackIds: number[]): Promise<void> {
+    setCollections((prev) => prev.map((c) => (c.id === collectionId ? { ...c, trackIds: orderedTrackIds } : c)))
+    if (!window.api) return
+    setCollections(await window.api.reorderCollectionTracks(collectionId, orderedTrackIds))
   }
 
   async function handleAddFolderToCollection(collectionId: number): Promise<void> {
@@ -456,6 +473,18 @@ export default function App(): JSX.Element {
   }
 
   const activeCollection = collections.find((c) => c.id === selectedCollection) ?? null
+
+  // CollectionHero 통계(전체 개수/재생시간/카테고리 구성)는 검색·즐겨찾기 필터와 무관하게
+  // 컬렉션 전체를 기준으로 보여줘야 하므로 visibleTracks와 별도로 계산한다
+  const collectionMembers = useMemo(() => {
+    if (!activeCollection) return []
+    const byId = new Map(tracks.map((t) => [t.id, t]))
+    return activeCollection.trackIds.map((id) => byId.get(id)).filter((t): t is Track => !!t)
+  }, [activeCollection, tracks])
+
+  // 사용자가 정렬/셔플을 걸지 않은 "직접 순서" 상태에서만 컬렉션 내 드래그 재정렬을 허용한다 —
+  // 정렬된 뷰에서 순서를 바꾸면 눈에 보이는 순서와 실제 저장 순서가 어긋나 보일 수 있어서다
+  const collectionReorderable = Boolean(activeCollection) && !shuffled && sort.key === null
 
   const visibleTracks = useMemo(() => {
     let base: Track[]
@@ -694,8 +723,11 @@ export default function App(): JSX.Element {
         onSetView={setView}
         onShowShortcuts={() => setShowShortcuts(true)}
         onOpenPublisherSettings={() => setPublisherSettingsOpen(true)}
+        dockMode={dockMode}
+        onUndock={handleToggleDockMode}
       />
 
+      {!dockMode && (
       <div className="topbar">
         <div className="topbar__search-wrap">
           <svg className="topbar__search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -748,31 +780,49 @@ export default function App(): JSX.Element {
               <path d="M15 4v16" />
             </svg>
           </button>
+          <button
+            className="icon-btn"
+            title="Dock mode — 화면 하단의 얇은 트랜스포트 바로 축소"
+            onClick={handleToggleDockMode}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="12" rx="1.5" />
+              <path d="M3 20h18" />
+            </svg>
+          </button>
         </div>
       </div>
+      )}
 
       <div
-        className="main"
-        style={{
-          gridTemplateColumns: showMeta
-            ? `${sidebarWidth}px 1fr ${metaWidth}px`
-            : `${sidebarWidth}px 1fr`,
-          gridTemplateRows: `1fr ${playerHeight}px`
-        }}
+        className={`main${dockMode ? ' main--dock' : ''}`}
+        style={
+          dockMode
+            ? { gridTemplateColumns: '1fr', gridTemplateRows: '100%' }
+            : {
+                gridTemplateColumns: showMeta
+                  ? `${sidebarWidth}px 1fr ${metaWidth}px`
+                  : `${sidebarWidth}px 1fr`,
+                gridTemplateRows: `1fr ${playerHeight}px`
+              }
+        }
       >
         {/* ?�이?�바 ??조절 ?�들 ???�레?�어 ?�까지 ?�려가�??�레?�어 컨트�??��??�데�?            가로�?르는 것처??보이므�? 콘텐�????�쪽)까�?�??�도�??�이�??�한?�다 */}
+        {!dockMode && (
         <div
           className="resizer resizer--left"
           style={{ left: sidebarWidth, bottom: playerHeight }}
           onMouseDown={(e) => startPanelResize(e, 'sidebar')}
         />
-        {showMeta && (
+        )}
+        {!dockMode && showMeta && (
           <div
             className="resizer resizer--right"
             style={{ right: metaWidth }}
             onMouseDown={(e) => startPanelResize(e, 'meta')}
           />
         )}
+        {!dockMode && (
         <Sidebar
           trees={trees}
           tracks={tracks}
@@ -812,8 +862,11 @@ export default function App(): JSX.Element {
           scanning={scanning}
           scanProgress={scanProgress}
         />
+        )}
 
+        {!dockMode && (
         <div className="content-wrap">
+          {activeCollection && <CollectionHero collection={activeCollection} tracks={collectionMembers} />}
           <div className="breadcrumb">
             <span
               className={`breadcrumb__link${!selectedFolder && !activeCollection ? ' breadcrumb__link--current' : ''}`}
@@ -865,6 +918,8 @@ export default function App(): JSX.Element {
               onSort={handleSort}
               publisherRule={publisherRule}
               previewedIds={previewedIds}
+              reorderable={collectionReorderable}
+              onReorder={activeCollection ? (ids) => void handleReorderCollection(activeCollection.id, ids) : undefined}
               onCreateCollectionWith={(trackId) => {
                 setNamePrompt({
                   title: 'New collection name',
@@ -882,8 +937,9 @@ export default function App(): JSX.Element {
             />
           )}
         </div>
+        )}
 
-        {showMeta && (
+        {!dockMode && showMeta && (
           <div className="right-panel" ref={rightPanelRef}>
             <div className="right-panel__meta" style={{ height: metaPanelHeight }}>
               <MetadataPanel track={selectedTrack} libraries={libraries} publisherRule={publisherRule} onToggleStar={handleToggleStar} />
@@ -895,20 +951,25 @@ export default function App(): JSX.Element {
 
         {/* 리스???�레?�어 경계 ?�이 조절 ?�들 ???�이?�바+콘텐�???��지�?메�?/분석 ?�널
             컬럼?� ?�아?�로 ?�뉘지 ?�는 ?�나???�역?��?�?�?경계까�????�히지 ?�음) */}
+        {!dockMode && (
         <div
           className="resizer-h"
           style={{ bottom: playerHeight, right: showMeta ? metaWidth : 0 }}
           onMouseDown={startPlayerResize}
         />
+        )}
 
+        {/* PlayerBar??Dock Mode ?��??�도 ??�� 마운?��??�유지??WaveSurfer ?�스?�스가
+            그대�?살아?�어 ?�직 중인 ?�운?��? 도킹/�?도킹 ?�이 ?�기지 ?�는??*/}
         <PlayerBar
           ref={playerRef}
           track={selectedTrack}
           accent={accent}
-          panelHeight={playerHeight}
+          panelHeight={dockMode ? 92 : playerHeight}
           onPrev={() => selectRelative(-1)}
           onNext={() => selectRelative(1)}
           queueTracks={visibleTracks}
+          dockMode={dockMode}
         />
       </div>
 
