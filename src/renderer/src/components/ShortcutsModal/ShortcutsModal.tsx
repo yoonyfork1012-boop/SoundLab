@@ -11,6 +11,8 @@ const SHORTCUTS: Array<{ keys: string; desc: string }> = [
   { keys: "↑ / ↓", desc: "이전 / 다음 사운드 선택" },
   { keys: "S", desc: "리스트 즉시 셔플" },
   { keys: "F", desc: "즐겨찾기 토글" },
+  { keys: "L", desc: "구간 반복(A-B Loop) 토글" },
+  { keys: "M", desc: "현재 위치에 마커 추가" },
   { keys: "Ctrl + F", desc: "메인 검색창 포커스" },
   { keys: "Ctrl + Shift + F", desc: "서브 검색창 포커스" },
   { keys: "Ctrl + A", desc: "현재 리스트 전체 선택" },

@@ -29,13 +29,26 @@ interface ResultListProps {
   onOpenMetadataPanel?: () => void;
   onRemoveTrack?: (track: Track) => void;
   onNotify?: (message: string) => void;
+  onBatchEdit?: () => void;
 }
 
 const SCROLLBAR_GUARD = 14;
 const MIN_COL_WIDTH = 48;
 const COL_WIDTHS_KEY = "soundlib.columnWidths";
 const COL_ORDER_KEY = "soundlib.columnOrder";
+const COL_VISIBLE_KEY = "soundlib.columnVisible";
 const FONT_SIZE_KEY = "soundlib.listFontSize";
+
+// Set은 JSON으로 직렬화되지 않으므로 배열로 저장한다. 복원 시에는 저장된 뒤 삭제/이름변경된
+// 컬럼 키를 걸러내고, 숨길 수 없는 Name 컬럼은 항상 되살린다.
+function loadVisibleCols(): Set<string> {
+  const saved = loadJSON<string[] | null>(COL_VISIBLE_KEY, null);
+  if (!Array.isArray(saved)) return new Set(DEFAULT_VISIBLE);
+  const known = new Set(ALL_COLUMNS.map((c) => c.key));
+  const next = new Set(saved.filter((key) => known.has(key)));
+  next.add("name");
+  return next;
+}
 
 const FONT_SIZE_OPTIONS = [
   { key: "small", label: "Small", rowHeight: 26, fontSize: 11 },
@@ -173,8 +186,7 @@ const Row = memo(
     const track = tracks[index];
     const isSelected =
       track.id === selectedTrackId || (selectedIds?.has(track.id) ?? false);
-    const isPreviewed =
-      track.lastPlayedAt != null || previewedIds.has(track.id);
+    const isPreviewed = previewedIds.has(track.id);
     const isDragOver = reorderable && dragOverId === track.id;
     const color = colorForCategory(track.category);
 
@@ -287,6 +299,7 @@ export default function ResultList({
   onOpenMetadataPanel,
   onRemoveTrack,
   onNotify,
+  onBatchEdit,
 }: ResultListProps): JSX.Element {
   const listRef = useRef<FixedSizeList>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -297,9 +310,7 @@ export default function ResultList({
   const tracksRef = useRef(tracks);
   tracksRef.current = tracks;
 
-  const [visibleCols, setVisibleCols] = useState<Set<string>>(
-    new Set(DEFAULT_VISIBLE),
-  );
+  const [visibleCols, setVisibleCols] = useState<Set<string>>(loadVisibleCols);
   // 컬럼�?고정 px ?????�나�??�려???�른 컬럼???�향 ?�이 ?�립?�으�?리사?�즈??
   const [colWidths, setColWidths] = useState<Record<string, number>>(() =>
     loadJSON(COL_WIDTHS_KEY, {}),
@@ -413,10 +424,9 @@ export default function ResultList({
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       document.body.style.cursor = "";
-      setColWidths((prev) => {
-        saveJSON(COL_WIDTHS_KEY, prev);
-        return prev;
-      });
+      // 이 드래그가 바꾼 컬럼은 key 하나뿐이므로, 드래그 시작 시점의 colWidths에 최종 폭만
+      // 얹어 저장하면 된다 (setState 업데이터 안에서 저장하면 StrictMode에서 두 번 실행됨)
+      saveJSON(COL_WIDTHS_KEY, { ...colWidths, [key]: latest });
     }
     document.body.style.cursor = "col-resize";
     document.addEventListener("mousemove", onMove);
@@ -486,14 +496,12 @@ export default function ResultList({
   }, [tracks]);
 
   function toggleColumn(key: string): void {
-    setVisibleCols((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        if (key === "name") return next; // Name?� ??�� ?��?
-        next.delete(key);
-      } else next.add(key);
-      return next;
-    });
+    if (key === "name") return; // Name은 항상 표시
+    const next = new Set(visibleCols);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setVisibleCols(next);
+    saveJSON(COL_VISIBLE_KEY, [...next]);
   }
 
   function autoResizeColumns(): void {
@@ -659,12 +667,14 @@ export default function ResultList({
                 const idx = indexAtY(e.clientY);
                 if (idx < 0) return;
                 e.preventDefault();
-                onSelectTrack(tracksRef.current[idx]);
-                setRowMenu({
-                  x: e.clientX,
-                  y: e.clientY,
-                  track: tracksRef.current[idx],
-                });
+                const track = tracksRef.current[idx];
+                // 우클릭한 행이 이미 다중 선택에 포함돼 있으면 선택을 그대로 두어(파일
+                // 탐색기와 동일한 동작) 일괄 편집 등 메뉴 액션이 전체 선택에 적용되게 한다.
+                // 선택되지 않은 행을 우클릭하면 그 행 하나로 선택을 교체한다.
+                const inMultiSelect =
+                  (selectedIds?.size ?? 0) > 1 && selectedIds?.has(track.id);
+                if (!inMultiSelect) onSelectTrack(track);
+                setRowMenu({ x: e.clientX, y: e.clientY, track });
               }}
             >
               <div
@@ -729,6 +739,20 @@ export default function ResultList({
               }}
               onMouseDown={(e) => e.stopPropagation()}
             >
+              {(selectedIds?.size ?? 0) > 1 && (
+                <>
+                  <button
+                    className="colmenu__item colmenu__item--action"
+                    onClick={() => {
+                      onBatchEdit?.();
+                      setRowMenu(null);
+                    }}
+                  >
+                    <span>Edit {selectedIds?.size} sounds…</span>
+                  </button>
+                  <div className="colmenu__sep" />
+                </>
+              )}
               {/* Add to collection ▶ */}
               <div
                 className="colmenu__item colmenu__item--action colmenu__item--haschildren"

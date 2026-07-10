@@ -41,8 +41,13 @@ import {
   computeSimilarityKeys,
   removeTrack,
   renameTrackFile,
+  updateTrackMetadata,
+  batchUpdateTrackMetadata,
+  findDuplicateGroups,
+  updateTrackLoopRegion,
+  updateTrackMarkers,
 } from "./db/queries";
-import type { ScanProgress } from "../shared/types";
+import type { ScanProgress, TrackMetadataPatch } from "../shared/types";
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle("dialog:selectFolder", async () => {
@@ -160,6 +165,43 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle("track:updateLastPlayed", (_event, trackId: number) => {
     updateLastPlayed(trackId);
   });
+
+  // 메타데이터 패널 인라인 편집 — 카테고리/서브카테고리/설명/태그
+  ipcMain.handle(
+    "track:updateMetadata",
+    (_event, trackId: number, patch: TrackMetadataPatch) => {
+      return updateTrackMetadata(trackId, patch);
+    },
+  );
+
+  // 다중 선택 일괄 편집
+  ipcMain.handle(
+    "track:batchUpdateMetadata",
+    (_event, trackIds: number[], patch: TrackMetadataPatch) => {
+      return batchUpdateTrackMetadata(trackIds, patch);
+    },
+  );
+
+  // file_hash+file_size가 일치하는 트랙 그룹(중복 후보) 조회
+  ipcMain.handle("library:findDuplicates", () => {
+    return findDuplicateGroups();
+  });
+
+  // 웨이브폼 A-B 구간 자동저장 / 해제
+  ipcMain.handle(
+    "track:updateLoopRegion",
+    (_event, trackId: number, start: number | null, end: number | null) => {
+      return updateTrackLoopRegion(trackId, start, end);
+    },
+  );
+
+  // 포인트 마커 저장
+  ipcMain.handle(
+    "track:updateMarkers",
+    (_event, trackId: number, markers: number[]) => {
+      return updateTrackMarkers(trackId, markers);
+    },
+  );
 
   // 리스트 우클릭 메뉴 "Remove" — 실제 파일은 그대로 두고 인덱스에서만 제거
   ipcMain.handle("track:remove", (_event, trackId: number) => {

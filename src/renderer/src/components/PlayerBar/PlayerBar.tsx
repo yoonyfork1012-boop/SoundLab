@@ -8,23 +8,37 @@ import {
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin, { type Region } from "wavesurfer.js/plugins/regions";
 import type { Track } from "@shared/types";
-import { encodeWavFloat32, sliceAudioBuffer } from "../../lib/wavEncoder";
+import {
+  encodeWavFloat32,
+  reverseChannels,
+  sliceAudioBuffer,
+} from "../../lib/wavEncoder";
 import { audioCacheKey, type AudioAccess } from "../../lib/audioCacheKey";
 import { decodeAiffToWav, isAiffPath } from "../../lib/aiffDecoder";
+import { pitchShiftChannels } from "../../lib/pitchShift";
+import { loadBool, saveBool } from "../../lib/uiState";
 
 const MIN_REGION_SEC = 0.05;
 const PLAYBACK_OPTIONS_KEY = "soundlib.playbackOptions";
 const FX_OPTIONS_KEY = "soundlib.fxOptions";
+const FX_OPEN_KEY = "soundlib.fxOpen";
+const RIGHT_OPEN_KEY = "soundlib.playerRightOpen";
 const WAVE_COLOR = "rgba(245, 247, 250, 0.82)";
 const PLAYHEAD_COLOR = "#ffffff";
 const WAVE_CACHE_DB = "soundlib-wave-cache";
 const WAVE_CACHE_STORE = "peaks";
 const PRELOAD_RADIUS = 3;
+// 트랙 선택이 이만큼 조용해진 뒤에야 무거운 웨이브폼 디코딩을 시작한다 — 리스트를 빠르게
+// 훑고 지나가는 동안에는 중간 트랙들의 디코딩을 아예 시작하지 않기 위함
+const DECODE_IDLE_MS = 180;
 // 세션 중 미리듣기한 트랙이 아주 많아져도(수천 개 라이브러리) 피크 메모리 캐시가
 // 무한정 커지지 않도록 LRU로 상한을 둔다. 디스크(IndexedDB) 캐시는 상한 없이 유지된다.
 const MAX_MEMORY_PEAKS = 300;
 
-type StartMode = "resume" | "start";
+// "resume" = 커서/마지막 위치, "start" = 항상 0:00, "selectionStart" = 구간이 있으면 구간
+// 시작점(Cubase의 Start from Cycle/Selection Start에 해당 — 이 앱은 구간을 하나만 다루므로
+// 둘을 구분하지 않는다), 없으면 0:00로 폴백
+type StartMode = "resume" | "start" | "selectionStart";
 type QueueMode = "single" | "continuous";
 
 interface PlaybackOptions {
@@ -32,13 +46,15 @@ interface PlaybackOptions {
   selectionLoop: boolean;
   autoPlayOnSelect: boolean;
   queueMode: QueueMode;
+  returnToStartOnStop: boolean;
 }
 
 const DEFAULT_PLAYBACK_OPTIONS: PlaybackOptions = {
-  startMode: "resume",
+  startMode: "start",
   selectionLoop: false,
   autoPlayOnSelect: true,
   queueMode: "single",
+  returnToStartOnStop: false,
 };
 
 function loadPlaybackOptions(): PlaybackOptions {
@@ -61,9 +77,9 @@ function savePlaybackOptions(options: PlaybackOptions): void {
 
 interface FxOptions {
   speedPct: number; // 50-200, wired to real playback rate
-  pitchSemitones: number; // -12..12, UI preview only (독립 피치 시프트 DSP는 추후 구현)
+  pitchSemitones: number; // -12..12, pitchLinked=false일 때 오프라인 WSOLA 렌더링으로 실제 반영
   pitchLinked: boolean; // true = "tape" varispeed: 속도 변화에 피치가 자연스럽게 따라감 (실제 재생에 반영)
-  reversed: boolean; // UI 프리뷰만 — 역재생 렌더링은 추후 구현
+  reversed: boolean; // 오프라인 렌더링(샘플 반전)으로 실제 역재생 반영
 }
 
 const DEFAULT_FX_OPTIONS: FxOptions = {
@@ -101,11 +117,13 @@ async function readPcmBytesForDecode(filePath: string): Promise<Uint8Array> {
 
 // 플레이어 패널 전체 높이에서 컨트롤바/여백을 뺀 웨이브폼 가용 높이를 계산해,
 // 스테레오(2채널 스택)/단일 채널 각각의 렌더 높이를 구한다. 패널을 키우면 웨이브폼도 커짐.
-function waveHeightsFor(panelHeight: number): { both: number; single: number } {
-  const waveArea = Math.max(
-    40,
-    panelHeight - 54 /* controls */ - 14 /* padding */,
-  );
+// chrome = 웨이브폼 아래에 깔리는 고정 UI 높이 (컨트롤 바 + FX 바). Dock Mode에서는 FX 바가
+// 숨겨지므로 호출부가 그에 맞는 값을 넘겨준다.
+function waveHeightsFor(
+  panelHeight: number,
+  chrome: number,
+): { both: number; single: number } {
+  const waveArea = Math.max(40, panelHeight - chrome - 14 /* padding */);
   return {
     both: Math.max(16, Math.floor((waveArea - 2) / 2)),
     single: Math.max(28, waveArea),
@@ -140,6 +158,8 @@ export interface PlayerHandle {
   // 오른쪽 분석 패널(AnalysisPanel)이 실시간 레벨을 읽어가는 AnalyserNode 탭.
   // 아직 재생 그래프가 생성되지 않았으면(트랙을 한 번도 재생하지 않음) null.
   getMeterTap: () => MeterTap | null;
+  toggleLoopRegion: () => void;
+  addMarker: () => void;
 }
 
 function fmt(sec: number): string {
@@ -216,6 +236,33 @@ type WaveView = "both" | "left" | "right" | "mono" | "silent";
 let waveCacheDbPromise: Promise<IDBDatabase> | null = null;
 const memoryPeakCache = new Map<string, Peaks>();
 const preloadUrlCache = new Map<string, string>();
+// 미리듣기 프리로드용 <audio> 엘리먼트. Chromium은 렌더러당 미디어 엘리먼트 수에 상한이
+// 있어(수십 개) 이걸 계속 만들기만 하면 어느 순간부터 재생 자체가 막힌다 — LRU로 상한을 두고
+// 밀려난 엘리먼트는 src를 비워 확실히 해제한다.
+const preloadAudioCache = new Map<string, HTMLAudioElement>();
+const MAX_PRELOAD_AUDIO = PRELOAD_RADIUS * 2 + 2;
+
+function releasePreloadAudio(audio: HTMLAudioElement): void {
+  try {
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+  } catch {
+    /* noop */
+  }
+}
+
+function touchPreloadAudio(filePath: string, audio: HTMLAudioElement): void {
+  preloadAudioCache.delete(filePath);
+  preloadAudioCache.set(filePath, audio);
+  while (preloadAudioCache.size > MAX_PRELOAD_AUDIO) {
+    const oldest = preloadAudioCache.keys().next().value;
+    if (oldest === undefined) break;
+    const stale = preloadAudioCache.get(oldest);
+    preloadAudioCache.delete(oldest);
+    if (stale) releasePreloadAudio(stale);
+  }
+}
 
 function openWaveCacheDb(): Promise<IDBDatabase> {
   if (waveCacheDbPromise) return waveCacheDbPromise;
@@ -307,6 +354,38 @@ const IconLoop = (): JSX.Element => (
     <path d="M21 13v2a4 4 0 0 1-4 4H3" />
   </svg>
 );
+// A-B 구간(로케이터) 반복 토글 — 전체 트랙 반복(IconLoop)과 구분되는 대괄호 모양
+const IconLoopRegion = (): JSX.Element => (
+  <svg
+    width="17"
+    height="17"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M7 4H4v16h3" />
+    <path d="M17 4h3v16h-3" />
+    <path d="M9 12h6" />
+  </svg>
+);
+const IconMarker = (): JSX.Element => (
+  <svg
+    width="15"
+    height="15"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M5 3v18" />
+    <path d="M5 4h13l-3 4 3 4H5" />
+  </svg>
+);
 const IconPrev = (): JSX.Element => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor">
     <path d="M18 5v14l-11-7z" />
@@ -357,6 +436,42 @@ const IconFx = (): JSX.Element => (
     <circle cx="20" cy="8" r="2" />
   </svg>
 );
+// Options / Stereo·Mono / Channel 묶음을 여는 버튼의 글리프
+const IconSliders = (): JSX.Element => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M3 6h11" />
+    <path d="M18 6h3" />
+    <circle cx="16" cy="6" r="2" />
+    <path d="M3 18h3" />
+    <path d="M10 18h11" />
+    <circle cx="8" cy="18" r="2" />
+  </svg>
+);
+// 접힌 컨트롤이 오른쪽으로 밀려 나오는 방향을 가리킨다 (열리면 CSS로 180° 회전)
+const IconChevronRight = (): JSX.Element => (
+  <svg
+    className="player__bar-chevron"
+    width="12"
+    height="12"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.4"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M9 18l6-6-6-6" />
+  </svg>
+);
 // Reverse 토글의 시각적 시그니처 — 오름차순 막대(정재생)가 켜지면 좌우로 뒤집힌다(역재생)
 function ReverseGlyph({ flipped }: { flipped: boolean }): JSX.Element {
   const heights = [4, 7, 11, 15, 9, 6];
@@ -402,9 +517,26 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   // 현재 패널 높이에 따른 웨이브폼 높이 (setOptions에 항상 이 값을 사용)
   const panelHeightRef = useRef(panelHeight);
   panelHeightRef.current = panelHeight;
-  const waveH = waveHeightsFor(panelHeight);
+  // 컨트롤 바 54px + 하단 컨트롤 줄 42px (Dock Mode에서는 하단 줄을 숨기므로 컨트롤 바만)
+  const chrome = dockMode ? 54 : 96;
+  const chromeRef = useRef(chrome);
+  chromeRef.current = chrome;
+  const waveH = waveHeightsFor(panelHeight, chrome);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
+  // ws.load()가 겹쳐 호출돼도 WaveSurfer가 내부 _loadVersion으로 나중 호출을 항상 이기게
+  // 처리하므로(wavesurfer.js v7 loadAudio 참고) 로드를 직렬화하면 안 된다 — 직렬화하면 새
+  // 클릭의 load()가 이전 트랙의 재생 시작까지 기다리게 돼 반응이 오히려 느려진다. 이 토큰은
+  // load() 경합이 아니라 공유 ref(urlRef 등)를 낡은 로드가 덮어쓰지 못하게 막는 용도다.
   const loadTokenRef = useRef(0);
+  // 실제로 WaveSurfer에 물려 있는 트랙 id. 재생 위치는 "지금 화면에 선택된 트랙"이 아니라
+  // "지금 로드돼 있는 트랙"의 키에 저장해야 한다 — 트랙 전환 중 발생하는 pause 이벤트가
+  // 떠나는 트랙의 위치를 새 트랙 키에 써버리는 것을 막는다.
+  const playingTrackIdRef = useRef<number | null>(null);
+  // 캐시가 없는 트랙의 "전체 파일 읽기 + decodeAudioData"는 무겁다. 빠르게 클릭하면 트랙마다
+  // 이 작업이 동시에 쌓여 렌더러와 IPC를 포화시키고, 정작 방금 클릭한 트랙의 로드를 밀어낸다.
+  // 선택이 잠시 멈춘 뒤에(DECODE_IDLE_MS) 한 번에 하나씩만 돌린다.
+  const decodeTimerRef = useRef<number | undefined>(undefined);
+  const decodeChainRef = useRef<Promise<void>>(Promise.resolve());
   const routeRef = useRef<Route | null>(null);
   const decodeCtxRef = useRef<AudioContext | null>(null);
   const peaksRef = useRef<Peaks | null>(null);
@@ -417,10 +549,21 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   // 구간 드래그(DAW export)용 원본 해상도 디코딩 캐시 — peaksRef(다운샘플)와는 별개로 유지
   const rawBufferRef = useRef<AudioBuffer | null>(null);
   const rawBufferTrackIdRef = useRef<number | null>(null);
+  // FX(Reverse/독립 Pitch)가 켜져 있지 않을 때 재생되는 원본(비가공) URL
+  const baseUrlRef = useRef<string | null>(null);
+  // Reverse/독립 Pitch를 오프라인 렌더링한 결과 WAV Blob URL — (trackId:reversed:pitch) 키로 캐시
+  const processedUrlRef = useRef<string | null>(null);
+  const processedUrlKeyRef = useRef<string | null>(null);
+  const prevReversedRef = useRef(false);
   const [regionBounds, setRegionBounds] = useState<{
     start: number;
     end: number;
   } | null>(null);
+  // region-created/update/removed 핸들러가 프로그램적 복원/초기화까지 "사용자가 방금
+  // 구간을 만들었다"로 착각해 DB에 저장하지 않도록 막는 플래그
+  const suppressRegionPersistRef = useRef(false);
+  const regionSaveTimerRef = useRef<number | undefined>(undefined);
+  const [markers, setMarkers] = useState<number[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   // wavesurfer.isPlaying()를 매 애니메이션 프레임 직접 호출하면 stop() 후 재생을 다시
   // 시작했을 때 잠깐(혹은 계속) 실제 상태와 어긋나는 경우가 있어, 'play'/'pause'/'finish'
@@ -434,10 +577,28 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   const [ch2, setCh2] = useState(true);
   const [mode, setMode] = useState<"stereo" | "mono">("stereo");
   const [optionsOpen, setOptionsOpen] = useState(false);
+  // FX 컨트롤 펼침 여부는 앱을 다시 켜도 유지한다 — 자주 쓰는 사람은 늘 펼쳐 두고 쓴다
+  const [fxOpen, setFxOpen] = useState(() => loadBool(FX_OPEN_KEY, false));
+
+  // Options / Stereo·Mono / Channel 묶음도 같은 방식으로 접는다 (볼륨은 늘 보인다)
+  const [rightOpen, setRightOpen] = useState(() =>
+    loadBool(RIGHT_OPEN_KEY, false),
+  );
+
+  function toggleFxOpen(): void {
+    const next = !fxOpen;
+    setFxOpen(next);
+    saveBool(FX_OPEN_KEY, next);
+  }
+
+  function toggleRightOpen(): void {
+    const next = !rightOpen;
+    setRightOpen(next);
+    saveBool(RIGHT_OPEN_KEY, next);
+  }
   const [playbackOptions, setPlaybackOptions] = useState<PlaybackOptions>(() =>
     loadPlaybackOptions(),
   );
-  const [fxOpen, setFxOpen] = useState(false);
   const [fx, setFx] = useState<FxOptions>(() => loadFxOptions());
   const fxRef = useRef(fx);
   fxRef.current = fx;
@@ -449,6 +610,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   regionBoundsRef.current = regionBounds;
   const trackRef = useRef(track);
   trackRef.current = track;
+  const prevTrackIdRef = useRef<number | null>(track?.id ?? null);
 
   function updatePlaybackOptions(patch: Partial<PlaybackOptions>): void {
     setPlaybackOptions((prev) => {
@@ -466,12 +628,20 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     });
   }
 
-  function positionKey(t: Track | null = trackRef.current): string | null {
-    return t ? `soundlib.playbackPosition.${t.id}` : null;
+  function positionKeyForId(id: number | null): string | null {
+    return id != null ? `soundlib.playbackPosition.${id}` : null;
   }
 
+  function positionKey(t: Track | null = trackRef.current): string | null {
+    return positionKeyForId(t?.id ?? null);
+  }
+
+  // 저장 대상은 "지금 로드돼 있는 트랙"(playingTrackIdRef)이다. trackRef.current는 렌더 중에
+  // 갱신되므로 트랙 전환 시점엔 이미 새 트랙을 가리키고, WaveSurfer의 load()가 이전 미디어를
+  // pause 시키며 발생시키는 pause 이벤트가 여기로 들어오면 떠나는 트랙의 재생 위치가 새 트랙
+  // 키에 저장돼 버린다(=새 사운드가 엉뚱한 지점부터 재생됨).
   function savePlaybackPosition(time?: number): void {
-    const key = positionKey();
+    const key = positionKeyForId(playingTrackIdRef.current);
     const ws = wavesurferRef.current;
     if (!key || !ws) return;
     const value = Number.isFinite(time) ? time! : ws.getCurrentTime();
@@ -489,24 +659,47 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     return Number.isFinite(value) ? Math.max(0, value) : 0;
   }
 
+  function clearPlaybackPositionById(id: number | null): void {
+    const key = positionKeyForId(id);
+    if (!key) return;
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* noop */
+    }
+  }
+
+  // Cubase의 "Start from Cycle/Selection Start", "Start from Project Cursor Position"에
+  // 대응하는 시작 위치 계산. 이 앱은 구간(region)을 하나만 다루므로 Cycle과 Selection은
+  // 구분하지 않고 같은 저장된 구간을 가리킨다. resume(마지막 위치)만 "이미 재생 중이면
+  // 건드리지 않는다"는 기존 동작을 그대로 유지하기 위해 skipResumeIfPlaying로 감싼다.
+  function resolveStartPosition(forceStart: boolean): number | null {
+    const ws = wavesurferRef.current;
+    const bounds = regionBoundsRef.current;
+    const hasRegion = Boolean(
+      bounds && bounds.end - bounds.start >= MIN_REGION_SEC,
+    );
+    if (playbackOptionsRef.current.selectionLoop && hasRegion)
+      return bounds!.start;
+    if (forceStart || playbackOptionsRef.current.startMode === "start")
+      return 0;
+    if (playbackOptionsRef.current.startMode === "selectionStart" && hasRegion)
+      return bounds!.start;
+    if (playbackOptionsRef.current.startMode === "resume") {
+      if (ws?.isPlaying()) return null;
+      const saved = loadPlaybackPosition();
+      const dur = ws?.getDuration() ?? 0;
+      if (saved > 0 && (!dur || saved < Math.max(0, dur - 0.05))) return saved;
+      return null;
+    }
+    return 0;
+  }
+
   async function startPlayback(forceStart = false): Promise<void> {
     const ws = wavesurferRef.current;
     if (!ws || !trackRef.current) return;
-    const bounds = regionBoundsRef.current;
-    if (
-      playbackOptionsRef.current.selectionLoop &&
-      bounds &&
-      bounds.end - bounds.start >= MIN_REGION_SEC
-    ) {
-      ws.setTime(bounds.start);
-    } else if (forceStart || playbackOptionsRef.current.startMode === "start") {
-      ws.setTime(0);
-    } else if (!ws.isPlaying()) {
-      const saved = loadPlaybackPosition();
-      const dur = ws.getDuration();
-      if (saved > 0 && (!dur || saved < Math.max(0, dur - 0.05)))
-        ws.setTime(saved);
-    }
+    const pos = resolveStartPosition(forceStart);
+    if (pos !== null) ws.setTime(pos);
     await ws.play();
   }
 
@@ -518,12 +711,64 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     // ws.stop()이 내부적으로 'pause' 이벤트를 안정적으로 쏘지 않는 경우가 있어(재생을 다시
     // 시작해도 분석 패널이 계속 무음으로 판단하던 버그의 원인), 여기서도 명시적으로 갱신한다
     isPlayingRef.current = false;
+    // Cubase의 "Return to Start Position on Stop" — 정지 직후 재생 시작 위치로 되돌린다
+    if (playbackOptionsRef.current.returnToStartOnStop) {
+      const pos = resolveStartPosition(false);
+      if (pos !== null) ws.setTime(pos);
+    }
   }
 
-  function clearRegionSelection(): void {
+  // Cubase/Soundminer 로케이터처럼, 웨이브폼에 잡은 A-B 구간을 트랙에 자동저장한다.
+  // 드래그 중 매 프레임 IPC를 쏘지 않도록 디바운스.
+  function scheduleRegionSave(start: number | null, end: number | null): void {
+    const t = trackRef.current;
+    if (!t) return;
+    window.clearTimeout(regionSaveTimerRef.current);
+    regionSaveTimerRef.current = window.setTimeout(() => {
+      void window.api?.updateTrackLoopRegion(t.id, start, end);
+    }, 400);
+  }
+
+  // persist=false는 트랙 전환 시 다음 트랙의 저장된 구간을 복원하기 전 UI만 초기화하는
+  // 내부 호출용 — 이 경우 DB에는 아무 것도 쓰지 않는다(그렇지 않으면 트랙을 바꿀 때마다
+  // 방금 로드된 새 트랙의 구간이 null로 지워지는 버그가 생긴다).
+  function clearRegionSelection(persist = true): void {
+    suppressRegionPersistRef.current = true;
     regionsPluginRef.current?.clearRegions();
     activeRegionRef.current = null;
     setRegionBounds(null);
+    suppressRegionPersistRef.current = false;
+    if (persist) scheduleRegionSave(null, null);
+  }
+
+  function addMarkerAtCurrentTime(): void {
+    const ws = wavesurferRef.current;
+    const t = trackRef.current;
+    if (!ws || !t) return;
+    const time = ws.getCurrentTime();
+    setMarkers((prev) => {
+      if (prev.some((m) => Math.abs(m - time) < 0.05)) return prev;
+      const next = [...prev, time].sort((a, b) => a - b);
+      void window.api?.updateTrackMarkers(t.id, next);
+      return next;
+    });
+  }
+
+  function removeMarker(time: number): void {
+    const t = trackRef.current;
+    if (!t) return;
+    setMarkers((prev) => {
+      const next = prev.filter((m) => m !== time);
+      void window.api?.updateTrackMarkers(t.id, next);
+      return next;
+    });
+  }
+
+  function toggleLoopRegion(): void {
+    if (!regionBoundsRef.current) return;
+    updatePlaybackOptions({
+      selectionLoop: !playbackOptionsRef.current.selectionLoop,
+    });
   }
 
   useEffect(() => {
@@ -605,15 +850,20 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       activeRegionRef.current = region;
       setRegionBounds({ start: region.start, end: region.end });
       void ensureFullBuffer();
+      if (!suppressRegionPersistRef.current)
+        scheduleRegionSave(region.start, region.end);
     });
     regions.on("region-update", (region) => {
       activeRegionRef.current = region;
       setRegionBounds({ start: region.start, end: region.end });
+      if (!suppressRegionPersistRef.current)
+        scheduleRegionSave(region.start, region.end);
     });
     regions.on("region-removed", (region) => {
       if (activeRegionRef.current?.id === region.id) {
         activeRegionRef.current = null;
         setRegionBounds(null);
+        if (!suppressRegionPersistRef.current) scheduleRegionSave(null, null);
       }
     });
 
@@ -628,6 +878,10 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       if (urlRef.current) {
         URL.revokeObjectURL(urlRef.current);
         urlRef.current = null;
+      }
+      if (processedUrlRef.current) {
+        URL.revokeObjectURL(processedUrlRef.current);
+        processedUrlRef.current = null;
       }
       ws.destroy();
       wavesurferRef.current = null;
@@ -648,22 +902,60 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   }, [volume]);
 
   // Speed는 브라우저 네이티브 playbackRate로 실제 재생에 반영된다. pitchLinked가 켜지면
-  // preservePitch=false를 줘서 속도 변화에 피치가 테이프처럼 자연스럽게 따라가게 한다
-  // (독립적인 피치 전용 시프트는 페이즈 보코더가 필요해 이후 단계로 남겨둔다).
+  // preservePitch=false를 줘서 속도 변화에 피치가 테이프처럼 자연스럽게 따라가게 한다.
   useEffect(() => {
     wavesurferRef.current?.setPlaybackRate(fx.speedPct / 100, !fx.pitchLinked);
   }, [fx.speedPct, fx.pitchLinked]);
 
+  // Reverse / 독립 Pitch는 실시간 DSP가 아니라 오프라인 렌더링(WSOLA/샘플 반전) 결과를
+  // WAV Blob으로 다시 로드하는 방식으로 반영한다. 재생 위치는, Reverse가 이번에 토글된
+  // 경우에 한해 duration 기준으로 대칭 이동시켜(정재생 3초 지점 == 역재생에서 남은 3초
+  // 지점) 자연스럽게 이어지도록 한다.
   useEffect(() => {
-    if (!fxOpen) return;
-    function handleClickOutside(e: MouseEvent): void {
-      const target = e.target as HTMLElement | null;
-      if (!target) return;
-      if (!target.closest(".player__fx")) setFxOpen(false);
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [fxOpen]);
+    const ws = wavesurferRef.current;
+    if (!ws || !baseUrlRef.current || !trackRef.current) return;
+    const reversedChanged = prevReversedRef.current !== fx.reversed;
+    prevReversedRef.current = fx.reversed;
+    let cancelled = false;
+    const runReload = async (): Promise<void> => {
+      if (cancelled) return;
+      const targetUrl = (await ensureProcessedUrl()) ?? baseUrlRef.current!;
+      if (cancelled || targetUrl === urlRef.current) return;
+      const wasPlaying = ws.isPlaying();
+      const time = ws.getCurrentTime();
+      const dur = ws.getDuration() || duration;
+      const nextTime =
+        reversedChanged && dur > 0 ? Math.max(0, dur - time) : time;
+      const numCh = peaksRef.current?.numCh ?? trackRef.current?.channels ?? 2;
+      const v = viewFor(ch1, ch2, numCh);
+      const h = waveHeightsFor(panelHeightRef.current, chromeRef.current);
+      try {
+        ws.setOptions({
+          height: v === "both" ? h.both : h.single,
+          splitChannels:
+            v === "both"
+              ? [{ height: h.both }, { height: h.both }]
+              : [{ height: h.single }],
+        });
+        await loadWithPeaks(targetUrl, v);
+        urlRef.current = targetUrl;
+        ws.setPlaybackRate(
+          fxRef.current.speedPct / 100,
+          !fxRef.current.pitchLinked,
+        );
+        if (nextTime > 0) ws.setTime(nextTime);
+        if (wasPlaying) await ws.play();
+      } catch (err) {
+        // 조용히 삼키면 "Reverse가 안 꺼진다" 같은 증상만 남고 원인이 보이지 않는다
+        console.warn("FX reload failed:", (err as Error)?.message);
+      }
+    };
+    void runReload();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fx.reversed, fx.pitchSemitones, fx.pitchLinked]);
 
   // 패널 높이가 바뀌면 웨이브폼을 새 높이로 다시 그림 (드래그 중 과도한 리로드 방지 위해 디바운스)
   useEffect(() => {
@@ -695,6 +987,8 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         isPlaying: isPlayingRef.current,
       };
     },
+    toggleLoopRegion,
+    addMarker: addMarkerAtCurrentTime,
   }));
 
   // 현재 채널/모드 → 웨이브폼 뷰
@@ -714,6 +1008,17 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     return [pk.mono];
   }
 
+  // Reverse FX가 켜져 있으면 웨이브폼 미리보기도 실제 재생 순서(뒤집힌 순서)에 맞춰 보여준다.
+  // peaksRef에 저장된 원본 피크 배열 순서는 항상 정방향(파일 원본 기준)이므로 여기서만 뒤집는다.
+  function maybeReversePeaks(
+    frames: (Float32Array | number[])[],
+  ): (Float32Array | number[])[] {
+    if (!fxRef.current.reversed) return frames;
+    return frames.map((arr) =>
+      arr instanceof Float32Array ? arr.slice().reverse() : [...arr].reverse(),
+    );
+  }
+
   // 필요 시(단일/모노 뷰) 채널별 피크를 지연 디코딩
   async function ensurePeaks(): Promise<Peaks | null> {
     if (peaksRef.current) return peaksRef.current;
@@ -728,6 +1033,25 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     return peaksRef.current;
   }
 
+  // ws.load(url)을 피크 없이 부르면 WaveSurfer가 그 URL을 fetch()로 직접 받아와 디코딩한다.
+  // 그런데 개발 모드의 렌더러는 http:// 오리진이라 file:// URL은 fetch할 수 없어 이 호출이
+  // 통째로 실패한다(blob: URL은 성공). Reverse를 끄고 원본 file:// URL로 되돌아가는 경로만
+  // 정확히 여기에 걸려서, 로드가 조용히 실패하고 계속 역재생 상태로 남아 있었다.
+  // 그러므로 어떤 경로에서든 항상 피크와 duration을 함께 넘긴다.
+  async function loadWithPeaks(url: string, v: WaveView): Promise<void> {
+    const ws = wavesurferRef.current;
+    if (!ws) return;
+    const pk = peaksRef.current;
+    if (pk) {
+      await ws.load(url, maybeReversePeaks(peaksFor(pk, v)), pk.duration);
+      return;
+    }
+    // 아직 디코딩 전이면 임시 평탄 피크로 로드해 둔다 (백그라운드 디코딩이 곧 교체한다)
+    const fallbackDur =
+      ws.getDuration() || (trackRef.current?.durationMs ?? 1000) / 1000;
+    await ws.load(url, [new Float32Array(1200)], fallbackDur);
+  }
+
   // 선택된 채널/모드에 맞춰 웨이브폼만 다시 그림 (재생 위치 유지)
   async function renderView(
     nCh1: boolean,
@@ -737,28 +1061,21 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     const ws = wavesurferRef.current;
     const url = urlRef.current;
     if (!ws || !url) return;
-    const numCh = peaksRef.current?.numCh ?? trackRef.current?.channels ?? 2;
+    const pk = await ensurePeaks();
+    const numCh = pk?.numCh ?? trackRef.current?.channels ?? 2;
     const v = viewFor(nCh1, nCh2, numCh);
     const wasPlaying = ws.isPlaying();
     const time = ws.getCurrentTime();
-    const h = waveHeightsFor(panelHeightRef.current);
+    const h = waveHeightsFor(panelHeightRef.current, chromeRef.current);
     try {
-      if (v === "both") {
-        // 스테레오는 WaveSurfer 네이티브 디코드 + splitChannels로 위/아래 2채널 스택
-        ws.setOptions({
-          height: h.both,
-          splitChannels: [{ height: h.both }, { height: h.both }],
-        });
-        await ws.load(url);
-      } else {
-        const pk = await ensurePeaks();
-        if (!pk) return;
-        ws.setOptions({
-          height: h.single,
-          splitChannels: [{ height: h.single }],
-        });
-        await ws.load(url, peaksFor(pk, v), pk.duration);
-      }
+      ws.setOptions({
+        height: v === "both" ? h.both : h.single,
+        splitChannels:
+          v === "both"
+            ? [{ height: h.both }, { height: h.both }]
+            : [{ height: h.single }],
+      });
+      await loadWithPeaks(url, v);
       ws.setPlaybackRate(
         fxRef.current.speedPct / 100,
         !fxRef.current.pitchLinked,
@@ -920,6 +1237,34 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     }
   }
 
+  // 현재 FX(reversed/독립 pitch) 상태를 반영한 오프라인 렌더링 결과 Blob URL을 만들어(또는
+  // 캐시에서 재사용해) 반환한다. FX가 꺼져 있으면 null을 돌려줘 호출부가 원본 URL을 쓰게 한다.
+  async function ensureProcessedUrl(): Promise<string | null> {
+    const t = trackRef.current;
+    if (!t) return null;
+    const { reversed, pitchSemitones, pitchLinked } = fxRef.current;
+    const needsPitch = !pitchLinked && pitchSemitones !== 0;
+    if (!reversed && !needsPitch) return null;
+    const key = `${t.id}:${reversed ? 1 : 0}:${needsPitch ? pitchSemitones : "0"}`;
+    if (processedUrlRef.current && processedUrlKeyRef.current === key)
+      return processedUrlRef.current;
+    const buf = await ensureFullBuffer();
+    if (!buf || trackRef.current?.id !== t.id) return null;
+    let channels: Float32Array[] = [];
+    for (let ch = 0; ch < buf.numberOfChannels; ch++)
+      channels.push(buf.getChannelData(ch));
+    if (reversed) channels = reverseChannels(channels);
+    if (needsPitch) channels = pitchShiftChannels(channels, pitchSemitones);
+    const wavBytes = encodeWavFloat32(channels, buf.sampleRate);
+    const url = URL.createObjectURL(
+      new Blob([new Uint8Array(wavBytes)], { type: "audio/wav" }),
+    );
+    if (processedUrlRef.current) URL.revokeObjectURL(processedUrlRef.current);
+    processedUrlRef.current = url;
+    processedUrlKeyRef.current = key;
+    return url;
+  }
+
   // Waveform에서 선택 구간을 DAW로 드래그 — 구간이 없거나 너무 짧으면 아무 것도 하지 않음(안전 폴백)
   function handleRegionDragStart(e: React.DragEvent): void {
     e.preventDefault();
@@ -944,15 +1289,36 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     const ws = wavesurferRef.current;
     if (!ws) return;
     const token = ++loadTokenRef.current;
+
+    // 새 트랙을 로드하기까지는 파일 접근/피크 조회 등 비동기 단계가 남아 있고, WaveSurfer는
+    // ws.load()가 "호출되는 시점"에야 이전 미디어를 멈춘다. 그때까지 이전 사운드가 계속
+    // 들리므로, 클릭 즉시 여기서 먼저 끊는다. playingTrackIdRef를 먼저 비워 이 pause가
+    // 떠나는 트랙의 위치를 새 트랙 키에 저장하지 않게 한다.
+    playingTrackIdRef.current = null;
+    try {
+      ws.pause();
+    } catch {
+      /* noop */
+    }
+    // 대기 중이던 이전 트랙의 웨이브폼 디코딩 예약을 취소 (빠르게 넘길 때 디코딩 폭주 방지)
+    window.clearTimeout(decodeTimerRef.current);
+
     setCurrent(0);
     setDuration(0);
 
-    clearRegionSelection();
+    clearRegionSelection(false);
+    setMarkers(track?.markers ?? []);
     rawBufferRef.current = null;
     rawBufferTrackIdRef.current = null;
+    if (processedUrlRef.current) {
+      URL.revokeObjectURL(processedUrlRef.current);
+      processedUrlRef.current = null;
+    }
+    processedUrlKeyRef.current = null;
 
     if (!track || !window.api) {
       peaksRef.current = null;
+      playingTrackIdRef.current = null;
       if (urlRef.current) urlRef.current = null;
       if (aiffBlobUrlRef.current) {
         URL.revokeObjectURL(aiffBlobUrlRef.current);
@@ -969,7 +1335,8 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     peaksRef.current = null;
     let cancelled = false;
 
-    (async () => {
+    const runLoad = async (): Promise<void> => {
+      if (cancelled || token !== loadTokenRef.current) return;
       try {
         const access = await window.api!.getAudioAccess(track.filePath);
         if (cancelled || token !== loadTokenRef.current) return;
@@ -988,7 +1355,11 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         if (aiffBlobUrlRef.current) URL.revokeObjectURL(aiffBlobUrlRef.current);
         aiffBlobUrlRef.current = playUrl !== access.url ? playUrl : null;
 
-        urlRef.current = playUrl;
+        baseUrlRef.current = playUrl;
+        prevReversedRef.current = fxRef.current.reversed;
+        const effectiveUrl = (await ensureProcessedUrl()) ?? playUrl;
+        if (cancelled || token !== loadTokenRef.current) return;
+        urlRef.current = effectiveUrl;
         if (playUrl === access.url)
           preloadUrlCache.set(track.filePath, access.url);
         const key = audioCacheKey(track.filePath, access, track.fileHash);
@@ -999,23 +1370,43 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         const durationSec =
           cached?.duration ?? (track.durationMs ? track.durationMs / 1000 : 1);
         const initialPeaks = cached
-          ? peaksFor(cached, viewFor(ch1, ch2, cached.numCh))
+          ? maybeReversePeaks(peaksFor(cached, viewFor(ch1, ch2, cached.numCh)))
           : [new Float32Array(1200)];
         ws.setOptions({
           height:
             cached && viewFor(ch1, ch2, cached.numCh) === "both"
-              ? waveHeightsFor(panelHeightRef.current).both
-              : waveHeightsFor(panelHeightRef.current).single,
+              ? waveHeightsFor(panelHeightRef.current, chromeRef.current).both
+              : waveHeightsFor(panelHeightRef.current, chromeRef.current)
+                  .single,
           splitChannels:
             cached && viewFor(ch1, ch2, cached.numCh) === "both"
               ? [
-                  { height: waveHeightsFor(panelHeightRef.current).both },
-                  { height: waveHeightsFor(panelHeightRef.current).both },
+                  {
+                    height: waveHeightsFor(
+                      panelHeightRef.current,
+                      chromeRef.current,
+                    ).both,
+                  },
+                  {
+                    height: waveHeightsFor(
+                      panelHeightRef.current,
+                      chromeRef.current,
+                    ).both,
+                  },
                 ]
-              : [{ height: waveHeightsFor(panelHeightRef.current).single }],
+              : [
+                  {
+                    height: waveHeightsFor(
+                      panelHeightRef.current,
+                      chromeRef.current,
+                    ).single,
+                  },
+                ],
         });
-        await ws.load(playUrl, initialPeaks, durationSec);
+        await ws.load(effectiveUrl, initialPeaks, durationSec);
         if (cancelled || token !== loadTokenRef.current) return;
+        // 이제부터 이 트랙이 실제로 물려 있다 — 재생 위치 저장 대상도 이 트랙이다
+        playingTrackIdRef.current = track.id;
 
         ws.setVolume(volume);
         // ws.load()가 재생 속도를 기본값으로 되돌리므로, 트랙마다 저장된 Speed 설정을 다시 건다
@@ -1023,6 +1414,27 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           fxRef.current.speedPct / 100,
           !fxRef.current.pitchLinked,
         );
+
+        // 이 트랙에 저장된 A-B 구간(loop region)이 있으면 복원 — suppress 플래그로
+        // region-created 핸들러가 이걸 "새로 만든 구간"으로 착각해 다시 저장하지 않게 한다.
+        if (
+          track.loopStart != null &&
+          track.loopEnd != null &&
+          track.loopEnd - track.loopStart >= MIN_REGION_SEC
+        ) {
+          suppressRegionPersistRef.current = true;
+          const region = regionsPluginRef.current?.addRegion({
+            start: track.loopStart,
+            end: track.loopEnd,
+            color: "rgba(255, 255, 255, 0.22)",
+          });
+          if (region) {
+            activeRegionRef.current = region;
+            setRegionBounds({ start: region.start, end: region.end });
+            void ensureFullBuffer();
+          }
+          suppressRegionPersistRef.current = false;
+        }
         // 분석 패널이 첫 재생부터 실시간 레벨을 읽을 수 있도록, 채널 토글을 누르기 전에도
         // Web Audio 라우트(+분석 탭)를 미리 만들어 둔다
         ensureRoute();
@@ -1036,12 +1448,20 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           ws.setTime(saved);
         else ws.setTime(0);
 
+        // 재생 시작을 기다리지 않는다 — media.play()의 프라미스는 실제로 소리가 나기
+        // 시작해야 resolve 되므로, 이걸 await 하면 뒤따르는 작업이 그만큼 묶인다. 다음 트랙이
+        // 곧바로 로드되면 이 play()는 AbortError로 거부되는데, 정상 흐름이므로 조용히 무시한다.
         if (playbackOptionsRef.current.autoPlayOnSelect) {
-          await startPlayback();
+          void startPlayback().catch(() => {});
         }
 
+        // 캐시가 없으면 실제 웨이브폼을 그리기 위해 파일 전체를 읽고 디코딩해야 한다. 이 작업을
+        // 클릭마다 즉시 띄우면 리스트를 빠르게 훑을 때 전체 파일 읽기/디코딩이 동시에 쌓여
+        // 렌더러와 IPC가 포화되고, 정작 방금 클릭한 트랙의 로드가 뒤로 밀린다. 선택이 잠잠해질
+        // 때까지 기다렸다가 전역 체인에 붙여 항상 하나씩만 실행한다.
         if (!cached) {
-          void (async () => {
+          const runDecode = async (): Promise<void> => {
+            if (cancelled || token !== loadTokenRef.current) return;
             try {
               // AIFF는 위에서 이미 WAV로 변환해뒀으니 재사용하고, 그 외 포맷만 새로 읽는다
               const bytes =
@@ -1049,20 +1469,23 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
               if (cancelled || token !== loadTokenRef.current) return;
               const pk = await decodePeaks(bytes);
               if (!pk) return;
+              // 캐시는 낡은 요청이어도 저장해 둔다 — 다음에 이 트랙을 열 때 그대로 재사용된다
               await putCachedPeaks(key, pk);
+              // 반면 peaksRef는 "현재 로드된 트랙"의 피크여야 한다. 가드 없이 대입하면 낡은
+              // 트랙의 피크가 현재 트랙에 얹혀 채널 토글 시 다른 파일의 파형이 그려진다.
+              if (cancelled || token !== loadTokenRef.current) return;
               peaksRef.current = pk;
               // 재생 중이어도(자동재생 켜짐+최초 디코딩) 실제 웨이브폼으로 반드시 교체한다.
               // 재생 위치/재생 상태를 캡처했다가 로드 후 복원해 재생이 끊기지 않게 한다.
-              if (
-                token === loadTokenRef.current &&
-                urlRef.current === playUrl &&
-                wavesurferRef.current
-              ) {
+              if (urlRef.current === effectiveUrl && wavesurferRef.current) {
                 const ws2 = wavesurferRef.current;
                 const wasPlaying = ws2.isPlaying();
                 const time = ws2.getCurrentTime();
                 const v = viewFor(ch1, ch2, pk.numCh);
-                const h = waveHeightsFor(panelHeightRef.current);
+                const h = waveHeightsFor(
+                  panelHeightRef.current,
+                  chromeRef.current,
+                );
                 ws2.setOptions({
                   height: v === "both" ? h.both : h.single,
                   splitChannels:
@@ -1070,7 +1493,11 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
                       ? [{ height: h.both }, { height: h.both }]
                       : [{ height: h.single }],
                 });
-                await ws2.load(playUrl, peaksFor(pk, v), pk.duration);
+                await ws2.load(
+                  effectiveUrl,
+                  maybeReversePeaks(peaksFor(pk, v)),
+                  pk.duration,
+                );
                 ws2.setPlaybackRate(
                   fxRef.current.speedPct / 100,
                   !fxRef.current.pitchLinked,
@@ -1081,7 +1508,13 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
             } catch (err) {
               console.warn("waveform cache failed:", (err as Error)?.message);
             }
-          })();
+          };
+          window.clearTimeout(decodeTimerRef.current);
+          decodeTimerRef.current = window.setTimeout(() => {
+            decodeChainRef.current = decodeChainRef.current
+              .catch(() => {})
+              .then(runDecode);
+          }, DECODE_IDLE_MS);
         }
       } catch (err) {
         if (!cancelled && token === loadTokenRef.current) {
@@ -1089,7 +1522,8 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           if (!/abort/i.test(msg)) console.warn("audio load failed:", msg);
         }
       }
-    })();
+    };
+    void runLoad();
 
     return () => {
       cancelled = true;
@@ -1102,6 +1536,17 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     track?.fileSize,
     track?.durationMs,
   ]);
+
+  // 다른 트랙으로 넘어가면 방금 떠난 트랙의 "이어서 재생" 위치를 지운다 — resume 옵션이
+  // 켜져 있어도 한 번 다른 사운드를 들었다가 돌아오면 항상 처음부터 재생되게 하기 위함.
+  // 언마운트(cleanup)가 아니라 이전 트랙 id와의 비교로만 판단해야, PlayerBar가 실제로는
+  // 트랙을 바꾸지 않고 재마운트되는 경우(StrictMode 등)에 resume 위치가 지워지지 않는다.
+  useEffect(() => {
+    const prevId = prevTrackIdRef.current;
+    const nextId = track?.id ?? null;
+    if (prevId != null && prevId !== nextId) clearPlaybackPositionById(prevId);
+    prevTrackIdRef.current = nextId;
+  }, [track?.id]);
 
   useEffect(() => {
     if (!track || !window.api || queueTracks.length === 0) return;
@@ -1121,6 +1566,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           const audio = new Audio(access.url);
           audio.preload = "auto";
           audio.load();
+          touchPreloadAudio(item.filePath, audio);
         })
         .catch(() => {});
     }
@@ -1163,6 +1609,194 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   const linkedSemitones = 12 * Math.log2(fx.speedPct / 100);
   const fxActive =
     fx.speedPct !== 100 || fx.pitchSemitones !== 0 || fx.reversed;
+
+  // Options / Volume / Stereo·Mono / Channel 묶음. 평소에는 FX 줄 오른쪽에 놓지만,
+  // Dock Mode에서는 FX 줄을 통째로 숨기므로 컨트롤 바로 되돌린다. 두 곳에 동시에
+  // 렌더하면 radio의 name 그룹(startMode/queueMode)이 겹쳐 선택이 서로 엉킨다.
+  const rightControls = (
+    <>
+      {/* 볼륨은 접지 않는다 — 미리듣기 중 가장 자주 손이 가는 컨트롤이다 */}
+      <div className="player__vol">
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M4 9v6h4l5 4V5L8 9H4z" />
+          <path d="M17 8a5 5 0 0 1 0 8" />
+        </svg>
+        <input
+          className="player__slider"
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={volume}
+          onChange={(e) => setVolume(parseFloat(e.target.value))}
+        />
+        <span className="player__vol-val">{Math.round(volume * 100)}%</span>
+      </div>
+
+      <button
+        className={`player__bar-toggle${rightOpen ? " player__bar-toggle--open" : ""}`}
+        onClick={toggleRightOpen}
+        title={
+          rightOpen ? "Options / Channel 접기" : "Options / Channel 펼치기"
+        }
+        aria-label="Playback options and channel controls"
+        aria-expanded={rightOpen}
+      >
+        <IconSliders />
+        <IconChevronRight />
+      </button>
+
+      <div
+        className={`player__slide-group${rightOpen ? " player__slide-group--open" : ""}`}
+        aria-hidden={!rightOpen}
+      >
+        <div className="player__options">
+          <button
+            className={`player__opt-btn${optionsOpen ? " player__opt-btn--open" : ""}`}
+            title="Playback options"
+            onClick={() => setOptionsOpen((v) => !v)}
+          >
+            Options
+          </button>
+          {optionsOpen && (
+            <div
+              className="player__opt-menu"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="player__opt-section">Start</div>
+              <label className="player__opt-item">
+                <input
+                  type="radio"
+                  name="startMode"
+                  checked={playbackOptions.startMode === "resume"}
+                  onChange={() =>
+                    updatePlaybackOptions({ startMode: "resume" })
+                  }
+                />
+                Resume last position
+              </label>
+              <label className="player__opt-item">
+                <input
+                  type="radio"
+                  name="startMode"
+                  checked={playbackOptions.startMode === "start"}
+                  onChange={() => updatePlaybackOptions({ startMode: "start" })}
+                />
+                Always start at 0:00
+              </label>
+              <label className="player__opt-item">
+                <input
+                  type="radio"
+                  name="startMode"
+                  checked={playbackOptions.startMode === "selectionStart"}
+                  onChange={() =>
+                    updatePlaybackOptions({ startMode: "selectionStart" })
+                  }
+                />
+                Start from selection
+              </label>
+              <div className="player__opt-section">Playback</div>
+              <label className="player__opt-item">
+                <input
+                  type="checkbox"
+                  checked={playbackOptions.selectionLoop}
+                  onChange={(e) =>
+                    updatePlaybackOptions({ selectionLoop: e.target.checked })
+                  }
+                />
+                Loop selected range
+              </label>
+              <label className="player__opt-item">
+                <input
+                  type="checkbox"
+                  checked={playbackOptions.returnToStartOnStop}
+                  onChange={(e) =>
+                    updatePlaybackOptions({
+                      returnToStartOnStop: e.target.checked,
+                    })
+                  }
+                />
+                Return to start position on stop
+              </label>
+              <label className="player__opt-item">
+                <input
+                  type="checkbox"
+                  checked={playbackOptions.autoPlayOnSelect}
+                  onChange={(e) =>
+                    updatePlaybackOptions({
+                      autoPlayOnSelect: e.target.checked,
+                    })
+                  }
+                />
+                Auto play on select
+              </label>
+              <div className="player__opt-section">Queue</div>
+              <label className="player__opt-item">
+                <input
+                  type="radio"
+                  name="queueMode"
+                  checked={playbackOptions.queueMode === "single"}
+                  onChange={() =>
+                    updatePlaybackOptions({ queueMode: "single" })
+                  }
+                />
+                Single
+              </label>
+              <label className="player__opt-item">
+                <input
+                  type="radio"
+                  name="queueMode"
+                  checked={playbackOptions.queueMode === "continuous"}
+                  onChange={() =>
+                    updatePlaybackOptions({ queueMode: "continuous" })
+                  }
+                />
+                Continuous
+              </label>
+            </div>
+          )}
+        </div>
+
+        <select
+          className="player__mode"
+          value={mode}
+          onChange={(e) => changeMode(e.target.value as "stereo" | "mono")}
+          title="Mono / Stereo"
+        >
+          <option value="stereo">Stereo</option>
+          <option value="mono">Mono</option>
+        </select>
+
+        <div className="player__channels">
+          <button
+            className={`player__chip${ch1 ? " player__chip--on" : ""}`}
+            onClick={toggleCh1}
+            disabled={!track}
+            title="채널 1 (왼쪽)"
+          >
+            Channel 1
+          </button>
+          <button
+            className={`player__chip${ch2 && stereoTrack ? " player__chip--on" : ""}`}
+            onClick={toggleCh2}
+            disabled={!stereoTrack}
+            title={stereoTrack ? "채널 2 (오른쪽)" : "모노 파일 (채널 2 없음)"}
+          >
+            Channel 2
+          </button>
+        </div>
+      </div>
+    </>
+  );
 
   return (
     <div className={`player${dockMode ? " player--dock" : ""}`}>
@@ -1225,6 +1859,20 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
               Drag range
             </div>
           )}
+        {duration > 0 &&
+          markers.map((m) => (
+            <div
+              key={m}
+              className="player__marker"
+              style={{ left: `${(m / duration) * 100}%` }}
+              onClick={() => wavesurferRef.current?.setTime(m)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                removeMarker(m);
+              }}
+              title={`Marker @ ${fmt(m)} — click: jump, right-click: remove`}
+            />
+          ))}
       </div>
 
       <div className="player__controls">
@@ -1245,6 +1893,25 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           >
             <IconLoop />
           </button>
+          <button
+            className={`player__tbtn${playbackOptions.selectionLoop ? " player__tbtn--on" : ""}`}
+            title="구간 반복 (A-B Loop) — 웨이브폼에 구간을 드래그한 뒤 사용 (L)"
+            disabled={
+              !regionBounds ||
+              regionBounds.end - regionBounds.start < MIN_REGION_SEC
+            }
+            onClick={toggleLoopRegion}
+          >
+            <IconLoopRegion />
+          </button>
+          <button
+            className="player__tbtn"
+            title="현재 위치에 마커 추가 (M)"
+            disabled={!track}
+            onClick={addMarkerAtCurrentTime}
+          >
+            <IconMarker />
+          </button>
           <button className="player__tbtn" title="이전 (↑)" onClick={onPrev}>
             <IconPrev />
           </button>
@@ -1264,254 +1931,105 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           </button>
         </div>
 
-        <div className="player__right">
-          <div className="player__fx">
-            <button
-              className={`player__opt-btn player__fx-btn${fxOpen ? " player__opt-btn--open" : ""}${fxActive ? " player__fx-btn--active" : ""}`}
-              title="Pitch / Speed / Reverse"
-              onClick={() => setFxOpen((v) => !v)}
-            >
-              <IconFx />
-              FX
-              {fxActive && <span className="player__fx-dot" />}
-            </button>
-            {fxOpen && (
-              <div
-                className="player__fx-menu"
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                <div className="fx__row">
-                  <div className="fx__row-head">
-                    <span className="fx__label">Speed</span>
-                    <span className="fx__value">
-                      {(fx.speedPct / 100).toFixed(2)}x
-                    </span>
-                  </div>
-                  <input
-                    className="fx__slider"
-                    type="range"
-                    min={50}
-                    max={200}
-                    step={1}
-                    value={fx.speedPct}
-                    onChange={(e) =>
-                      updateFx({ speedPct: parseInt(e.target.value, 10) })
-                    }
-                  />
-                  <div className="fx__ticks">
-                    <span>0.5x</span>
-                    <span>1x</span>
-                    <span>1.5x</span>
-                    <span>2x</span>
-                  </div>
-                </div>
+        <div className="player__right">{dockMode && rightControls}</div>
+      </div>
 
-                <div className="fx__row">
-                  <div className="fx__row-head">
-                    <span className="fx__label">
-                      Pitch
-                      <label className="fx__link">
-                        <input
-                          type="checkbox"
-                          checked={fx.pitchLinked}
-                          onChange={(e) =>
-                            updateFx({ pitchLinked: e.target.checked })
-                          }
-                        />
-                        Link to speed
-                      </label>
-                    </span>
-                    <span className="fx__value">
-                      {fx.pitchLinked
-                        ? `${linkedSemitones >= 0 ? "+" : ""}${linkedSemitones.toFixed(1)} st`
-                        : `${fx.pitchSemitones > 0 ? "+" : ""}${fx.pitchSemitones} st`}
-                    </span>
-                  </div>
-                  <input
-                    className="fx__slider"
-                    type="range"
-                    min={-12}
-                    max={12}
-                    step={1}
-                    disabled={fx.pitchLinked}
-                    value={
-                      fx.pitchLinked
-                        ? Math.round(linkedSemitones)
-                        : fx.pitchSemitones
-                    }
-                    onChange={(e) =>
-                      updateFx({ pitchSemitones: parseInt(e.target.value, 10) })
-                    }
-                  />
-                  <div className="fx__ticks">
-                    <span>-12</span>
-                    <span>0</span>
-                    <span>+12</span>
-                  </div>
-                </div>
+      {/* 왼쪽 FX 버튼을 누르면 Speed/Pitch/Reverse가 오른쪽으로 밀려 나오고,
+          Options/Volume/Stereo·Mono/Channel은 늘 오른쪽 끝에 붙어 있다 */}
+      <div
+        className={`player__fxbar${fxActive ? " player__fxbar--active" : ""}`}
+      >
+        <button
+          className={`player__bar-toggle player__fxbar-toggle${fxOpen ? " player__bar-toggle--open" : ""}`}
+          onClick={toggleFxOpen}
+          title={fxOpen ? "FX 컨트롤 접기" : "FX 컨트롤 펼치기"}
+          aria-expanded={fxOpen}
+        >
+          <IconFx />
+          FX
+          {fxActive && !fxOpen && <span className="player__fx-dot" />}
+          <IconChevronRight />
+        </button>
 
-                <div className="fx__row fx__row--reverse">
-                  <span className="fx__label">Reverse</span>
-                  <button
-                    className={`fx__reverse-btn${fx.reversed ? " fx__reverse-btn--on" : ""}`}
-                    onClick={() => updateFx({ reversed: !fx.reversed })}
-                  >
-                    <ReverseGlyph flipped={fx.reversed} />
-                    {fx.reversed ? "Reversed" : "Normal"}
-                  </button>
-                </div>
-
-                <div className="fx__note">
-                  Speed is live. Independent pitch shift and reversed playback
-                  are previewed here and land in a future update.
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="player__options">
-            <button
-              className={`player__opt-btn${optionsOpen ? " player__opt-btn--open" : ""}`}
-              title="Playback options"
-              onClick={() => setOptionsOpen((v) => !v)}
-            >
-              Options
-            </button>
-            {optionsOpen && (
-              <div
-                className="player__opt-menu"
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                <div className="player__opt-section">Start</div>
-                <label className="player__opt-item">
-                  <input
-                    type="radio"
-                    name="startMode"
-                    checked={playbackOptions.startMode === "resume"}
-                    onChange={() =>
-                      updatePlaybackOptions({ startMode: "resume" })
-                    }
-                  />
-                  Resume last position
-                </label>
-                <label className="player__opt-item">
-                  <input
-                    type="radio"
-                    name="startMode"
-                    checked={playbackOptions.startMode === "start"}
-                    onChange={() =>
-                      updatePlaybackOptions({ startMode: "start" })
-                    }
-                  />
-                  Always start at 0:00
-                </label>
-                <div className="player__opt-section">Playback</div>
-                <label className="player__opt-item">
-                  <input
-                    type="checkbox"
-                    checked={playbackOptions.selectionLoop}
-                    onChange={(e) =>
-                      updatePlaybackOptions({ selectionLoop: e.target.checked })
-                    }
-                  />
-                  Loop selected range
-                </label>
-                <label className="player__opt-item">
-                  <input
-                    type="checkbox"
-                    checked={playbackOptions.autoPlayOnSelect}
-                    onChange={(e) =>
-                      updatePlaybackOptions({
-                        autoPlayOnSelect: e.target.checked,
-                      })
-                    }
-                  />
-                  Auto play on select
-                </label>
-                <div className="player__opt-section">Queue</div>
-                <label className="player__opt-item">
-                  <input
-                    type="radio"
-                    name="queueMode"
-                    checked={playbackOptions.queueMode === "single"}
-                    onChange={() =>
-                      updatePlaybackOptions({ queueMode: "single" })
-                    }
-                  />
-                  Single
-                </label>
-                <label className="player__opt-item">
-                  <input
-                    type="radio"
-                    name="queueMode"
-                    checked={playbackOptions.queueMode === "continuous"}
-                    onChange={() =>
-                      updatePlaybackOptions({ queueMode: "continuous" })
-                    }
-                  />
-                  Continuous
-                </label>
-              </div>
-            )}
-          </div>
-
-          <div className="player__vol">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M4 9v6h4l5 4V5L8 9H4z" />
-              <path d="M17 8a5 5 0 0 1 0 8" />
-            </svg>
+        {/* 닫힌 상태에서도 DOM에 남겨 둬야 max-width 트랜지션이 걸린다.
+            대신 hidden으로 포커스/클릭이 들어가지 않게 막는다. */}
+        <div
+          className={`player__slide-group${fxOpen ? " player__slide-group--open" : ""}`}
+          aria-hidden={!fxOpen}
+        >
+          <div className="fx__ctl">
+            <span className="fx__name">Speed</span>
             <input
-              className="player__slider"
+              className="fx__slider"
               type="range"
-              min={0}
-              max={1}
-              step={0.01}
-              value={volume}
-              onChange={(e) => setVolume(parseFloat(e.target.value))}
-            />
-            <span className="player__vol-val">{Math.round(volume * 100)}%</span>
-          </div>
-
-          <select
-            className="player__mode"
-            value={mode}
-            onChange={(e) => changeMode(e.target.value as "stereo" | "mono")}
-            title="Mono / Stereo"
-          >
-            <option value="stereo">Stereo</option>
-            <option value="mono">Mono</option>
-          </select>
-
-          <div className="player__channels">
-            <button
-              className={`player__chip${ch1 ? " player__chip--on" : ""}`}
-              onClick={toggleCh1}
-              disabled={!track}
-              title="채널 1 (왼쪽)"
-            >
-              Channel 1
-            </button>
-            <button
-              className={`player__chip${ch2 && stereoTrack ? " player__chip--on" : ""}`}
-              onClick={toggleCh2}
-              disabled={!stereoTrack}
-              title={
-                stereoTrack ? "채널 2 (오른쪽)" : "모노 파일 (채널 2 없음)"
+              min={50}
+              max={200}
+              step={1}
+              value={fx.speedPct}
+              onChange={(e) =>
+                updateFx({ speedPct: parseInt(e.target.value, 10) })
               }
+            />
+            <button
+              className="fx__value fx__value--reset"
+              title="1.00x로 초기화"
+              onClick={() => updateFx({ speedPct: 100 })}
             >
-              Channel 2
+              {(fx.speedPct / 100).toFixed(2)}x
             </button>
           </div>
+
+          <div className="fx__ctl">
+            <span className="fx__name">Pitch</span>
+            <input
+              className="fx__slider"
+              type="range"
+              min={-12}
+              max={12}
+              step={1}
+              disabled={fx.pitchLinked}
+              value={
+                fx.pitchLinked ? Math.round(linkedSemitones) : fx.pitchSemitones
+              }
+              onChange={(e) =>
+                updateFx({ pitchSemitones: parseInt(e.target.value, 10) })
+              }
+            />
+            <button
+              className="fx__value fx__value--reset"
+              title="0 st로 초기화"
+              disabled={fx.pitchLinked}
+              onClick={() => updateFx({ pitchSemitones: 0 })}
+            >
+              {fx.pitchLinked
+                ? `${linkedSemitones >= 0 ? "+" : ""}${linkedSemitones.toFixed(1)} st`
+                : `${fx.pitchSemitones > 0 ? "+" : ""}${fx.pitchSemitones} st`}
+            </button>
+            <label
+              className="fx__link"
+              title="속도를 바꾸면 테이프처럼 피치도 함께 따라간다"
+            >
+              <input
+                type="checkbox"
+                checked={fx.pitchLinked}
+                onChange={(e) => updateFx({ pitchLinked: e.target.checked })}
+              />
+              Link
+            </label>
+          </div>
+
+          <button
+            className={`fx__reverse-btn${fx.reversed ? " fx__reverse-btn--on" : ""}`}
+            onClick={() => updateFx({ reversed: !fx.reversed })}
+          >
+            <ReverseGlyph flipped={fx.reversed} />
+            {fx.reversed ? "Reversed" : "Normal"}
+          </button>
         </div>
+
+        {!dockMode && (
+          <div className="player__fxbar-right">{rightControls}</div>
+        )}
       </div>
     </div>
   );

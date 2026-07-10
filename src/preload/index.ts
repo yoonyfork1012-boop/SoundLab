@@ -4,6 +4,7 @@ import type {
   Library,
   ScanProgress,
   Track,
+  TrackMetadataPatch,
   WatchStatus,
 } from "../shared/types";
 
@@ -123,6 +124,34 @@ const api = {
 
   updateLastPlayed: (trackId: number): Promise<void> =>
     ipcRenderer.invoke("track:updateLastPlayed", trackId),
+
+  updateTrackMetadata: (
+    trackId: number,
+    patch: TrackMetadataPatch,
+  ): Promise<Track | null> =>
+    ipcRenderer.invoke("track:updateMetadata", trackId, patch),
+
+  batchUpdateTrackMetadata: (
+    trackIds: number[],
+    patch: TrackMetadataPatch,
+  ): Promise<Track[]> =>
+    ipcRenderer.invoke("track:batchUpdateMetadata", trackIds, patch),
+
+  findDuplicates: (): Promise<Track[][]> =>
+    ipcRenderer.invoke("library:findDuplicates"),
+
+  updateTrackLoopRegion: (
+    trackId: number,
+    start: number | null,
+    end: number | null,
+  ): Promise<Track | null> =>
+    ipcRenderer.invoke("track:updateLoopRegion", trackId, start, end),
+
+  updateTrackMarkers: (
+    trackId: number,
+    markers: number[],
+  ): Promise<Track | null> =>
+    ipcRenderer.invoke("track:updateMarkers", trackId, markers),
 
   // Collections
   getCollections: (): Promise<Collection[]> =>

@@ -59,3 +59,12 @@ export function sliceAudioBuffer(
   if (length === 0) return channels.map(() => new Float32Array(0));
   return channels;
 }
+
+// 채널별 샘플 순서를 뒤집어 역재생용 오디오 데이터를 만든다 (Reverse FX)
+export function reverseChannels(channels: Float32Array[]): Float32Array[] {
+  return channels.map((data) => {
+    const out = new Float32Array(data.length);
+    for (let i = 0; i < data.length; i++) out[i] = data[data.length - 1 - i];
+    return out;
+  });
+}

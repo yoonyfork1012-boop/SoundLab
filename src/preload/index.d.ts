@@ -3,6 +3,7 @@ import type {
   Library,
   ScanProgress,
   Track,
+  TrackMetadataPatch,
   WatchStatus,
 } from "../shared/types";
 declare const api: {
@@ -59,6 +60,24 @@ declare const api: {
   onWatchStatus: (callback: (status: WatchStatus) => void) => () => void;
   toggleStar: (trackId: number) => Promise<boolean>;
   updateLastPlayed: (trackId: number) => Promise<void>;
+  updateTrackMetadata: (
+    trackId: number,
+    patch: TrackMetadataPatch,
+  ) => Promise<Track | null>;
+  batchUpdateTrackMetadata: (
+    trackIds: number[],
+    patch: TrackMetadataPatch,
+  ) => Promise<Track[]>;
+  findDuplicates: () => Promise<Track[][]>;
+  updateTrackLoopRegion: (
+    trackId: number,
+    start: number | null,
+    end: number | null,
+  ) => Promise<Track | null>;
+  updateTrackMarkers: (
+    trackId: number,
+    markers: number[],
+  ) => Promise<Track | null>;
   getCollections: () => Promise<Collection[]>;
   createCollection: (name: string) => Promise<Collection[]>;
   deleteCollection: (id: number) => Promise<Collection[]>;

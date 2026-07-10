@@ -15,6 +15,7 @@ interface MenuBarProps {
   onSetView: (v: "grid" | "list") => void;
   onShowShortcuts: () => void;
   onOpenPublisherSettings: () => void;
+  onFindDuplicates: () => void;
   dockMode?: boolean;
   onUndock?: () => void;
 }
@@ -26,6 +27,7 @@ export default function MenuBar({
   onSetView,
   onShowShortcuts,
   onOpenPublisherSettings,
+  onFindDuplicates,
   dockMode = false,
   onUndock,
 }: MenuBarProps): JSX.Element {
@@ -117,6 +119,7 @@ export default function MenuBar({
     ],
     Database: [
       { label: "Rescan library", action: onAddFolder },
+      { label: "Find Duplicates…", action: onFindDuplicates },
       { label: "Database status", disabled: true },
     ],
     View: [

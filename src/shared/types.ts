@@ -20,6 +20,20 @@ export interface Track {
   publisher: string | null;
   isFloat: boolean;
   fileHash: string | null;
+  loopStart: number | null;
+  loopEnd: number | null;
+  markers: number[];
+}
+
+// 메타데이터 패널 인라인 편집 / 일괄 편집이 공유하는 패치 타입.
+// tags를 넘기면 통째로 교체, addTags/removeTags를 넘기면 기존 태그를 보존한 채 추가/제거.
+export interface TrackMetadataPatch {
+  category?: string | null;
+  subcategory?: string | null;
+  description?: string | null;
+  tags?: string[];
+  addTags?: string[];
+  removeTags?: string[];
 }
 
 export type PublisherMode =

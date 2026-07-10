@@ -142,6 +142,15 @@ function runMigrations(): void {
   if (!hasColumn("tracks", "file_hash")) {
     d.run("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
   }
+  if (!hasColumn("tracks", "loop_start")) {
+    d.run("ALTER TABLE tracks ADD COLUMN loop_start REAL");
+  }
+  if (!hasColumn("tracks", "loop_end")) {
+    d.run("ALTER TABLE tracks ADD COLUMN loop_end REAL");
+  }
+  if (!hasColumn("tracks", "markers")) {
+    d.run("ALTER TABLE tracks ADD COLUMN markers TEXT");
+  }
   // 이름변경/이동 후보 탐색(size+hash) 성능을 위한 인덱스 — 대용량 라이브러리에서 매 add 이벤트마다
   // 풀스캔하지 않도록 함
   d.run(
@@ -154,9 +163,48 @@ export function getDb(): Database {
   return db;
 }
 
+// sql.js는 메모리 DB라 저장할 때마다 DB 전체를 직렬화해(db.export()) 파일에 통째로 쓴다.
+// 수천 트랙 라이브러리에서는 이 한 번이 수십~수백 ms가 걸리고, 그동안 메인 스레드가 멈춰
+// 같은 스레드에서 처리되는 IPC(file:getAudioAccess 등)까지 함께 지연된다. 트랙을 클릭할
+// 때마다 호출되는 last_played 같은 고빈도 쓰기는 schedulePersist()로 묶어 유휴 시점에
+// 한 번만 저장한다. 스캔/컬렉션/메타데이터 편집처럼 드물고 중요한 쓰기는 persistDb()로 즉시.
+const PERSIST_DEBOUNCE_MS = 800;
+let persistTimer: NodeJS.Timeout | null = null;
+
+// 쓰는 도중 프로세스가 죽어도 기존 DB가 반쪽짜리로 남지 않도록 임시 파일에 쓴 뒤 교체한다
+function writeDbFile(): void {
+  if (!db) return;
+  const tmpPath = `${DB_PATH}.tmp`;
+  writeFileSync(tmpPath, Buffer.from(db.export()));
+  renameSync(tmpPath, DB_PATH);
+}
+
 export function persistDb(): void {
   if (!db) return;
-  writeFileSync(DB_PATH, Buffer.from(db.export()));
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  writeDbFile();
+}
+
+// 고빈도 쓰기용 — 마지막 호출로부터 PERSIST_DEBOUNCE_MS 동안 조용하면 그때 한 번만 저장.
+// 저장 전에 앱이 강제 종료되면 그 사이의 변경(마지막 재생 시각 등)은 유실될 수 있다.
+export function schedulePersist(): void {
+  if (!db) return;
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    writeDbFile();
+  }, PERSIST_DEBOUNCE_MS);
+  // 저장 대기 타이머 때문에 앱 종료가 지연되지 않게 함
+  persistTimer.unref?.();
+}
+
+// 종료 직전 등, 예약된 저장이 남아 있으면 지금 즉시 기록
+export function flushPersist(): void {
+  if (!persistTimer) return;
+  persistDb();
 }
 
 export function closeDb(): void {

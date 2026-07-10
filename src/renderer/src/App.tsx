@@ -14,12 +14,15 @@ import ColorPickerPopover from "./components/ColorPickerPopover/ColorPickerPopov
 import Toast from "./components/Toast/Toast";
 import ShortcutsModal from "./components/ShortcutsModal/ShortcutsModal";
 import PublisherSettingsModal from "./components/PublisherSettingsModal/PublisherSettingsModal";
+import BatchEditModal from "./components/BatchEditModal/BatchEditModal";
+import DuplicatesModal from "./components/DuplicatesModal/DuplicatesModal";
 import type {
   Collection,
   Library,
   PublisherRule,
   ScanProgress,
   Track,
+  TrackMetadataPatch,
   WatchStatus,
 } from "@shared/types";
 import {
@@ -49,9 +52,25 @@ const META_MAX = 480;
 const PLAYER_MIN = 96;
 const PLAYER_MAX = 380;
 const META_PANEL_HEIGHT_MIN = 160;
-const META_PANEL_HEIGHT_MAX = 640;
 // Analysis(Peak/Stereo Image)가 ?�무�?좁아??최소 ???�도 ?�이???�도�??�약 ??// ??그러�?Metadata�??�까지 ?�렸????Analysis가 ?�면 밖으�??�전??밀??"?�라�? 것처??보임
 const ANALYSIS_MIN_RESERVED = 170;
+
+const TABS_KEY = "soundlib.tabs";
+const ACTIVE_TAB_KEY = "soundlib.activeTabId";
+
+// 탭 하나 = 브라우징 위치 하나. 폴더(=라이브러리 하위 경로)와 컬렉션은 서로 배타적이다.
+interface WorkspaceTab {
+  id: number;
+  folder: string | null;
+  collection: number | null;
+}
+
+// Date.now()는 같은 밀리초에 두 번 부르면 겹친다(빠른 연속 클릭). 단조 증가 카운터로 보강.
+let tabIdSeq = 0;
+function newTab(): WorkspaceTab {
+  tabIdSeq += 1;
+  return { id: Date.now() * 1000 + tabIdSeq, folder: null, collection: null };
+}
 
 export default function App(): JSX.Element {
   const [libraries, setLibraries] = useState<Library[]>([]);
@@ -64,11 +83,77 @@ export default function App(): JSX.Element {
   const [shuffled, setShuffled] = useState(false);
   const [shuffleSeed, setShuffleSeed] = useState(0);
   const [scanning, setScanning] = useState(false);
-  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
-  const [selectedCollection, setSelectedCollection] = useState<number | null>(
-    null,
+
+  // ── 탭 ──
+  // 탭 하나가 곧 "무엇을 보고 있는지"(폴더 또는 컬렉션)다. selectedFolder/selectedCollection을
+  // 별도 state로 두지 않고 활성 탭에서 파생시켜, 탭을 바꾸면 보던 위치가 그대로 따라오게 한다.
+  // 탭이 0개인 상태도 유효하다(첫 실행). 그때는 중앙에 빈 상태 안내만 뜬다.
+  const [tabs, setTabs] = useState<WorkspaceTab[]>(() =>
+    loadJSON<WorkspaceTab[]>(TABS_KEY, []),
   );
+  const [activeTabId, setActiveTabId] = useState<number | null>(() => {
+    const saved = loadNumber(ACTIVE_TAB_KEY, -1);
+    if (tabs.some((t) => t.id === saved)) return saved;
+    return tabs[0]?.id ?? null;
+  });
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const selectedFolder = activeTab?.folder ?? null;
+  const selectedCollection = activeTab?.collection ?? null;
+  const pendingTabIdRef = useRef<number | null>(null);
+
+  // 기존 호출부는 setSelectedFolder(x); setSelectedCollection(null); 처럼 한 렌더 안에서
+  // 연달아 부른다. 함수형 업데이터를 써야 뒤 호출이 앞 호출을 덮어쓰지 않는다.
+  // 활성 탭이 없으면(빈 상태) 새 탭을 만들어 거기에 적용한다 — 사이드바에서 라이브러리나
+  // 컬렉션을 클릭하는 모든 경로가 이 함수를 거치므로, 탭 자동 생성이 여기서 한 번에 처리된다.
+  // 단, 위의 연속 호출이 탭을 두 개 만들지 않도록 이번에 만든 탭 id를 ref에 남겨 재사용한다
+  // (setActiveTabId는 다음 렌더에나 반영되므로 activeTab만으로는 두 번째 호출을 못 잡는다).
+  function patchActiveTab(patch: Partial<Omit<WorkspaceTab, "id">>): void {
+    const targetId = activeTab?.id ?? pendingTabIdRef.current;
+    if (targetId == null) {
+      const tab = { ...newTab(), ...patch };
+      // 탭 없는 상태(=Local 루트)와 똑같은 화면이면 탭을 만들지 않는다.
+      // 사이드바 Local이나 breadcrumb Home 클릭이 여기로 들어온다.
+      if (tab.folder == null && tab.collection == null) return;
+      pendingTabIdRef.current = tab.id;
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
+      return;
+    }
+    setTabs((prev) =>
+      prev.map((t) => (t.id === targetId ? { ...t, ...patch } : t)),
+    );
+  }
+  function setSelectedFolder(folder: string | null): void {
+    patchActiveTab({ folder });
+  }
+  function setSelectedCollection(collection: number | null): void {
+    patchActiveTab({ collection });
+  }
+
+  function addTab(): void {
+    const tab = newTab();
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }
+
+  function closeTab(id: number): void {
+    const idx = tabs.findIndex((t) => t.id === id);
+    const next = tabs.filter((t) => t.id !== id);
+    setTabs(next);
+    // 다시 빈 상태가 되면 ref도 비운다 — 안 그러면 사라진 탭 id를 계속 가리킨다
+    if (next.length === 0) pendingTabIdRef.current = null;
+    // 활성 탭을 닫으면 왼쪽 탭으로(없으면 첫 탭으로) 넘긴다. 마지막 탭이었다면 빈 상태로.
+    if (id === activeTabId)
+      setActiveTabId(next.length > 0 ? next[Math.max(0, idx - 1)].id : null);
+  }
+
+  useEffect(() => {
+    saveJSON(TABS_KEY, tabs);
+  }, [tabs]);
+  useEffect(() => {
+    saveNumber(ACTIVE_TAB_KEY, activeTabId ?? -1);
+  }, [activeTabId]);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [showMeta, setShowMeta] = useState(true);
   const [publisherRule, setPublisherRule] = useState<PublisherRule>(() =>
@@ -100,13 +185,15 @@ export default function App(): JSX.Element {
   const [toast, setToast] = useState<string | null>(null);
   const [folderDragDepth, setFolderDragDepth] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [batchEditOpen, setBatchEditOpen] = useState(false);
+  const [duplicatesOpen, setDuplicatesOpen] = useState(false);
   // ?�중 ?�택(Ctrl+A ??. ?�일 ?�릭/?�살???�동 ???�당 ?�랙 ?�나�?초기?�됨.
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   // "미리듣기(previewed)" 표시를 tracks 배열과 분리된 별도 상태로 둔다 — 예전에는 선택할 때마다
   // setTracks(prev => prev.map(...))로 tracks 참조 자체를 바꿨는데, 이게 visibleTracks의
   // useMemo 의존성이라 클릭할 때마다 라이브러리 전체(수만~수십만 트랙)를 다시 정렬/필터링하는
-  // 원인이었다(클릭 반응 저하의 주범). previewedIds는 이 세션에서 막 선택한 트랙만 담고,
-  // 재시작 후 이력은 DB에서 로드된 track.lastPlayedAt으로 그대로 커버된다.
+  // 원인이었다(클릭 반응 저하의 주범). previewedIds는 이 세션에서만 유지되는 휘발성 상태로,
+  // 앱을 재시작하면 초기화되어 회색 표시도 함께 사라진다(DB의 lastPlayedAt과는 무관).
   const [previewedIds, setPreviewedIds] = useState<Set<number>>(new Set());
   const toastTimerRef = useRef<number | undefined>(undefined);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -297,42 +384,6 @@ export default function App(): JSX.Element {
     document.addEventListener("mouseup", onUp);
   }
 
-  // ?�측 컬럼 ?�에??Metadata/Analysis ?�이 배분 조절 ???�래�??�면 Metadata가 커짐.
-  // ?�래�??�작 ?�점???�측 컬럼 ?�제 ?�이�??�서, Metadata�??�무�??�려??Analysis가
-  // ANALYSIS_MIN_RESERVED 밑으�??�려가(=?�면 밖으�?밀???�라?? 보이지 ?�게 ?�는 ?�이
-  // ?�도�??�번 ?�래그의 최�?값을 ?�적?�로 ?�시 계산?�다.
-  function startMetaPanelResize(e: React.MouseEvent): void {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startHeight = metaPanelHeight;
-    const rightPanelHeight =
-      rightPanelRef.current?.getBoundingClientRect().height ??
-      META_PANEL_HEIGHT_MAX;
-    const dynamicMax = Math.max(
-      META_PANEL_HEIGHT_MIN,
-      Math.min(META_PANEL_HEIGHT_MAX, rightPanelHeight - ANALYSIS_MIN_RESERVED),
-    );
-    let latest = startHeight;
-    function onMove(ev: MouseEvent): void {
-      latest = Math.max(
-        META_PANEL_HEIGHT_MIN,
-        Math.min(dynamicMax, startHeight + (ev.clientY - startY)),
-      );
-      setMetaPanelHeight(latest);
-    }
-    function onUp(): void {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      saveNumber("soundlib.metaPanelHeight", latest);
-    }
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
-
   // ?�전???�?�된 metaPanelHeight가 지�?�??�기 기�??�로 ?�무 커서 Analysis가 ?�면
   // 밖으�?밀?�나 ?�으�??? ?�전??????창에???�?? ?�작 ??�??�기 변�???보정?�다.
   useEffect(() => {
@@ -386,7 +437,10 @@ export default function App(): JSX.Element {
     if (!window.confirm("Delete this collection? This does not delete sounds."))
       return;
     setCollections(await window.api.deleteCollection(id));
-    if (selectedCollection === id) setSelectedCollection(null);
+    // 활성 탭뿐 아니라 이 컬렉션을 가리키던 모든 탭을 비운다
+    setTabs((prev) =>
+      prev.map((t) => (t.collection === id ? { ...t, collection: null } : t)),
+    );
   }
 
   async function handleAddToCollection(
@@ -621,6 +675,19 @@ export default function App(): JSX.Element {
     );
   }, [selectedFolder, libraries]);
 
+  // 탭에 표시할 이름: 최상위 라이브러리명이 아니라 지금 보고 있는 폴더명.
+  function tabLabel(tab: WorkspaceTab): string {
+    if (tab.collection != null) {
+      return (
+        collections.find((c) => c.id === tab.collection)?.name ?? "Collection"
+      );
+    }
+    if (tab.folder) {
+      return norm(tab.folder).split("/").filter(Boolean).pop() ?? "Folder";
+    }
+    return "All Sounds";
+  }
+
   async function handleOpenFolder(folderPath?: string): Promise<void> {
     if (!window.api) return;
     const folder = folderPath ?? (await window.api.selectFolder());
@@ -632,7 +699,10 @@ export default function App(): JSX.Element {
         await window.api.scanLibrary(folder);
       setLibraries(allLibs);
       setTracks(allTracks);
-      setSelectedFolder(null);
+      // 라이브러리를 추가하면 그 루트를 연 탭을 새로 띄운다(첫 실행 시 유일한 탭 생성 경로)
+      const tab = { ...newTab(), folder };
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
     } catch (err) {
       showToast(
         `Failed to scan folder: ${(err as Error)?.message ?? "unknown error"}`,
@@ -709,8 +779,44 @@ export default function App(): JSX.Element {
       await window.api.removeLibrary(id);
     setLibraries(allLibs);
     setTracks(allTracks);
-    setSelectedFolder(null);
+    // 사라진 라이브러리 하위를 가리키던 탭은 모두 "All Sounds"로 되돌린다
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.folder &&
+        !allLibs.some((l) => norm(t.folder!).startsWith(norm(l.rootPath)))
+          ? { ...t, folder: null }
+          : t,
+      ),
+    );
     setSelectedTrack((prev) => (prev && prev.libraryId === id ? null : prev));
+  }
+
+  async function handleUpdateTrackMetadata(
+    trackId: number,
+    patch: TrackMetadataPatch,
+  ): Promise<void> {
+    if (!window.api) return;
+    const updated = await window.api.updateTrackMetadata(trackId, patch);
+    if (!updated) return;
+    setTracks((prev) => prev.map((t) => (t.id === trackId ? updated : t)));
+    setSelectedTrack((prev) => (prev && prev.id === trackId ? updated : prev));
+  }
+
+  async function handleBatchUpdateMetadata(
+    trackIds: number[],
+    patch: TrackMetadataPatch,
+  ): Promise<void> {
+    if (!window.api) return;
+    const updatedTracks = await window.api.batchUpdateTrackMetadata(
+      trackIds,
+      patch,
+    );
+    const byId = new Map(updatedTracks.map((t) => [t.id, t]));
+    setTracks((prev) => prev.map((t) => byId.get(t.id) ?? t));
+    setSelectedTrack((prev) =>
+      prev && byId.has(prev.id) ? byId.get(prev.id)! : prev,
+    );
+    showToast(`Updated ${updatedTracks.length} sounds`);
   }
 
   async function handleToggleStar(track: Track): Promise<void> {
@@ -792,7 +898,9 @@ export default function App(): JSX.Element {
     setPreviewedIds((prev) =>
       prev.has(track.id) ? prev : new Set(prev).add(track.id),
     );
-    if (window.api) await window.api.updateLastPlayed(track.id);
+    // 마지막 재생 시각 기록은 재생과 무관한 부수 작업이다. await 하면 메인 프로세스 왕복이
+    // 트랙 선택 경로에 끼어들어 플레이어의 로드가 그만큼 늦어지므로 기다리지 않는다.
+    if (window.api) void window.api.updateLastPlayed(track.id).catch(() => {});
   }
 
   const activeCollection =
@@ -1028,6 +1136,14 @@ export default function App(): JSX.Element {
         case "F":
           if (selectedTrack) void handleToggleStar(selectedTrack);
           break;
+        case "l":
+        case "L":
+          playerRef.current?.toggleLoopRegion();
+          break;
+        case "m":
+        case "M":
+          playerRef.current?.addMarker();
+          break;
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -1083,6 +1199,7 @@ export default function App(): JSX.Element {
         onSetView={setView}
         onShowShortcuts={() => setShowShortcuts(true)}
         onOpenPublisherSettings={() => setPublisherSettingsOpen(true)}
+        onFindDuplicates={() => setDuplicatesOpen(true)}
         dockMode={dockMode}
         onUndock={handleToggleDockMode}
       />
@@ -1111,6 +1228,37 @@ export default function App(): JSX.Element {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
+
+          {/* 탭 = 브라우징 위치. 각 탭은 그 탭에서 선택한 라이브러리(또는 컬렉션) 이름을 단다 */}
+          <div className="tabs">
+            {tabs.map((tab) => (
+              <div
+                key={tab.id}
+                className={`tab${tab.id === activeTabId ? " tab--active" : ""}`}
+                onClick={() => setActiveTabId(tab.id)}
+                onAuxClick={(e) => {
+                  if (e.button === 1) closeTab(tab.id); // 가운데 클릭으로 닫기
+                }}
+                title={tab.folder ?? tabLabel(tab)}
+              >
+                <span className="tab__label">{tabLabel(tab)}</span>
+                <span
+                  className="tab__close"
+                  onClick={(e) => {
+                    e.stopPropagation(); // 닫기 클릭이 탭 활성화로 새어나가지 않게
+                    closeTab(tab.id);
+                  }}
+                  title="탭 닫기"
+                >
+                  ×
+                </span>
+              </div>
+            ))}
+            <button className="tab__add" onClick={addTab} title="새 탭">
+              +
+            </button>
+          </div>
+
           <div className="topbar__actions">
             <AccentPicker accent={accent} onChange={setAccent} />
             <button
@@ -1353,6 +1501,7 @@ export default function App(): JSX.Element {
                 onOpenMetadataPanel={() => setShowMeta(true)}
                 onRemoveTrack={handleRemoveTrackFromLibrary}
                 onNotify={showToast}
+                onBatchEdit={() => setBatchEditOpen(true)}
                 onCreateCollectionWith={(trackId) => {
                   setNamePrompt({
                     title: "New collection name",
@@ -1384,12 +1533,12 @@ export default function App(): JSX.Element {
                 libraries={libraries}
                 publisherRule={publisherRule}
                 onToggleStar={handleToggleStar}
+                onUpdateMetadata={(trackId, patch) =>
+                  void handleUpdateTrackMetadata(trackId, patch)
+                }
               />
             </div>
-            <div
-              className="right-panel__resizer"
-              onMouseDown={startMetaPanelResize}
-            />
+            <div className="right-panel__resizer right-panel__resizer--fixed" />
             <AnalysisPanel playerRef={playerRef} track={selectedTrack} />
           </div>
         )}
@@ -1548,6 +1697,23 @@ export default function App(): JSX.Element {
       {showShortcuts && (
         <ShortcutsModal onClose={() => setShowShortcuts(false)} />
       )}
+      {duplicatesOpen && (
+        <DuplicatesModal
+          onClose={() => setDuplicatesOpen(false)}
+          onRemoveTrack={handleRemoveTrackFromLibrary}
+          onNotify={showToast}
+        />
+      )}
+      {batchEditOpen && (
+        <BatchEditModal
+          count={selectedIds.size}
+          onCancel={() => setBatchEditOpen(false)}
+          onSubmit={(patch) => {
+            setBatchEditOpen(false);
+            void handleBatchUpdateMetadata([...selectedIds], patch);
+          }}
+        />
+      )}
       {publisherSettingsOpen && (
         <PublisherSettingsModal
           value={publisherRule}
@@ -1573,7 +1739,9 @@ export default function App(): JSX.Element {
               <path d="M12 11v5" />
               <path d="M9.5 13.5 12 11l2.5 2.5" />
             </svg>
-            <div className="folder-drop-overlay__title">Drop folder to add library</div>
+            <div className="folder-drop-overlay__title">
+              Drop folder to add library
+            </div>
           </div>
         </div>
       )}

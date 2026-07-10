@@ -1,6 +1,12 @@
-import { useEffect, useState } from "react";
-import type { Library, PublisherRule, Track } from "@shared/types";
+import { useEffect, useRef, useState } from "react";
+import type {
+  Library,
+  PublisherRule,
+  Track,
+  TrackMetadataPatch,
+} from "@shared/types";
 import { colorForCategory } from "@shared/ucsCategories";
+import { TAXONOMY } from "@shared/soundTaxonomy";
 import { toTitleCase } from "@shared/textCase";
 import { formatPublisherName, resolveTrackPublisher } from "@shared/publisher";
 
@@ -9,11 +15,17 @@ interface MetadataPanelProps {
   libraries: Library[];
   publisherRule: PublisherRule;
   onToggleStar: (track: Track) => void;
+  onUpdateMetadata: (trackId: number, patch: TrackMetadataPatch) => void;
 }
 
 type ArtworkResult = { url: string; source: string } | null;
 
 const artworkCache = new Map<string, ArtworkResult>();
+
+const CATEGORY_OPTIONS = TAXONOMY.map((r) => r.category);
+const SUBCATEGORY_OPTIONS = Array.from(
+  new Set(TAXONOMY.flatMap((r) => r.subcategories.map((s) => s.name))),
+);
 
 function artworkCacheKey(
   filePath: string,
@@ -21,6 +33,22 @@ function artworkCacheKey(
 ): string {
   return `${filePath}|${folderCoverPath ?? ""}`;
 }
+
+const IconPencil = (): JSX.Element => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+  </svg>
+);
 
 function formatDuration(ms: number | null): string {
   if (ms === null) return "";
@@ -48,8 +76,27 @@ export default function MetadataPanel({
   libraries,
   publisherRule,
   onToggleStar,
+  onUpdateMetadata,
 }: MetadataPanelProps): JSX.Element {
   const [artwork, setArtwork] = useState<ArtworkResult>(null);
+  // 편집 UI는 기본으로 접혀 있고, 연필 버튼을 눌러야 입력 필드로 바뀐다.
+  // 평소에는 읽기 전용 표시라 패널이 조용하고, 실수로 값을 건드릴 일도 없다.
+  const [editing, setEditing] = useState(false);
+  const [categoryDraft, setCategoryDraft] = useState("");
+  const [subcategoryDraft, setSubcategoryDraft] = useState("");
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [tagInput, setTagInput] = useState("");
+  const trackRef = useRef(track);
+  trackRef.current = track;
+
+  useEffect(() => {
+    setCategoryDraft(track?.category ?? "");
+    setSubcategoryDraft(track?.subcategory ?? "");
+    setDescriptionDraft(track?.description ?? "");
+    setTagInput("");
+    // 다른 사운드를 고르면 편집 모드도 닫는다 — 열어둔 채 넘어가면 어느 트랙을 고치는지 헷갈린다
+    setEditing(false);
+  }, [track?.id]);
 
   useEffect(() => {
     if (!track || !window.api?.getTrackArtwork) {
@@ -87,6 +134,47 @@ export default function MetadataPanel({
     resolveTrackPublisher(track, libraries, publisherRule),
   );
 
+  function commitCategory(): void {
+    const next = categoryDraft.trim();
+    if (next === (track!.category ?? "")) return;
+    onUpdateMetadata(track!.id, { category: next || null });
+  }
+
+  function commitSubcategory(): void {
+    const next = subcategoryDraft.trim();
+    if (next === (track!.subcategory ?? "")) return;
+    onUpdateMetadata(track!.id, { subcategory: next || null });
+  }
+
+  function commitDescription(): void {
+    const next = descriptionDraft.trim();
+    if (next === (track!.description ?? "")) return;
+    onUpdateMetadata(track!.id, { description: next || null });
+  }
+
+  function addTag(): void {
+    const next = tagInput.trim();
+    setTagInput("");
+    if (!next || track!.tags.includes(next)) return;
+    onUpdateMetadata(track!.id, { addTags: [next] });
+  }
+
+  function removeTag(tag: string): void {
+    onUpdateMetadata(track!.id, { removeTags: [tag] });
+  }
+
+  // 편집 모드를 닫을 때는 아직 커밋되지 않은 입력값을 먼저 반영한다. 보통은 버튼 클릭 전
+  // 발생하는 blur가 처리하지만, 키보드로 닫는 경우처럼 blur가 없는 경로도 있어서다.
+  function toggleEditing(): void {
+    if (editing) {
+      commitCategory();
+      commitSubcategory();
+      commitDescription();
+      addTag();
+    }
+    setEditing((v) => !v);
+  }
+
   return (
     <aside className="meta">
       <div
@@ -123,28 +211,76 @@ export default function MetadataPanel({
 
       <div className="meta__title-row">
         <div className="meta__title">{track.filename}</div>
-        <span
-          className={`meta__star${track.starred ? " meta__star--on" : ""}`}
-          onClick={() => onToggleStar(track)}
-          title="Toggle favorite"
-        >
-          {track.starred ? "★" : "☆"}
-        </span>
+        <div className="meta__title-actions">
+          <button
+            className={`meta__edit-btn${editing ? " meta__edit-btn--on" : ""}`}
+            onClick={toggleEditing}
+            title={editing ? "Done editing" : "Edit metadata"}
+          >
+            <IconPencil />
+          </button>
+          <span
+            className={`meta__star${track.starred ? " meta__star--on" : ""}`}
+            onClick={() => onToggleStar(track)}
+            title="Toggle favorite"
+          >
+            {track.starred ? "★" : "☆"}
+          </span>
+        </div>
       </div>
 
-      {track.description && (
-        <div className="meta__desc">{track.description}</div>
+      {editing ? (
+        <textarea
+          className="meta__desc-input"
+          placeholder="Description / notes"
+          rows={2}
+          value={descriptionDraft}
+          onChange={(e) => setDescriptionDraft(e.target.value)}
+          onBlur={commitDescription}
+        />
+      ) : (
+        track.description && (
+          <div className="meta__desc">{track.description}</div>
+        )
       )}
 
       <div className="meta__grid">
         <span className="meta__key">Category</span>
-        <span className="meta__val">
-          {track.category ? toTitleCase(track.category) : ""}
-        </span>
+        {editing ? (
+          <input
+            className="meta__val-input"
+            list="meta-category-options"
+            value={categoryDraft}
+            onChange={(e) => setCategoryDraft(e.target.value)}
+            onBlur={commitCategory}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            placeholder="—"
+          />
+        ) : (
+          <span className="meta__val">
+            {toTitleCase(track.category ?? "") || "—"}
+          </span>
+        )}
         <span className="meta__key">Subcategory</span>
-        <span className="meta__val">
-          {track.subcategory ? toTitleCase(track.subcategory) : ""}
-        </span>
+        {editing ? (
+          <input
+            className="meta__val-input"
+            list="meta-subcategory-options"
+            value={subcategoryDraft}
+            onChange={(e) => setSubcategoryDraft(e.target.value)}
+            onBlur={commitSubcategory}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            placeholder="—"
+          />
+        ) : (
+          <span className="meta__val">
+            {toTitleCase(track.subcategory ?? "") || "—"}
+          </span>
+        )}
         <span className="meta__key">Publisher</span>
         <span className="meta__val">{publisher}</span>
         <span className="meta__key">Duration</span>
@@ -175,18 +311,52 @@ export default function MetadataPanel({
         </span>
       </div>
 
-      {track.tags.length > 0 && (
-        <>
-          <div className="meta__section-label">Tags</div>
-          <div className="meta__tags">
-            {track.tags.map((tag) => (
-              <span className="meta__tag" key={tag}>
-                {tag}
+      <datalist id="meta-category-options">
+        {CATEGORY_OPTIONS.map((c) => (
+          <option key={c} value={c} />
+        ))}
+      </datalist>
+      <datalist id="meta-subcategory-options">
+        {SUBCATEGORY_OPTIONS.map((s) => (
+          <option key={s} value={s} />
+        ))}
+      </datalist>
+
+      <div className="meta__section-label">Tags</div>
+      <div className="meta__tags">
+        {track.tags.map((tag) => (
+          <span
+            className={`meta__tag${editing ? " meta__tag--editable" : ""}`}
+            key={tag}
+          >
+            {tag}
+            {editing && (
+              <span
+                className="meta__tag-remove"
+                onClick={() => removeTag(tag)}
+                title="Remove tag"
+              >
+                ×
               </span>
-            ))}
-          </div>
-        </>
-      )}
+            )}
+          </span>
+        ))}
+        {editing && (
+          <input
+            className="meta__tag-input"
+            placeholder="Add tag…"
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addTag();
+              }
+            }}
+            onBlur={addTag}
+          />
+        )}
+      </div>
     </aside>
   );
 }

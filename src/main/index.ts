@@ -3,7 +3,7 @@ import { join } from "path";
 import { rm } from "fs/promises";
 import { readFileSync } from "fs";
 import { registerIpcHandlers } from "./ipc";
-import { closeDb, initDb } from "./db";
+import { closeDb, flushPersist, initDb } from "./db";
 import { getAllLibraries } from "./db/queries";
 import { startWatching, stopAllWatching } from "./watcher";
 
@@ -270,6 +270,11 @@ if (!gotLock) {
         mainWindowRef.once("ready-to-show", () => mainWindowRef?.show());
       }
     });
+  });
+
+  // 창이 없는 경로로 종료되더라도(트레이/강제 quit 등) 디바운스 대기 중인 DB 저장을 기록한다
+  app.on("before-quit", () => {
+    flushPersist();
   });
 
   app.on("window-all-closed", () => {

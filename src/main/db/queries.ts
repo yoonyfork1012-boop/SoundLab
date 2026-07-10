@@ -1,5 +1,10 @@
-import { getDb, persistDb } from "./index";
-import type { Collection, Library, Track } from "../../shared/types";
+import { getDb, persistDb, schedulePersist } from "./index";
+import type {
+  Collection,
+  Library,
+  Track,
+  TrackMetadataPatch,
+} from "../../shared/types";
 
 type SqlRow = Record<string, unknown>;
 
@@ -38,6 +43,9 @@ function rowToTrack(row: SqlRow): Track {
     publisher: (row.publisher as string) ?? null,
     isFloat: row.is_float === 1,
     fileHash: (row.file_hash as string) ?? null,
+    loopStart: (row.loop_start as number) ?? null,
+    loopEnd: (row.loop_end as number) ?? null,
+    markers: row.markers ? (JSON.parse(row.markers as string) as number[]) : [],
   };
 }
 
@@ -310,16 +318,19 @@ export function toggleStarred(trackId: number): boolean {
   const rows = selectRows("SELECT starred FROM tracks WHERE id = ?", [trackId]);
   const next = rows[0]?.starred === 1 ? 0 : 1;
   getDb().run("UPDATE tracks SET starred = ? WHERE id = ?", [next, trackId]);
-  persistDb();
+  schedulePersist();
   return next === 1;
 }
 
+// 트랙을 클릭할 때마다 호출되는 가장 뜨거운 쓰기 경로 — 여기서 DB 전체를 동기 저장하면
+// 같은 메인 스레드의 file:getAudioAccess IPC가 밀리고, 그 IPC를 기다리는 플레이어의
+// ws.load() 호출이 늦어져 이전 사운드가 계속 재생된다. 반드시 디바운스 저장을 쓸 것.
 export function updateLastPlayed(trackId: number): void {
   getDb().run("UPDATE tracks SET last_played_at = ? WHERE id = ?", [
     Date.now(),
     trackId,
   ]);
-  persistDb();
+  schedulePersist();
 }
 
 // "Remove" (컨텍스트 메뉴) — 실제 파일은 건드리지 않고 라이브러리 인덱스에서만 제거.
@@ -329,6 +340,137 @@ export function removeTrack(trackId: number): void {
   db.run("DELETE FROM collection_tracks WHERE track_id = ?", [trackId]);
   db.run("DELETE FROM tracks WHERE id = ?", [trackId]);
   persistDb();
+}
+
+function applyTagPatch(
+  currentTags: string[],
+  patch: TrackMetadataPatch,
+): string[] {
+  if (patch.tags) return patch.tags;
+  let next = currentTags;
+  if (patch.removeTags && patch.removeTags.length > 0) {
+    const remove = new Set(patch.removeTags);
+    next = next.filter((t) => !remove.has(t));
+  }
+  if (patch.addTags && patch.addTags.length > 0) {
+    const existing = new Set(next);
+    for (const tag of patch.addTags) {
+      if (!existing.has(tag)) {
+        next = [...next, tag];
+        existing.add(tag);
+      }
+    }
+  }
+  return next;
+}
+
+export function updateTrackMetadata(
+  trackId: number,
+  patch: TrackMetadataPatch,
+): Track | null {
+  const current = selectRows("SELECT * FROM tracks WHERE id = ?", [trackId]);
+  if (current.length === 0) return null;
+  const row = current[0];
+  const nextCategory =
+    patch.category !== undefined
+      ? patch.category
+      : (row.category as string | null);
+  const nextSubcategory =
+    patch.subcategory !== undefined
+      ? patch.subcategory
+      : (row.subcategory as string | null);
+  const nextDescription =
+    patch.description !== undefined
+      ? patch.description
+      : (row.description as string | null);
+  const currentTags = row.tags
+    ? (JSON.parse(row.tags as string) as string[])
+    : [];
+  const nextTags =
+    patch.tags !== undefined ||
+    patch.addTags !== undefined ||
+    patch.removeTags !== undefined
+      ? applyTagPatch(currentTags, patch)
+      : currentTags;
+
+  getDb().run(
+    "UPDATE tracks SET category = ?, subcategory = ?, description = ?, tags = ? WHERE id = ?",
+    [
+      nextCategory,
+      nextSubcategory,
+      nextDescription,
+      JSON.stringify(nextTags),
+      trackId,
+    ],
+  );
+  persistDb();
+  const updated = selectRows("SELECT * FROM tracks WHERE id = ?", [trackId]);
+  return updated.length > 0 ? rowToTrack(updated[0]) : null;
+}
+
+export function batchUpdateTrackMetadata(
+  trackIds: number[],
+  patch: TrackMetadataPatch,
+): Track[] {
+  const updated: Track[] = [];
+  for (const id of trackIds) {
+    const track = updateTrackMetadata(id, patch);
+    if (track) updated.push(track);
+  }
+  return updated;
+}
+
+// 같은 file_hash + file_size를 가진 트랙(=바이트 단위로 동일할 가능성이 매우 높은 파일)을
+// 묶어 반환한다 — 2개 이상 모인 그룹만 포함. 각 그룹은 added_at 오름차순(먼저 추가된 것이
+// "원본" 후보로 앞에 오도록) 정렬.
+export function findDuplicateGroups(): Track[][] {
+  const rows = selectRows(
+    `SELECT file_hash, file_size FROM tracks
+     WHERE file_hash IS NOT NULL AND file_size IS NOT NULL
+     GROUP BY file_hash, file_size HAVING COUNT(*) > 1`,
+  );
+  const groups: Track[][] = [];
+  for (const row of rows) {
+    const members = selectRows(
+      "SELECT * FROM tracks WHERE file_hash = ? AND file_size = ? ORDER BY added_at ASC",
+      [row.file_hash, row.file_size],
+    ).map(rowToTrack);
+    if (members.length > 1) groups.push(members);
+  }
+  return groups;
+}
+
+export function getTrackById(trackId: number): Track | null {
+  const rows = selectRows("SELECT * FROM tracks WHERE id = ?", [trackId]);
+  return rows.length > 0 ? rowToTrack(rows[0]) : null;
+}
+
+// 웨이브폼에서 드래그한 A-B 구간을 트랙에 저장(자동저장) — null을 넘기면 구간 해제
+export function updateTrackLoopRegion(
+  trackId: number,
+  start: number | null,
+  end: number | null,
+): Track | null {
+  getDb().run("UPDATE tracks SET loop_start = ?, loop_end = ? WHERE id = ?", [
+    start,
+    end,
+    trackId,
+  ]);
+  schedulePersist();
+  return getTrackById(trackId);
+}
+
+// 포인트 마커(초 단위) 목록 전체를 교체 저장
+export function updateTrackMarkers(
+  trackId: number,
+  markers: number[],
+): Track | null {
+  getDb().run("UPDATE tracks SET markers = ? WHERE id = ?", [
+    JSON.stringify(markers),
+    trackId,
+  ]);
+  schedulePersist();
+  return getTrackById(trackId);
 }
 
 // 파일 리네임 후 DB에 반영된 새 경로/파일명을 기록
