@@ -1441,97 +1441,120 @@ export default function App(): JSX.Element {
 
         {!dockMode && (
           <div className="content-wrap">
-            {activeCollection && (
-              <CollectionHero
-                collection={activeCollection}
-                tracks={collectionMembers}
-              />
-            )}
-            <div className="breadcrumb">
-              <span
-                className={`breadcrumb__link${!selectedFolder && !activeCollection ? " breadcrumb__link--current" : ""}`}
-                onClick={() => {
-                  setSelectedFolder(null);
-                  setSelectedCollection(null);
-                }}
-              >
-                Home
-              </span>
-              {activeCollection && (
-                <span className="breadcrumb__seg">
-                  <span className="breadcrumb__sep">/</span>
-                  <span className="breadcrumb__link breadcrumb__link--current">
-                    ??{activeCollection.name}
-                  </span>
-                </span>
-              )}
-              {crumbs.map((c, i) => (
-                <span key={i} className="breadcrumb__seg">
-                  <span className="breadcrumb__sep">/</span>
-                  <span
-                    className={`breadcrumb__link${i === crumbs.length - 1 ? " breadcrumb__link--current" : ""}`}
-                    onClick={() => setSelectedFolder(c.path)}
-                  >
-                    {c.label}
-                  </span>
-                </span>
-              ))}
-              <span className="breadcrumb__count">
-                {showGrid
-                  ? `${rootFolders.length} folders`
-                  : `${visibleTracks.length} sounds`}
-              </span>
-            </div>
-
-            {showGrid ? (
-              <FolderGrid
-                folders={rootFolders}
-                onOpenFolder={(p) => setSelectedFolder(p)}
-              />
+            {!activeTab ? (
+              // 탭이 하나도 없는 빈 워크스페이스 — 루트 폴더/전체 트랙을 흘리지 않고
+              // 안내만 보여준다. All Sounds를 열면 전체 사운드 탭이 생긴다.
+              <div className="empty-state empty-workspace">
+                <div className="empty-state__big">
+                  열린 워크스페이스가 없습니다
+                </div>
+                <div>
+                  사이드바에서 폴더나 컬렉션을 고르거나, 아래에서 All Sounds를
+                  열어 전체 사운드를 둘러보세요.
+                </div>
+                <button className="empty-workspace__btn" onClick={addTab}>
+                  All Sounds 열기
+                </button>
+              </div>
             ) : (
-              <ResultList
-                tracks={visibleTracks}
-                libraries={libraries}
-                collections={collections}
-                selectedTrackId={selectedTrack?.id ?? null}
-                selectedIds={selectedIds}
-                onSelectTrack={handleSelectTrack}
-                onToggleStar={handleToggleStar}
-                onAddToCollection={handleAddToCollection}
-                sortKey={sort.key}
-                sortDir={sort.dir}
-                onSort={handleSort}
-                publisherRule={publisherRule}
-                previewedIds={previewedIds}
-                reorderable={collectionReorderable}
-                onReorder={
-                  activeCollection
-                    ? (ids) =>
-                        void handleReorderCollection(activeCollection.id, ids)
-                    : undefined
-                }
-                onBrowseFolder={handleBrowseFolder}
-                onRenameTrack={handleRenameTrackFile}
-                onOpenMetadataPanel={() => setShowMeta(true)}
-                onRemoveTrack={handleRemoveTrackFromLibrary}
-                onNotify={showToast}
-                onBatchEdit={() => setBatchEditOpen(true)}
-                onCreateCollectionWith={(trackId) => {
-                  setNamePrompt({
-                    title: "New collection name",
-                    onSubmit: async (name) => {
-                      if (window.api) {
-                        const cols = await window.api.createCollection(name);
-                        setCollections(cols);
-                        const created = cols[cols.length - 1];
-                        if (created)
-                          await handleAddToCollection(created.id, trackId);
-                      }
-                      setNamePrompt(null);
-                    },
-                  });
-                }}
-              />
+              <>
+                {activeCollection && (
+                  <CollectionHero
+                    collection={activeCollection}
+                    tracks={collectionMembers}
+                  />
+                )}
+                <div className="breadcrumb">
+                  <span
+                    className={`breadcrumb__link${!selectedFolder && !activeCollection ? " breadcrumb__link--current" : ""}`}
+                    onClick={() => {
+                      setSelectedFolder(null);
+                      setSelectedCollection(null);
+                    }}
+                  >
+                    Home
+                  </span>
+                  {activeCollection && (
+                    <span className="breadcrumb__seg">
+                      <span className="breadcrumb__sep">/</span>
+                      <span className="breadcrumb__link breadcrumb__link--current">
+                        ??{activeCollection.name}
+                      </span>
+                    </span>
+                  )}
+                  {crumbs.map((c, i) => (
+                    <span key={i} className="breadcrumb__seg">
+                      <span className="breadcrumb__sep">/</span>
+                      <span
+                        className={`breadcrumb__link${i === crumbs.length - 1 ? " breadcrumb__link--current" : ""}`}
+                        onClick={() => setSelectedFolder(c.path)}
+                      >
+                        {c.label}
+                      </span>
+                    </span>
+                  ))}
+                  <span className="breadcrumb__count">
+                    {showGrid
+                      ? `${rootFolders.length} folders`
+                      : `${visibleTracks.length} sounds`}
+                  </span>
+                </div>
+
+                {showGrid ? (
+                  <FolderGrid
+                    folders={rootFolders}
+                    onOpenFolder={(p) => setSelectedFolder(p)}
+                  />
+                ) : (
+                  <ResultList
+                    tracks={visibleTracks}
+                    libraries={libraries}
+                    collections={collections}
+                    selectedTrackId={selectedTrack?.id ?? null}
+                    selectedIds={selectedIds}
+                    onSelectTrack={handleSelectTrack}
+                    onToggleStar={handleToggleStar}
+                    onAddToCollection={handleAddToCollection}
+                    sortKey={sort.key}
+                    sortDir={sort.dir}
+                    onSort={handleSort}
+                    publisherRule={publisherRule}
+                    previewedIds={previewedIds}
+                    reorderable={collectionReorderable}
+                    onReorder={
+                      activeCollection
+                        ? (ids) =>
+                            void handleReorderCollection(
+                              activeCollection.id,
+                              ids,
+                            )
+                        : undefined
+                    }
+                    onBrowseFolder={handleBrowseFolder}
+                    onRenameTrack={handleRenameTrackFile}
+                    onOpenMetadataPanel={() => setShowMeta(true)}
+                    onRemoveTrack={handleRemoveTrackFromLibrary}
+                    onNotify={showToast}
+                    onBatchEdit={() => setBatchEditOpen(true)}
+                    onCreateCollectionWith={(trackId) => {
+                      setNamePrompt({
+                        title: "New collection name",
+                        onSubmit: async (name) => {
+                          if (window.api) {
+                            const cols =
+                              await window.api.createCollection(name);
+                            setCollections(cols);
+                            const created = cols[cols.length - 1];
+                            if (created)
+                              await handleAddToCollection(created.id, trackId);
+                          }
+                          setNamePrompt(null);
+                        },
+                      });
+                    }}
+                  />
+                )}
+              </>
             )}
           </div>
         )}

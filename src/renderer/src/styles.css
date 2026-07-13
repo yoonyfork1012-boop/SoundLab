@@ -1241,6 +1241,25 @@ button {
   font-size: 15px;
   color: var(--text-dim);
 }
+/* 빈 워크스페이스(탭 0개)의 "All Sounds 열기" 버튼 */
+.empty-workspace__btn {
+  margin-top: 8px;
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.12s var(--ease),
+    border-color 0.12s var(--ease);
+}
+.empty-workspace__btn:hover {
+  background: var(--bg-elevated-2);
+  border-color: var(--text-faint);
+}
 
 /* ?�?�?�?�?�?�?�?�?� Metadata panel ?�?�?�?�?�?�?�?�?� */
 .meta {

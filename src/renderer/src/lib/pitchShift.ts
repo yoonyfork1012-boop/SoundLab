@@ -139,6 +139,19 @@ export function pitchShiftChannels(
   if (semitones === 0 || channels.length === 0) return channels;
   const factor = Math.pow(2, semitones / 12);
   const length = channels[0].length;
+
+  // WSOLA 타임스트레치는 FRAME*2(≈93ms) 미만이면 원본을 그대로 돌려주므로, 그 뒤의
+  // "원래 길이로 리샘플"이 항등 연산이 되어 짧은 클릭/트랜지언트에는 피치가 전혀 안 걸린다.
+  // 그런 짧은 버퍼는 타임스트레치를 건너뛰고 직접 리샘플로 피치를 옮긴다. length/factor
+  // 샘플로 리샘플하면 factor배 빠르게 재생한 것과 같아 피치가 factor배 이동한다.
+  // 트레이드오프: 이 경로에서는 길이가 factor만큼 바뀐다(피치↑ = 길이↓). 93ms 미만
+  // 원샷에서는 테이프처럼 자연스러운 편이라 무음보다 낫다.
+  if (length < FRAME * 2) {
+    if (length < 2) return channels; // 리샘플 불가 — 그대로 둔다
+    const outLength = Math.max(1, Math.round(length / factor));
+    return channels.map((data) => resampleLinear(data, outLength));
+  }
+
   return timeStretchChannels(channels, factor).map((data) =>
     resampleLinear(data, length),
   );

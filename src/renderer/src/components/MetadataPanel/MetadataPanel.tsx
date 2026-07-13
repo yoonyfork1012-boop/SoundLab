@@ -89,14 +89,29 @@ export default function MetadataPanel({
   const trackRef = useRef(track);
   trackRef.current = track;
 
+  // 다른 사운드로 넘어가면 편집 모드를 닫고 태그 입력을 비운다 — 열어둔 채 넘어가면
+  // 어느 트랙을 고치는지 헷갈린다.
   useEffect(() => {
+    setTagInput("");
+    setEditing(false);
+  }, [track?.id]);
+
+  // 트랙의 메타데이터 값이 바뀌면 드래프트를 최신값으로 재동기화한다. 배치 편집이나 워처
+  // 업데이트는 같은 id의 새 Track 객체로 교체하므로 [track?.id]만으로는 안 잡히고, 그러면
+  // 편집을 열었을 때 stale 값이 보이고 Done이 더 새로운 값을 덮어쓴다. 단, 편집 중에는
+  // 사용자가 입력 중인 값을 지우지 않도록 재동기화를 건너뛴다(편집을 닫으면 다시 맞춘다).
+  useEffect(() => {
+    if (editing) return;
     setCategoryDraft(track?.category ?? "");
     setSubcategoryDraft(track?.subcategory ?? "");
     setDescriptionDraft(track?.description ?? "");
-    setTagInput("");
-    // 다른 사운드를 고르면 편집 모드도 닫는다 — 열어둔 채 넘어가면 어느 트랙을 고치는지 헷갈린다
-    setEditing(false);
-  }, [track?.id]);
+  }, [
+    track?.id,
+    track?.category,
+    track?.subcategory,
+    track?.description,
+    editing,
+  ]);
 
   useEffect(() => {
     if (!track || !window.api?.getTrackArtwork) {

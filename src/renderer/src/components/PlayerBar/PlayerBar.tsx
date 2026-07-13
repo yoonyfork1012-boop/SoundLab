@@ -584,6 +584,9 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   // 구간 드래그(DAW export)용 원본 해상도 디코딩 캐시 — peaksRef(다운샘플)와는 별개로 유지
   const rawBufferRef = useRef<AudioBuffer | null>(null);
   const rawBufferTrackIdRef = useRef<number | null>(null);
+  // 진행 중인 전체 파일 디코드를 공유해 동시 read+decode 폭주를 막는다(피치 슬라이더 드래그)
+  const fullBufferPromiseRef = useRef<Promise<AudioBuffer | null> | null>(null);
+  const fullBufferPromiseIdRef = useRef<number | null>(null);
   // FX(Reverse/독립 Pitch)가 켜져 있지 않을 때 재생되는 원본(비가공) URL
   const baseUrlRef = useRef<string | null>(null);
   // Reverse/독립 Pitch를 오프라인 렌더링한 결과 WAV Blob URL — (trackId:reversed:pitch) 키로 캐시
@@ -1009,9 +1012,15 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         console.warn("FX reload failed:", (err as Error)?.message);
       }
     };
-    void runReload();
+    // 디바운스 — 피치 슬라이더를 드래그하면 스텝마다 이 effect가 재실행된다. 매번 즉시
+    // 오프라인 렌더링을 시작하면 취소된 작업의 디코드가 계속 쌓이므로, 잠깐 멈춘 뒤 최종
+    // 값으로 한 번만 리로드한다.
+    const id = window.setTimeout(() => {
+      void runReload();
+    }, 140);
     return () => {
       cancelled = true;
+      window.clearTimeout(id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fx.reversed, fx.pitchSemitones, fx.pitchLinked]);
@@ -1277,23 +1286,39 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     if (!t || !window.api) return null;
     if (rawBufferRef.current && rawBufferTrackIdRef.current === t.id)
       return rawBufferRef.current;
-    try {
-      const bytes = await readPcmBytesForDecode(t.filePath);
-      if (!decodeCtxRef.current) decodeCtxRef.current = new AudioContext();
-      const buf = await decodeCtxRef.current.decodeAudioData(
-        bytes.buffer.slice(
-          bytes.byteOffset,
-          bytes.byteOffset + bytes.byteLength,
-        ) as ArrayBuffer,
-      );
-      if (trackRef.current?.id === t.id) {
-        rawBufferRef.current = buf;
-        rawBufferTrackIdRef.current = t.id;
+    // 같은 트랙 디코드가 이미 진행 중이면 그 프로미스를 공유한다 — 슬라이더를 빠르게
+    // 드래그하면 캐시가 채워지기 전에 이 함수가 여러 번 불려 전체 파일 read+decode가
+    // 동시에 쌓이고, 대용량 파일에서 렌더러가 멈춘다.
+    if (fullBufferPromiseRef.current && fullBufferPromiseIdRef.current === t.id)
+      return fullBufferPromiseRef.current;
+    const promise = (async (): Promise<AudioBuffer | null> => {
+      try {
+        const bytes = await readPcmBytesForDecode(t.filePath);
+        if (!decodeCtxRef.current) decodeCtxRef.current = new AudioContext();
+        const buf = await decodeCtxRef.current.decodeAudioData(
+          bytes.buffer.slice(
+            bytes.byteOffset,
+            bytes.byteOffset + bytes.byteLength,
+          ) as ArrayBuffer,
+        );
+        if (trackRef.current?.id === t.id) {
+          rawBufferRef.current = buf;
+          rawBufferTrackIdRef.current = t.id;
+        }
+        return buf;
+      } catch {
+        return null;
+      } finally {
+        // 더 새로운(다른 트랙) 디코드가 이 자리를 덮어썼다면 그건 건드리지 않는다
+        if (fullBufferPromiseRef.current === promise) {
+          fullBufferPromiseRef.current = null;
+          fullBufferPromiseIdRef.current = null;
+        }
       }
-      return buf;
-    } catch {
-      return null;
-    }
+    })();
+    fullBufferPromiseRef.current = promise;
+    fullBufferPromiseIdRef.current = t.id;
+    return promise;
   }
 
   // 현재 FX(reversed/독립 pitch) 상태를 반영한 오프라인 렌더링 결과 Blob URL을 만들어(또는
