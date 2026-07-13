@@ -48,6 +48,12 @@ function libraryPath(t: Track, ctx: ColumnCtx): string {
   return folder ? `${lib.name}/${folder}` : lib.name;
 }
 
+function fileFolder(t: Track): string {
+  const parts = norm(t.filePath).split("/");
+  // 마지막은 파일명, 그 앞이 직속 부모 폴더
+  return parts.length >= 2 ? parts[parts.length - 2] : "";
+}
+
 function fmtDate(ms: number | null): string {
   if (!ms) return "";
   return new Date(ms).toLocaleDateString();
@@ -104,6 +110,13 @@ export const ALL_COLUMNS: ColumnDef[] = [
     defaultWidth: 160,
     value: (t, c) => formatPublisherName(publisherValue(t, c)),
     sortValue: (t, c) => publisherValue(t, c).toLowerCase(),
+  },
+  {
+    key: "folder",
+    label: "Folder",
+    defaultWidth: 180,
+    value: (t) => fileFolder(t),
+    sortValue: (t) => fileFolder(t).toLowerCase(),
   },
   {
     key: "description",
