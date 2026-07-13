@@ -1850,11 +1850,14 @@ button {
   padding: 0 18px;
   gap: 14px;
 }
+/* 좌우 셀은 1fr 트랙이다. min-width:0 + overflow:hidden 이어야 안쪽 내용(펼친 FX,
+   펼친 Options)이 트랙을 늘리지 못하고, 그래야 가운데 트랜스포트가 제자리에 고정된다. */
 .player__info {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
+  overflow: hidden;
   font-variant-numeric: tabular-nums;
 }
 .player__time {
@@ -1864,20 +1867,6 @@ button {
 .player__dur {
   color: var(--text-faint);
   font-size: 12px;
-}
-.player__srbit {
-  color: var(--accent-bright);
-  font-size: 11px;
-  padding: 2px 7px;
-  border: 1px solid var(--accent-dim);
-  border-radius: 5px;
-}
-.player__fname {
-  color: var(--text-dim);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .player__transport {
   display: flex;
@@ -1927,11 +1916,38 @@ button {
   cursor: default;
   box-shadow: none;
 }
+/* 가로는 clip으로 잘라, 좁은 창에서 펼친 컨트롤이 중앙 트랜스포트를 덮지 못하게 한다.
+   세로는 visible로 남겨 Options 팝업이 위로 열리게 한다 — overflow-x:clip은 스크롤
+   컨테이너를 만들지 않으므로 overflow-y:visible과 조합해도 auto로 강제되지 않는다. */
 .player__right {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 16px;
+  gap: 14px;
+  min-width: 0;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+.player__vol-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.player__vol-btn:hover {
+  color: var(--text);
+}
+/* 뮤트여도 슬라이더 값은 남긴다. 값이 살아 있다는 걸 보여주되 꺼졌음을 알린다. */
+.player__vol--muted {
+  color: var(--text-ghost);
+}
+.player__vol--muted .player__slider,
+.player__vol--muted .player__vol-val {
+  opacity: 0.4;
 }
 .player__vol {
   display: flex;
@@ -2642,14 +2658,6 @@ button {
   height: 46px;
   gap: 10px;
 }
-.player--dock .player__srbit,
-.player--dock .player__mode,
-.player--dock .player__channels,
-.player--dock .player__options,
-.player--dock .player__bar-toggle,
-.player--dock .player__fxbar {
-  display: none;
-}
 .player--dock .player__tbtn {
   width: 28px;
   height: 28px;
@@ -2779,24 +2787,6 @@ button {
 }
 
 /* ═══ 하단 컨트롤 줄: FX(Speed/Pitch/Reverse) + Options/Volume/Stereo/Channel ═══ */
-.player__fxbar {
-  height: 42px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: 0 18px;
-  border-top: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.18);
-}
-/* 오른쪽 묶음은 남는 공간을 밀어내 항상 끝에 붙인다 */
-.player__fxbar-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-shrink: 0;
-}
 /* 하단 줄의 접기/펼치기 버튼 공용 스타일 (FX 묶음 / Options·Channel 묶음) */
 .player__bar-toggle {
   display: inline-flex;
@@ -2829,7 +2819,7 @@ button {
   color: var(--text);
 }
 /* FX가 걸려 있으면 접혀 있어도 FX 버튼만 강조된다 */
-.player__fxbar--active .player__fxbar-toggle {
+.player__fxbar-toggle--active {
   color: var(--accent-bright);
   border-color: var(--accent-dim);
 }
@@ -2838,6 +2828,14 @@ button {
 }
 .player__bar-toggle--open .player__bar-chevron {
   transform: rotate(180deg);
+}
+/* 오른쪽 묶음 토글은 왼쪽으로 펼쳐지므로 셰브론이 반대 방향을 가리킨다 —
+   접힘: 왼쪽(펼침 방향), 펼침: 오른쪽(접힘 방향) */
+.player__bar-toggle--reverse .player__bar-chevron {
+  transform: scaleX(-1);
+}
+.player__bar-toggle--reverse.player__bar-toggle--open .player__bar-chevron {
+  transform: scaleX(1);
 }
 /* FX가 걸려 있는데 접혀 있으면, 펼치지 않고도 알 수 있도록 점을 찍는다 */
 .player__fx-dot {
@@ -2853,7 +2851,7 @@ button {
 .player__slide-group {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 12px;
   overflow: hidden;
   max-width: 0;
   opacity: 0;
@@ -2874,25 +2872,26 @@ button {
 }
 /* 오른쪽 묶음은 Options 팝업 메뉴가 위로 열려야 해서 overflow를 잘라내면 안 된다 —
    열려 있을 때만 잘라내기를 푼다(접히는 애니메이션 중에는 여전히 잘려야 한다). */
-.player__fxbar-right .player__slide-group--open {
+.player__right .player__slide-group--open {
   overflow: visible;
 }
 .fx__ctl {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 6px;
   flex-shrink: 0;
 }
 .fx__name {
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 700;
   color: var(--text-faint);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
 }
 .fx__value {
-  min-width: 52px;
-  font-size: 11.5px;
+  min-width: 44px;
+  font-size: 11px;
   color: var(--text);
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -2915,12 +2914,10 @@ button {
   cursor: default;
   color: var(--text-ghost);
 }
+/* 컨트롤 줄 하나에 다 담아야 해서 "Link" 글자는 title로 옮기고 체크박스만 남겼다 */
 .fx__link {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 10.5px;
-  color: var(--text-ghost);
   cursor: pointer;
 }
 .fx__link input {
@@ -2929,7 +2926,7 @@ button {
 .fx__slider {
   -webkit-appearance: none;
   appearance: none;
-  width: 108px;
+  width: 72px;
   height: 4px;
   border-radius: 3px;
   background: var(--bg-elevated-2);
@@ -2952,13 +2949,15 @@ button {
   cursor: default;
   box-shadow: none;
 }
+/* "Normal / Reversed" 글자도 title로 옮기고 아이콘만 남겨 폭을 줄였다 */
 .fx__reverse-btn {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
   flex-shrink: 0;
   height: 26px;
-  padding: 0 11px;
+  width: 30px;
+  padding: 0;
   border-radius: 6px;
   border: 1px solid var(--border-strong);
   background: var(--bg-input);

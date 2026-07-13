@@ -139,7 +139,7 @@ export default function Sidebar({
           <span>Libraries</span>
           <span
             className="sidebar__section-btn"
-            onClick={onOpenFolder}
+            onClick={() => onOpenFolder()}
             title="폴더 추가"
           >
             ＋
@@ -214,7 +214,7 @@ export default function Sidebar({
             <div
               className="ftree__row"
               style={{ paddingLeft: 24 }}
-              onClick={onOpenFolder}
+              onClick={() => onOpenFolder()}
             >
               <span className="ftree__toggle" />
               <span className="ftree__name" style={{ color: "var(--accent)" }}>

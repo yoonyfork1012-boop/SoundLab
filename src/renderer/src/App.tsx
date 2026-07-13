@@ -690,7 +690,13 @@ export default function App(): JSX.Element {
 
   async function handleOpenFolder(folderPath?: string): Promise<void> {
     if (!window.api) return;
-    const folder = folderPath ?? (await window.api.selectFolder());
+    // onClick 등에서 이벤트 객체가 그대로 넘어오는 경우가 있어(문자열 경로가 아님),
+    // 그대로 scanLibrary로 보내면 IPC 직렬화가 "An object could not be cloned"로 실패한다.
+    // 문자열 경로가 아니면 무시하고 폴더 선택 다이얼로그를 연다.
+    const folder =
+      typeof folderPath === "string"
+        ? folderPath
+        : await window.api.selectFolder();
     if (!folder) return;
     setScanning(true);
     try {
@@ -800,6 +806,14 @@ export default function App(): JSX.Element {
     if (!updated) return;
     setTracks((prev) => prev.map((t) => (t.id === trackId ? updated : t)));
     setSelectedTrack((prev) => (prev && prev.id === trackId ? updated : prev));
+  }
+
+  // PlayerBar가 loop 구간/마커를 DB에 저장한 뒤 갱신된 Track을 돌려주면 in-memory 상태에도
+  // 반영한다 — 그래야 세션 중 다른 트랙을 거쳐 돌아와도 stale Track이 방금 저장한 값을
+  // 덮어쓰지 않는다.
+  function handleTrackPersisted(track: Track): void {
+    setTracks((prev) => prev.map((t) => (t.id === track.id ? track : t)));
+    setSelectedTrack((prev) => (prev && prev.id === track.id ? track : prev));
   }
 
   async function handleBatchUpdateMetadata(
@@ -1564,6 +1578,7 @@ export default function App(): JSX.Element {
           onNext={() => selectRelative(1)}
           queueTracks={visibleTracks}
           dockMode={dockMode}
+          onTrackPersisted={handleTrackPersisted}
         />
       </div>
 

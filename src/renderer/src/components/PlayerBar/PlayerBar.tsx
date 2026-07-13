@@ -2,8 +2,10 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin, { type Region } from "wavesurfer.js/plugins/regions";
@@ -138,6 +140,9 @@ interface PlayerBarProps {
   onNext: () => void;
   queueTracks?: Track[];
   dockMode?: boolean;
+  // loop 구간/마커를 저장하면 DB뿐 아니라 App의 in-memory Track도 갱신해야, 세션 중
+  // 다른 트랙을 거쳐 돌아왔을 때 방금 저장한 값이 stale Track에 덮여 사라지지 않는다.
+  onTrackPersisted?: (track: Track) => void;
 }
 
 export interface MeterTap {
@@ -414,6 +419,35 @@ const IconStop = (): JSX.Element => (
     <rect x="5" y="5" width="14" height="14" rx="2.5" />
   </svg>
 );
+const VolumeSvg = ({ children }: { children: ReactNode }): JSX.Element => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M4 9v6h4l5 4V5L8 9H4z" />
+    {children}
+  </svg>
+);
+
+const IconVolume = (): JSX.Element => (
+  <VolumeSvg>
+    <path d="M17 8a5 5 0 0 1 0 8" />
+  </VolumeSvg>
+);
+
+const IconVolumeMuted = (): JSX.Element => (
+  <VolumeSvg>
+    <path d="M17 9l5 6" />
+    <path d="M22 9l-5 6" />
+  </VolumeSvg>
+);
+
 const IconFx = (): JSX.Element => (
   <svg
     width="14"
@@ -509,6 +543,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     onNext,
     queueTracks = [],
     dockMode = false,
+    onTrackPersisted,
   },
   ref,
 ) {
@@ -517,8 +552,8 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   // 현재 패널 높이에 따른 웨이브폼 높이 (setOptions에 항상 이 값을 사용)
   const panelHeightRef = useRef(panelHeight);
   panelHeightRef.current = panelHeight;
-  // 컨트롤 바 54px + 하단 컨트롤 줄 42px (Dock Mode에서는 하단 줄을 숨기므로 컨트롤 바만)
-  const chrome = dockMode ? 54 : 96;
+  // 컨트롤 바 한 줄이 전부다 (Dock Mode에서는 버튼이 작아 줄 높이도 낮다)
+  const chrome = dockMode ? 46 : 54;
   const chromeRef = useRef(chrome);
   chromeRef.current = chrome;
   const waveH = waveHeightsFor(panelHeight, chrome);
@@ -573,10 +608,24 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(0.85);
+  // 뮤트는 볼륨 값을 건드리지 않는다 — 해제하면 원래 크기로 돌아와야 한다
+  const [muted, setMuted] = useState(false);
+  const effectiveVolume = muted ? 0 : volume;
+  // 트랙 로드 콜백은 오래된 클로저를 붙들고 있을 수 있어 ref로 현재 값을 읽는다
+  const effectiveVolumeRef = useRef(effectiveVolume);
+  effectiveVolumeRef.current = effectiveVolume;
   const [ch1, setCh1] = useState(true);
   const [ch2, setCh2] = useState(true);
   const [mode, setMode] = useState<"stereo" | "mono">("stereo");
   const [optionsOpen, setOptionsOpen] = useState(false);
+  // Options 팝업은 position:fixed로 띄운다 — .player__right가 overflow-x:clip이라 팝업이
+  // 그 안에 있으면 좁은 창에서 가로로 잘린다. fixed는 조상의 clip을 탈출하므로, 열릴 때
+  // 버튼 좌표를 재어 버튼 위(오른쪽 정렬)에 직접 배치한다.
+  const optBtnRef = useRef<HTMLButtonElement>(null);
+  const [optMenuPos, setOptMenuPos] = useState<{
+    left: number;
+    bottom: number;
+  } | null>(null);
   // FX 컨트롤 펼침 여부는 앱을 다시 켜도 유지한다 — 자주 쓰는 사람은 늘 펼쳐 두고 쓴다
   const [fxOpen, setFxOpen] = useState(() => loadBool(FX_OPEN_KEY, false));
 
@@ -610,6 +659,8 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   regionBoundsRef.current = regionBounds;
   const trackRef = useRef(track);
   trackRef.current = track;
+  const onTrackPersistedRef = useRef(onTrackPersisted);
+  onTrackPersistedRef.current = onTrackPersisted;
   const prevTrackIdRef = useRef<number | null>(track?.id ?? null);
 
   function updatePlaybackOptions(patch: Partial<PlaybackOptions>): void {
@@ -725,7 +776,11 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     if (!t) return;
     window.clearTimeout(regionSaveTimerRef.current);
     regionSaveTimerRef.current = window.setTimeout(() => {
-      void window.api?.updateTrackLoopRegion(t.id, start, end);
+      void window.api
+        ?.updateTrackLoopRegion(t.id, start, end)
+        .then((updated) => {
+          if (updated) onTrackPersistedRef.current?.(updated);
+        });
     }, 400);
   }
 
@@ -749,7 +804,9 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     setMarkers((prev) => {
       if (prev.some((m) => Math.abs(m - time) < 0.05)) return prev;
       const next = [...prev, time].sort((a, b) => a - b);
-      void window.api?.updateTrackMarkers(t.id, next);
+      void window.api?.updateTrackMarkers(t.id, next).then((updated) => {
+        if (updated) onTrackPersistedRef.current?.(updated);
+      });
       return next;
     });
   }
@@ -759,7 +816,9 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     if (!t) return;
     setMarkers((prev) => {
       const next = prev.filter((m) => m !== time);
-      void window.api?.updateTrackMarkers(t.id, next);
+      void window.api?.updateTrackMarkers(t.id, next).then((updated) => {
+        if (updated) onTrackPersistedRef.current?.(updated);
+      });
       return next;
     });
   }
@@ -898,8 +957,8 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   }, [accent]);
 
   useEffect(() => {
-    wavesurferRef.current?.setVolume(volume);
-  }, [volume]);
+    wavesurferRef.current?.setVolume(effectiveVolume);
+  }, [effectiveVolume]);
 
   // Speed는 브라우저 네이티브 playbackRate로 실제 재생에 반영된다. pitchLinked가 켜지면
   // preservePitch=false를 줘서 속도 변화에 피치가 테이프처럼 자연스럽게 따라가게 한다.
@@ -1408,7 +1467,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         // 이제부터 이 트랙이 실제로 물려 있다 — 재생 위치 저장 대상도 이 트랙이다
         playingTrackIdRef.current = track.id;
 
-        ws.setVolume(volume);
+        ws.setVolume(effectiveVolumeRef.current);
         // ws.load()가 재생 속도를 기본값으로 되돌리므로, 트랙마다 저장된 Speed 설정을 다시 건다
         ws.setPlaybackRate(
           fxRef.current.speedPct / 100,
@@ -1575,10 +1634,6 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     };
   }, [track?.id, queueTracks]);
 
-  const sr = track?.sampleRate
-    ? `${(track.sampleRate / 1000).toFixed(0)}k`
-    : "--";
-  const bit = track?.bitDepth ? `${track.bitDepth}` : "--";
   const stereoTrack = (track?.channels ?? 2) >= 2;
 
   function togglePlayback(): void {
@@ -1591,6 +1646,29 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       void startPlayback();
     }
   }
+
+  // Options 팝업이 열리면 버튼 좌표를 재어 fixed 위치를 잡는다. 팝업 폭은 CSS와 동일한
+  // 220px 기준으로 버튼 오른쪽 끝에 맞춰 정렬하고, 버튼 위 6px에 바닥을 둔다. 창 크기가
+  // 바뀌면 다시 잰다.
+  useLayoutEffect(() => {
+    if (!optionsOpen) {
+      setOptMenuPos(null);
+      return;
+    }
+    const OPT_MENU_WIDTH = 220;
+    function place(): void {
+      const btn = optBtnRef.current;
+      if (!btn) return;
+      const r = btn.getBoundingClientRect();
+      setOptMenuPos({
+        left: Math.max(8, Math.round(r.right - OPT_MENU_WIDTH)),
+        bottom: Math.round(window.innerHeight - r.top + 6),
+      });
+    }
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [optionsOpen]);
 
   // Click outside playback options menu to close it
   useEffect(() => {
@@ -1610,66 +1688,126 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   const fxActive =
     fx.speedPct !== 100 || fx.pitchSemitones !== 0 || fx.reversed;
 
-  // Options / Volume / Stereo·Mono / Channel 묶음. 평소에는 FX 줄 오른쪽에 놓지만,
-  // Dock Mode에서는 FX 줄을 통째로 숨기므로 컨트롤 바로 되돌린다. 두 곳에 동시에
-  // 렌더하면 radio의 name 그룹(startMode/queueMode)이 겹쳐 선택이 서로 엉킨다.
-  const rightControls = (
+  // FX 묶음. 시간 표시 오른쪽에 놓이고, 펼치면 오른쪽으로 늘어난다.
+  // 왼쪽 셀은 grid의 1fr + min-width:0이라 아무리 넓어져도 가운데 트랜스포트를 밀지 않는다.
+  const fxControls = (
     <>
-      {/* 볼륨은 접지 않는다 — 미리듣기 중 가장 자주 손이 가는 컨트롤이다 */}
-      <div className="player__vol">
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M4 9v6h4l5 4V5L8 9H4z" />
-          <path d="M17 8a5 5 0 0 1 0 8" />
-        </svg>
-        <input
-          className="player__slider"
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={volume}
-          onChange={(e) => setVolume(parseFloat(e.target.value))}
-        />
-        <span className="player__vol-val">{Math.round(volume * 100)}%</span>
-      </div>
-
       <button
-        className={`player__bar-toggle${rightOpen ? " player__bar-toggle--open" : ""}`}
-        onClick={toggleRightOpen}
-        title={
-          rightOpen ? "Options / Channel 접기" : "Options / Channel 펼치기"
-        }
-        aria-label="Playback options and channel controls"
-        aria-expanded={rightOpen}
+        className={`player__bar-toggle player__fxbar-toggle${fxOpen ? " player__bar-toggle--open" : ""}${fxActive ? " player__fxbar-toggle--active" : ""}`}
+        onClick={toggleFxOpen}
+        title={fxOpen ? "FX 컨트롤 접기" : "FX 컨트롤 펼치기"}
+        aria-expanded={fxOpen}
       >
-        <IconSliders />
+        <IconFx />
+        FX
+        {fxActive && !fxOpen && <span className="player__fx-dot" />}
         <IconChevronRight />
       </button>
 
+      {/* 닫힌 상태에서도 DOM에 남겨 둬야 max-width 트랜지션이 걸린다.
+          대신 hidden으로 포커스/클릭이 들어가지 않게 막는다. */}
+      <div
+        className={`player__slide-group${fxOpen ? " player__slide-group--open" : ""}`}
+        aria-hidden={!fxOpen}
+      >
+        <div className="fx__ctl">
+          <span className="fx__name">Speed</span>
+          <input
+            className="fx__slider"
+            type="range"
+            min={50}
+            max={200}
+            step={1}
+            value={fx.speedPct}
+            onChange={(e) =>
+              updateFx({ speedPct: parseInt(e.target.value, 10) })
+            }
+          />
+          <button
+            className="fx__value fx__value--reset"
+            title="1.00x로 초기화"
+            onClick={() => updateFx({ speedPct: 100 })}
+          >
+            {(fx.speedPct / 100).toFixed(2)}x
+          </button>
+        </div>
+
+        <div className="fx__ctl">
+          <span className="fx__name">Pitch</span>
+          <input
+            className="fx__slider"
+            type="range"
+            min={-12}
+            max={12}
+            step={1}
+            disabled={fx.pitchLinked}
+            value={
+              fx.pitchLinked ? Math.round(linkedSemitones) : fx.pitchSemitones
+            }
+            onChange={(e) =>
+              updateFx({ pitchSemitones: parseInt(e.target.value, 10) })
+            }
+          />
+          <button
+            className="fx__value fx__value--reset"
+            title="0 st로 초기화"
+            disabled={fx.pitchLinked}
+            onClick={() => updateFx({ pitchSemitones: 0 })}
+          >
+            {fx.pitchLinked
+              ? `${linkedSemitones >= 0 ? "+" : ""}${linkedSemitones.toFixed(1)} st`
+              : `${fx.pitchSemitones > 0 ? "+" : ""}${fx.pitchSemitones} st`}
+          </button>
+          <label
+            className="fx__link"
+            title="Link — 속도를 바꾸면 테이프처럼 피치도 함께 따라간다"
+          >
+            <input
+              type="checkbox"
+              checked={fx.pitchLinked}
+              onChange={(e) => updateFx({ pitchLinked: e.target.checked })}
+            />
+          </label>
+        </div>
+
+        <button
+          className={`fx__reverse-btn${fx.reversed ? " fx__reverse-btn--on" : ""}`}
+          onClick={() => updateFx({ reversed: !fx.reversed })}
+          title={fx.reversed ? "Reversed — 거꾸로 재생 중" : "Normal — 정방향"}
+        >
+          <ReverseGlyph flipped={fx.reversed} />
+        </button>
+      </div>
+    </>
+  );
+
+  // Options / Stereo·Mono / Channel 묶음과 볼륨. 볼륨은 늘 맨 오른쪽 끝에 붙는다.
+  // 토글 버튼은 볼륨 바로 왼쪽에 고정되고, 슬라이드 묶음을 버튼 앞(왼쪽)에 두어 펼치면
+  // flex-end 정렬에 따라 왼쪽으로 늘어난다 — 왼쪽 FX 묶음이 오른쪽으로 열리는 것과 대칭.
+  const rightControls = (
+    <>
       <div
         className={`player__slide-group${rightOpen ? " player__slide-group--open" : ""}`}
         aria-hidden={!rightOpen}
       >
         <div className="player__options">
           <button
+            ref={optBtnRef}
             className={`player__opt-btn${optionsOpen ? " player__opt-btn--open" : ""}`}
             title="Playback options"
             onClick={() => setOptionsOpen((v) => !v)}
           >
             Options
           </button>
-          {optionsOpen && (
+          {optionsOpen && optMenuPos && (
             <div
               className="player__opt-menu"
+              style={{
+                position: "fixed",
+                left: optMenuPos.left,
+                bottom: optMenuPos.bottom,
+                right: "auto",
+              }}
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="player__opt-section">Start</div>
@@ -1795,6 +1933,45 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           </button>
         </div>
       </div>
+
+      <button
+        className={`player__bar-toggle player__bar-toggle--reverse${rightOpen ? " player__bar-toggle--open" : ""}`}
+        onClick={toggleRightOpen}
+        title={
+          rightOpen ? "Options / Channel 접기" : "Options / Channel 펼치기"
+        }
+        aria-label="Playback options and channel controls"
+        aria-expanded={rightOpen}
+      >
+        <IconChevronRight />
+        <IconSliders />
+      </button>
+
+      {/* 볼륨은 접지 않는다 — 미리듣기 중 가장 자주 손이 가는 컨트롤이다 */}
+      <div className={`player__vol${muted ? " player__vol--muted" : ""}`}>
+        <button
+          className="player__vol-btn"
+          onClick={() => setMuted((v) => !v)}
+          title={muted ? "음소거 해제" : "음소거"}
+          aria-pressed={muted}
+        >
+          {muted ? <IconVolumeMuted /> : <IconVolume />}
+        </button>
+        <input
+          className="player__slider"
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={volume}
+          // 슬라이더를 움직이면 뮤트를 푼다 — 소리가 안 나는 채로 값만 바뀌면 고장으로 보인다
+          onChange={(e) => {
+            setVolume(parseFloat(e.target.value));
+            setMuted(false);
+          }}
+        />
+        <span className="player__vol-val">{Math.round(volume * 100)}%</span>
+      </div>
     </>
   );
 
@@ -1879,10 +2056,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         <div className="player__info">
           <span className="player__time">{fmt(current)}</span>
           <span className="player__dur">{fmt(duration)}</span>
-          <span className="player__srbit">
-            {sr}|{bit}
-          </span>
-          <span className="player__fname">{track?.filename ?? ""}</span>
+          {fxControls}
         </div>
 
         <div className="player__transport">
@@ -1931,105 +2105,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           </button>
         </div>
 
-        <div className="player__right">{dockMode && rightControls}</div>
-      </div>
-
-      {/* 왼쪽 FX 버튼을 누르면 Speed/Pitch/Reverse가 오른쪽으로 밀려 나오고,
-          Options/Volume/Stereo·Mono/Channel은 늘 오른쪽 끝에 붙어 있다 */}
-      <div
-        className={`player__fxbar${fxActive ? " player__fxbar--active" : ""}`}
-      >
-        <button
-          className={`player__bar-toggle player__fxbar-toggle${fxOpen ? " player__bar-toggle--open" : ""}`}
-          onClick={toggleFxOpen}
-          title={fxOpen ? "FX 컨트롤 접기" : "FX 컨트롤 펼치기"}
-          aria-expanded={fxOpen}
-        >
-          <IconFx />
-          FX
-          {fxActive && !fxOpen && <span className="player__fx-dot" />}
-          <IconChevronRight />
-        </button>
-
-        {/* 닫힌 상태에서도 DOM에 남겨 둬야 max-width 트랜지션이 걸린다.
-            대신 hidden으로 포커스/클릭이 들어가지 않게 막는다. */}
-        <div
-          className={`player__slide-group${fxOpen ? " player__slide-group--open" : ""}`}
-          aria-hidden={!fxOpen}
-        >
-          <div className="fx__ctl">
-            <span className="fx__name">Speed</span>
-            <input
-              className="fx__slider"
-              type="range"
-              min={50}
-              max={200}
-              step={1}
-              value={fx.speedPct}
-              onChange={(e) =>
-                updateFx({ speedPct: parseInt(e.target.value, 10) })
-              }
-            />
-            <button
-              className="fx__value fx__value--reset"
-              title="1.00x로 초기화"
-              onClick={() => updateFx({ speedPct: 100 })}
-            >
-              {(fx.speedPct / 100).toFixed(2)}x
-            </button>
-          </div>
-
-          <div className="fx__ctl">
-            <span className="fx__name">Pitch</span>
-            <input
-              className="fx__slider"
-              type="range"
-              min={-12}
-              max={12}
-              step={1}
-              disabled={fx.pitchLinked}
-              value={
-                fx.pitchLinked ? Math.round(linkedSemitones) : fx.pitchSemitones
-              }
-              onChange={(e) =>
-                updateFx({ pitchSemitones: parseInt(e.target.value, 10) })
-              }
-            />
-            <button
-              className="fx__value fx__value--reset"
-              title="0 st로 초기화"
-              disabled={fx.pitchLinked}
-              onClick={() => updateFx({ pitchSemitones: 0 })}
-            >
-              {fx.pitchLinked
-                ? `${linkedSemitones >= 0 ? "+" : ""}${linkedSemitones.toFixed(1)} st`
-                : `${fx.pitchSemitones > 0 ? "+" : ""}${fx.pitchSemitones} st`}
-            </button>
-            <label
-              className="fx__link"
-              title="속도를 바꾸면 테이프처럼 피치도 함께 따라간다"
-            >
-              <input
-                type="checkbox"
-                checked={fx.pitchLinked}
-                onChange={(e) => updateFx({ pitchLinked: e.target.checked })}
-              />
-              Link
-            </label>
-          </div>
-
-          <button
-            className={`fx__reverse-btn${fx.reversed ? " fx__reverse-btn--on" : ""}`}
-            onClick={() => updateFx({ reversed: !fx.reversed })}
-          >
-            <ReverseGlyph flipped={fx.reversed} />
-            {fx.reversed ? "Reversed" : "Normal"}
-          </button>
-        </div>
-
-        {!dockMode && (
-          <div className="player__fxbar-right">{rightControls}</div>
-        )}
+        <div className="player__right">{rightControls}</div>
       </div>
     </div>
   );

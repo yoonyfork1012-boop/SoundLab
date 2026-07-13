@@ -364,7 +364,9 @@ function applyTagPatch(
   return next;
 }
 
-export function updateTrackMetadata(
+// 행 업데이트만 수행하고 persist는 하지 않는 내부 헬퍼 — 배치 편집에서 트랙마다
+// 전체 DB export가 반복되지 않도록, persist는 호출자가 마지막에 한 번만 하도록 분리한다.
+function applyTrackMetadata(
   trackId: number,
   patch: TrackMetadataPatch,
 ): Track | null {
@@ -403,9 +405,17 @@ export function updateTrackMetadata(
       trackId,
     ],
   );
-  persistDb();
   const updated = selectRows("SELECT * FROM tracks WHERE id = ?", [trackId]);
   return updated.length > 0 ? rowToTrack(updated[0]) : null;
+}
+
+export function updateTrackMetadata(
+  trackId: number,
+  patch: TrackMetadataPatch,
+): Track | null {
+  const track = applyTrackMetadata(trackId, patch);
+  persistDb();
+  return track;
 }
 
 export function batchUpdateTrackMetadata(
@@ -414,9 +424,11 @@ export function batchUpdateTrackMetadata(
 ): Track[] {
   const updated: Track[] = [];
   for (const id of trackIds) {
-    const track = updateTrackMetadata(id, patch);
+    const track = applyTrackMetadata(id, patch);
     if (track) updated.push(track);
   }
+  // 배치 전체를 한 번에 반영 — DB 전체 직렬화(db.export())가 트랙 수만큼이 아니라 1회만 발생.
+  if (updated.length > 0) persistDb();
   return updated;
 }
 
