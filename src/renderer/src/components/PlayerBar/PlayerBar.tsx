@@ -33,6 +33,9 @@ const PRELOAD_RADIUS = 3;
 // 트랙 선택이 이만큼 조용해진 뒤에야 무거운 웨이브폼 디코딩을 시작한다 — 리스트를 빠르게
 // 훑고 지나가는 동안에는 중간 트랙들의 디코딩을 아예 시작하지 않기 위함
 const DECODE_IDLE_MS = 180;
+// 피치/리버스 슬라이더를 드래그하는 동안 오프라인 렌더링이 매 스텝마다 시작되지 않도록,
+// 잠깐 멈춘 뒤 최종 값으로 한 번만 리로드하는 디바운스 간격
+const FX_RELOAD_DEBOUNCE_MS = 140;
 // 세션 중 미리듣기한 트랙이 아주 많아져도(수천 개 라이브러리) 피크 메모리 캐시가
 // 무한정 커지지 않도록 LRU로 상한을 둔다. 디스크(IndexedDB) 캐시는 상한 없이 유지된다.
 const MAX_MEMORY_PEAKS = 300;
@@ -592,6 +595,9 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   // Reverse/독립 Pitch를 오프라인 렌더링한 결과 WAV Blob URL — (trackId:reversed:pitch) 키로 캐시
   const processedUrlRef = useRef<string | null>(null);
   const processedUrlKeyRef = useRef<string | null>(null);
+  // 진행 중인 오프라인 렌더링을 FX 키로 공유 — 디바운스가 뚫려도 중복 렌더/URL revoke를 막는다
+  const processedUrlPromiseRef = useRef<Promise<string | null> | null>(null);
+  const processedUrlPromiseKeyRef = useRef<string | null>(null);
   const prevReversedRef = useRef(false);
   const [regionBounds, setRegionBounds] = useState<{
     start: number;
@@ -1017,7 +1023,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     // 값으로 한 번만 리로드한다.
     const id = window.setTimeout(() => {
       void runReload();
-    }, 140);
+    }, FX_RELOAD_DEBOUNCE_MS);
     return () => {
       cancelled = true;
       window.clearTimeout(id);
@@ -1332,21 +1338,43 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     const key = `${t.id}:${reversed ? 1 : 0}:${needsPitch ? pitchSemitones : "0"}`;
     if (processedUrlRef.current && processedUrlKeyRef.current === key)
       return processedUrlRef.current;
-    const buf = await ensureFullBuffer();
-    if (!buf || trackRef.current?.id !== t.id) return null;
-    let channels: Float32Array[] = [];
-    for (let ch = 0; ch < buf.numberOfChannels; ch++)
-      channels.push(buf.getChannelData(ch));
-    if (reversed) channels = reverseChannels(channels);
-    if (needsPitch) channels = pitchShiftChannels(channels, pitchSemitones);
-    const wavBytes = encodeWavFloat32(channels, buf.sampleRate);
-    const url = URL.createObjectURL(
-      new Blob([new Uint8Array(wavBytes)], { type: "audio/wav" }),
-    );
-    if (processedUrlRef.current) URL.revokeObjectURL(processedUrlRef.current);
-    processedUrlRef.current = url;
-    processedUrlKeyRef.current = key;
-    return url;
+    // 같은 FX 키의 렌더링이 진행 중이면 공유한다 — 디바운스가 뚫려(느린 WSOLA가 140ms를
+    // 넘거나 드래그가 느릴 때) 렌더가 겹치면 pitchShift+WAV 인코딩을 중복 수행하고 서로의
+    // Blob URL을 revoke해 재생이 끊길 수 있다.
+    if (
+      processedUrlPromiseRef.current &&
+      processedUrlPromiseKeyRef.current === key
+    )
+      return processedUrlPromiseRef.current;
+    const promise = (async (): Promise<string | null> => {
+      try {
+        const buf = await ensureFullBuffer();
+        if (!buf || trackRef.current?.id !== t.id) return null;
+        let channels: Float32Array[] = [];
+        for (let ch = 0; ch < buf.numberOfChannels; ch++)
+          channels.push(buf.getChannelData(ch));
+        if (reversed) channels = reverseChannels(channels);
+        if (needsPitch) channels = pitchShiftChannels(channels, pitchSemitones);
+        const wavBytes = encodeWavFloat32(channels, buf.sampleRate);
+        const url = URL.createObjectURL(
+          new Blob([new Uint8Array(wavBytes)], { type: "audio/wav" }),
+        );
+        if (processedUrlRef.current)
+          URL.revokeObjectURL(processedUrlRef.current);
+        processedUrlRef.current = url;
+        processedUrlKeyRef.current = key;
+        return url;
+      } finally {
+        // 더 새로운(다른 키) 렌더링이 이 자리를 덮어썼다면 건드리지 않는다
+        if (processedUrlPromiseRef.current === promise) {
+          processedUrlPromiseRef.current = null;
+          processedUrlPromiseKeyRef.current = null;
+        }
+      }
+    })();
+    processedUrlPromiseRef.current = promise;
+    processedUrlPromiseKeyRef.current = key;
+    return promise;
   }
 
   // Waveform에서 선택 구간을 DAW로 드래그 — 구간이 없거나 너무 짧으면 아무 것도 하지 않음(안전 폴백)

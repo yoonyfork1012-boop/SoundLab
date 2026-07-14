@@ -12,6 +12,9 @@ const FRAME = 2048; // 한 번에 복사해 붙이는 프레임 길이
 const OVERLAP = 512; // 프레임끼리 크로스페이드하는 구간 길이
 const SEEK = 192; // 위상 정렬을 위해 탐색할 최대 샘플 수(±)
 const HOP_OUT = FRAME - OVERLAP; // 합성 홉
+// WSOLA 타임스트레치가 성립하는 최소 길이. 이보다 짧으면 겹칠 프레임이 부족해 타임스트레치를
+// 건너뛴다 — timeStretchChannels의 조기 반환과 pitchShiftChannels의 짧은 클립 폴백이 같은 기준을 쓴다.
+const MIN_STRETCH_LEN = FRAME * 2;
 
 // 상관도 계산은 전부 훑을 필요가 없다 — 샘플을 솎아내도 최적점 위치는 거의 같고,
 // 프레임당 비용이 수십 배 줄어 긴 파일에서도 체감 지연이 없다.
@@ -66,7 +69,7 @@ function timeStretchChannels(
   factor: number,
 ): Float32Array[] {
   const length = channels[0].length;
-  if (factor === 1 || length < FRAME * 2) return channels;
+  if (factor === 1 || length < MIN_STRETCH_LEN) return channels;
 
   const hopIn = HOP_OUT / factor;
   const outLength = Math.ceil(length * factor) + 2 * FRAME + OVERLAP;
@@ -146,7 +149,7 @@ export function pitchShiftChannels(
   // 샘플로 리샘플하면 factor배 빠르게 재생한 것과 같아 피치가 factor배 이동한다.
   // 트레이드오프: 이 경로에서는 길이가 factor만큼 바뀐다(피치↑ = 길이↓). 93ms 미만
   // 원샷에서는 테이프처럼 자연스러운 편이라 무음보다 낫다.
-  if (length < FRAME * 2) {
+  if (length < MIN_STRETCH_LEN) {
     if (length < 2) return channels; // 리샘플 불가 — 그대로 둔다
     const outLength = Math.max(1, Math.round(length / factor));
     return channels.map((data) => resampleLinear(data, outLength));

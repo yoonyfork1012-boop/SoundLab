@@ -936,6 +936,9 @@ export default function App(): JSX.Element {
     Boolean(activeCollection) && !shuffled && sort.key === null;
 
   const visibleTracks = useMemo(() => {
+    // 탭이 없는 빈 워크스페이스에서는 아무 트랙도 없다. 렌더뿐 아니라 여기서 막아야
+    // 재생 큐(next/prev)와 전체 선택(Ctrl+A)도 전체 라이브러리를 훑지 않는다.
+    if (!activeTab) return [];
     let base: Track[];
     if (activeCollection) {
       const byId = new Map(tracks.map((t) => [t.id, t]));
@@ -974,6 +977,7 @@ export default function App(): JSX.Element {
       : sortTracks(base, sort.key, sort.dir, { libraries, publisherRule });
     return base;
   }, [
+    activeTab,
     tracks,
     selectedFolder,
     activeCollection,
