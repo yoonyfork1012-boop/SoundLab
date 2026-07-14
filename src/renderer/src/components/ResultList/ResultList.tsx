@@ -1,5 +1,5 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { FixedSizeList, ListChildComponentProps, areEqual } from "react-window";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FixedSizeList, ListChildComponentProps } from "react-window";
 import AutoSizer from "react-virtualized-auto-sizer";
 import type { Collection, Library, PublisherRule, Track } from "@shared/types";
 import { colorForCategory } from "@shared/ucsCategories";
@@ -164,6 +164,59 @@ const HEADER_ICONS: Record<string, () => JSX.Element> = {
   channels: IconChannels,
 };
 
+// style(위치) 얕은 비교 — react-window는 위치가 바뀌면 새 style 객체를 넘긴다
+function styleDiffers(a: React.CSSProperties, b: React.CSSProperties): boolean {
+  if (a === b) return false;
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return true;
+  for (const k of ka) {
+    if ((a as Record<string, unknown>)[k] !== (b as Record<string, unknown>)[k])
+      return true;
+  }
+  return false;
+}
+
+// 기본 areEqual은 data(=itemData)를 참조 비교하는데, itemData는 매 렌더 새 객체라
+// 선택이 바뀔 때마다 보이는 모든 행이 리렌더된다. 이 comparator는 "이 행"에 실제로
+// 영향을 주는 값(트랙 정체성/선택/미리듣기/드래그오버 상태 + 공유 표시 설정)만 비교해,
+// 선택 변경 시 실제로 바뀐 2개 행만 리렌더되게 한다.
+function rowPropsAreEqual(
+  prev: ListChildComponentProps<RowData>,
+  next: ListChildComponentProps<RowData>,
+): boolean {
+  if (prev.index !== next.index) return false;
+  if (styleDiffers(prev.style, next.style)) return false;
+  const a = prev.data;
+  const b = next.data;
+  const ta = a.tracks[prev.index];
+  const tb = b.tracks[next.index];
+  if (ta !== tb) return false;
+  // 공유 표시 설정은 모두 메모이즈된 참조라 비교가 저렴하다
+  if (
+    a.columns !== b.columns ||
+    a.gridTemplate !== b.gridTemplate ||
+    a.totalWidth !== b.totalWidth ||
+    a.libraries !== b.libraries ||
+    a.publisherRule !== b.publisherRule ||
+    a.reorderable !== b.reorderable ||
+    a.onReorderStart !== b.onReorderStart ||
+    a.onReorderOver !== b.onReorderOver ||
+    a.onReorderDrop !== b.onReorderDrop ||
+    a.onReorderCancel !== b.onReorderCancel
+  )
+    return false;
+  const id = tb.id;
+  const selA = ta.id === a.selectedTrackId || (a.selectedIds?.has(id) ?? false);
+  const selB = tb.id === b.selectedTrackId || (b.selectedIds?.has(id) ?? false);
+  if (selA !== selB) return false;
+  if (a.previewedIds.has(id) !== b.previewedIds.has(id)) return false;
+  const dragA = a.reorderable && a.dragOverId === id;
+  const dragB = b.reorderable && b.dragOverId === id;
+  if (dragA !== dragB) return false;
+  return true;
+}
+
 const Row = memo(
   ({ index, style, data }: ListChildComponentProps<RowData>): JSX.Element => {
     const {
@@ -273,11 +326,11 @@ const Row = memo(
       </div>
     );
   },
-  areEqual,
+  rowPropsAreEqual,
 );
 Row.displayName = "Row";
 
-export default function ResultList({
+function ResultList({
   tracks,
   libraries,
   collections,
@@ -350,13 +403,16 @@ export default function ResultList({
   dragRowIdRef.current = dragRowId;
   dragOverIdRef.current = dragOverId;
 
-  function handleReorderStart(id: number): void {
+  // itemData가 안정적인 참조를 유지하도록 재정렬 핸들러를 useCallback으로 고정한다 —
+  // 그러지 않으면 매 렌더마다 새 함수가 생겨 rowPropsAreEqual의 핸들러 비교가 항상
+  // 불일치로 떨어져 모든 행이 리렌더된다.
+  const handleReorderStart = useCallback((id: number): void => {
     setDragRowId(id);
-  }
-  function handleReorderOver(id: number): void {
+  }, []);
+  const handleReorderOver = useCallback((id: number): void => {
     if (dragOverIdRef.current !== id) setDragOverId(id);
-  }
-  function handleReorderDrop(): void {
+  }, []);
+  const handleReorderDrop = useCallback((): void => {
     const fromId = dragRowIdRef.current;
     const toId = dragOverIdRef.current;
     setDragRowId(null);
@@ -370,11 +426,11 @@ export default function ResultList({
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
     onReorder(next);
-  }
-  function handleReorderCancel(): void {
+  }, [onReorder]);
+  const handleReorderCancel = useCallback((): void => {
     setDragRowId(null);
     setDragOverId(null);
-  }
+  }, []);
 
   useEffect(() => {
     if (!rowMenu) return;
@@ -543,23 +599,42 @@ export default function ResultList({
     return () => ro.disconnect();
   }, []);
 
-  const itemData: RowData = {
-    tracks,
-    selectedTrackId,
-    selectedIds,
-    columns,
-    gridTemplate,
-    totalWidth,
-    libraries,
-    publisherRule,
-    previewedIds,
-    reorderable,
-    dragOverId,
-    onReorderStart: handleReorderStart,
-    onReorderOver: handleReorderOver,
-    onReorderDrop: handleReorderDrop,
-    onReorderCancel: handleReorderCancel,
-  };
+  const itemData: RowData = useMemo(
+    () => ({
+      tracks,
+      selectedTrackId,
+      selectedIds,
+      columns,
+      gridTemplate,
+      totalWidth,
+      libraries,
+      publisherRule,
+      previewedIds,
+      reorderable,
+      dragOverId,
+      onReorderStart: handleReorderStart,
+      onReorderOver: handleReorderOver,
+      onReorderDrop: handleReorderDrop,
+      onReorderCancel: handleReorderCancel,
+    }),
+    [
+      tracks,
+      selectedTrackId,
+      selectedIds,
+      columns,
+      gridTemplate,
+      totalWidth,
+      libraries,
+      publisherRule,
+      previewedIds,
+      reorderable,
+      dragOverId,
+      handleReorderStart,
+      handleReorderOver,
+      handleReorderDrop,
+      handleReorderCancel,
+    ],
+  );
 
   return (
     <div
@@ -941,3 +1016,6 @@ export default function ResultList({
     </div>
   );
 }
+
+// App이 다른 상태 변경으로 리렌더될 때 props가 그대로면 ResultList 본문 재실행을 건너뛴다
+export default memo(ResultList);

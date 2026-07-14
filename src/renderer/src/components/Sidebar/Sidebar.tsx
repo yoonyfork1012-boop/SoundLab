@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   Collection,
   Library,
@@ -126,7 +126,12 @@ export default function Sidebar({
       return next;
     });
   }
-  const starredCount = tracks.filter((t) => t.starred).length;
+  // 수십만 트랙 전체를 매 렌더마다 훑지 않도록 메모이즈 — Sidebar는 트랙 선택 때마다
+  // 리렌더되는데, 이 filter가 라이브러리 전체(수십만)를 돌아 선택 시 버벅임의 주원인이었다.
+  const starredCount = useMemo(
+    () => tracks.filter((t) => t.starred).length,
+    [tracks],
+  );
   // Local 자체를 클릭하면(=최상위 진입점) 폴더/컬렉션/즐겨찾기 선택이 모두 해제된 Home 상태
   const atLocalRoot =
     !selectedFolder && selectedCollection == null && !showStarredOnly;

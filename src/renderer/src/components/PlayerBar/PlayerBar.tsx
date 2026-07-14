@@ -616,6 +616,9 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   const [loop, setLoop] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
+  // 오디오 로드 실패 사유를 사용자에게 보여준다 — 예전에는 console.warn으로만 삼켜져
+  // "클릭해도 소리도, 아무 표시도 없는" 상태였다. 성공/트랙 변경 시 초기화된다.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [volume, setVolume] = useState(0.85);
   // 뮤트는 볼륨 값을 건드리지 않는다 — 해제하면 원래 크기로 돌아와야 한다
   const [muted, setMuted] = useState(false);
@@ -1169,9 +1172,14 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     if (routeRef.current) return routeRef.current;
     const media = wavesurferRef.current?.getMediaElement();
     if (!media) return null;
+    let ctx: AudioContext | null = null;
+    let src: MediaElementAudioSourceNode | null = null;
     try {
-      const ctx = new AudioContext();
-      const src = ctx.createMediaElementSource(media);
+      ctx = new AudioContext();
+      // createMediaElementSource는 media 요소당 딱 한 번만 호출 가능하고, 호출하는 순간부터
+      // media의 소리는 기본 출력 대신 이 그래프로만 흐른다. 따라서 이 아래 그래프 구성이
+      // 실패하면 media는 어디에도 안 닿아 "재생은 되는데 소리만 없는" 영구 무음이 된다.
+      src = ctx.createMediaElementSource(media);
       const splitter = ctx.createChannelSplitter(2);
       const g0 = ctx.createGain();
       const g1 = ctx.createGain();
@@ -1191,6 +1199,18 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       routeRef.current = { ctx, g0, g1, merger, analyserL, analyserR };
       return routeRef.current;
     } catch {
+      // 그래프 구성 실패 — 하지만 createMediaElementSource가 이미 성공했다면 media는 기본
+      // 출력이 끊긴 상태다. 소리가 사라지지 않도록 source를 destination에 직접 연결(폴백).
+      // 분석 탭(채널 미터)은 못 쓰지만 재생 자체는 반드시 들리게 보장한다.
+      if (src && ctx) {
+        try {
+          src.connect(ctx.destination);
+        } catch {
+          /* 이미 연결돼 있으면 무시 */
+        }
+      } else {
+        void ctx?.close();
+      }
       return null;
     }
   }
@@ -1417,6 +1437,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
 
     setCurrent(0);
     setDuration(0);
+    setLoadError(null);
 
     clearRegionSelection(false);
     setMarkers(track?.markers ?? []);
@@ -1631,7 +1652,11 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       } catch (err) {
         if (!cancelled && token === loadTokenRef.current) {
           const msg = (err as Error)?.message ?? "";
-          if (!/abort/i.test(msg)) console.warn("audio load failed:", msg);
+          // AbortError는 트랙을 빠르게 넘길 때의 정상적인 취소이므로 무시한다.
+          if (!/abort/i.test(msg)) {
+            console.warn("audio load failed:", msg);
+            setLoadError(msg || "알 수 없는 오류");
+          }
         }
       }
     };
@@ -2040,6 +2065,11 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         )}
         {track && !ch1 && !ch2 && (
           <div className="player__wave-empty">Muted</div>
+        )}
+        {track && loadError && (
+          <div className="player__wave-error" title={loadError}>
+            ⚠ 재생 불가: {loadError}
+          </div>
         )}
         {regionBounds &&
           duration > 0 &&

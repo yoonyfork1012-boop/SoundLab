@@ -410,16 +410,25 @@ export default function App(): JSX.Element {
       setCollections(mockCollections);
       return;
     }
+    let notified = false;
+    // notifyReady를 setState와 같은 동기 틱에서 부르면, React가 로드된 데이터를 커밋/페인트하기
+    // 전에 메인이 창을 노출해 "빈 초기 화면 → 뒤늦게 채워짐" 깜빡임이 생긴다. 데이터 setState가
+    // 실제 프레임으로 그려진 뒤(double rAF = 첫 페인트 이후) 신호를 보내 채워진 상태로 노출되게 한다.
+    const notifyAfterPaint = (): void => {
+      if (notified) return;
+      notified = true;
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => window.api?.notifyReady()),
+      );
+    };
     const loadTracksP = window.api?.loadAll().then(({ libraries, tracks }) => {
       setLibraries(libraries);
       setTracks(tracks);
     });
     const loadCollectionsP = window.api?.getCollections().then(setCollections);
     // 메인 프로세스의 스플래시 창은 이 초기 로드가 끝날 때까지 유지된다 — 실패하더라도
-    // 스플래시에 갇히지 않도록 finally에서 알린다.
-    Promise.all([loadTracksP, loadCollectionsP]).finally(() => {
-      window.api?.notifyReady();
-    });
+    // 스플래시에 갇히지 않도록 finally에서 알린다(단, 페인트 이후에).
+    Promise.all([loadTracksP, loadCollectionsP]).finally(notifyAfterPaint);
   }, []);
 
   function handleCreateCollection(): void {

@@ -258,11 +258,12 @@ if (!gotLock) {
     });
 
     // 안전장치: 렌더러가 어떤 이유로든 준비 신호를 못 보내는 경우(예외 등) 무한정
-    // 스플래시에 갇히지 않도록 일정 시간 후에는 그냥 보여준다.
+    // 스플래시에 갇히지 않도록 일정 시간 후에는 그냥 보여준다. 대용량 라이브러리(수십만 트랙)는
+    // loadAll이 길어질 수 있어, 데이터가 채워지기 전 빈 화면이 강제 노출되지 않도록 넉넉히 둔다.
     setTimeout(() => {
       rendererReady = true;
       tryReveal();
-    }, 10000);
+    }, 30000);
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {

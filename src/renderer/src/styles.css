@@ -1818,6 +1818,23 @@ button {
   font-size: 12px;
   pointer-events: none;
 }
+/* 오디오 로드 실패 시 파형 위에 사유를 표시 — 조용한 무음 대신 원인을 보여준다 */
+.player__wave-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 16px;
+  color: #e29a9a;
+  font-size: 12px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
 /* Waveform 구간 ?�택 ???��??�는 DAW ?�래�??�들 */
 .player__region-drag {
   position: absolute;
