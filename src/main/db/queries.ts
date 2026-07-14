@@ -109,6 +109,8 @@ export function upsertTrack(track: {
     `INSERT INTO tracks (library_id, file_path, filename, duration_ms, sample_rate, bit_depth, channels, category, subcategory, artwork_path, artwork_source, mtime_ms, file_size, publisher, is_float, file_hash, added_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(file_path) DO UPDATE SET
+       library_id = excluded.library_id,
+       filename = excluded.filename,
        duration_ms = excluded.duration_ms,
        sample_rate = excluded.sample_rate,
        bit_depth = excluded.bit_depth,
@@ -301,6 +303,26 @@ export function computeSimilarityKeys(libraryId: number): number {
   }
   persistDb();
   return tracks.length;
+}
+
+// 트랙이 하나도 남지 않은 라이브러리를 정리한다. 폴더를 겹쳐 추가하면 겹치는 파일이
+// 새로 추가한 라이브러리로 재귀속(upsertTrack의 ON CONFLICT library_id 갱신)되면서
+// 예전 라이브러리가 빈 껍데기로 남을 수 있는데, 그것을 제거하기 위함.
+// exceptLibraryId(방금 스캔한 라이브러리)는 오디오가 없는 폴더를 방금 추가했거나
+// 네트워크 드라이브가 일시적으로 비어 보이는 경우 사용자의 폴더가 사라지지 않도록 보호한다.
+export function deleteEmptyLibraries(exceptLibraryId?: number): number[] {
+  const ids = selectRows(
+    `SELECT id FROM libraries
+     WHERE id NOT IN (SELECT DISTINCT library_id FROM tracks WHERE library_id IS NOT NULL)`,
+  )
+    .map((row) => row.id as number)
+    .filter((id) => id !== exceptLibraryId);
+  const db = getDb();
+  for (const id of ids) {
+    db.run("DELETE FROM libraries WHERE id = ?", [id]);
+  }
+  if (ids.length > 0) persistDb();
+  return ids;
 }
 
 export function deleteLibrary(libraryId: number): void {

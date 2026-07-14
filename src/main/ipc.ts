@@ -23,6 +23,7 @@ import {
   getAllLibraries,
   getAllTracks,
   deleteLibrary,
+  deleteEmptyLibraries,
   toggleStarred,
   updateLastPlayed,
   getCollections,
@@ -72,6 +73,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       mainWindow.webContents.send("library:scanProgress", progress);
     });
     startWatching(library.id, library.rootPath, mainWindow);
+    // 폴더를 겹쳐 추가해 파일이 이 라이브러리로 재귀속되면서 비게 된 예전 라이브러리 정리
+    for (const removedId of deleteEmptyLibraries(library.id))
+      stopWatching(removedId);
     return { libraries: getAllLibraries(), tracks: getAllTracks() };
   });
 
@@ -121,6 +125,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       mainWindow.webContents.send("library:scanProgress", progress);
     });
     startWatching(library.id, library.rootPath, mainWindow);
+    for (const removedId of deleteEmptyLibraries(library.id))
+      stopWatching(removedId);
     return { libraries: getAllLibraries(), tracks: getAllTracks() };
   });
 
