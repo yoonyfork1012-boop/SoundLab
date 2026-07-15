@@ -6,6 +6,7 @@ import type {
   TrackMetadataPatch,
   WatchStatus,
 } from "../shared/types";
+import type { LibraryTree } from "../shared/folderTree";
 declare const api: {
   selectFolder: () => Promise<string | null>;
   isDirectory: (filePath: string) => Promise<boolean>;
@@ -17,6 +18,10 @@ declare const api: {
   loadAll: () => Promise<{
     libraries: Library[];
     tracks: Track[];
+  }>;
+  loadTree: () => Promise<{
+    libraries: Library[];
+    trees: LibraryTree[];
   }>;
   notifyReady: () => void;
   removeLibrary: (libraryId: number) => Promise<{

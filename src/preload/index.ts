@@ -7,6 +7,7 @@ import type {
   TrackMetadataPatch,
   WatchStatus,
 } from "../shared/types";
+import type { LibraryTree } from "../shared/folderTree";
 
 const api = {
   selectFolder: (): Promise<string | null> =>
@@ -24,6 +25,10 @@ const api = {
 
   loadAll: (): Promise<{ libraries: Library[]; tracks: Track[] }> =>
     ipcRenderer.invoke("app:loadAll"),
+
+  // 시작 시 사이드바 폴더 트리만 먼저 받아 즉시 그린다(전체 트랙은 loadAll로 백그라운드 로드).
+  loadTree: (): Promise<{ libraries: Library[]; trees: LibraryTree[] }> =>
+    ipcRenderer.invoke("app:loadTree"),
 
   // 초기 데이터 로드가 끝났음을 메인 프로세스에 알려 스플래시 창을 닫고 메인 창을 보여주게 함
   notifyReady: (): void => ipcRenderer.send("app:renderer-ready"),

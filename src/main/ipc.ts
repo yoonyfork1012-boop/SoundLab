@@ -22,6 +22,7 @@ import {
 import {
   getAllLibraries,
   getAllTracks,
+  getTrackPathsByLibrary,
   deleteLibrary,
   deleteEmptyLibraries,
   toggleStarred,
@@ -49,6 +50,7 @@ import {
   updateTrackMarkers,
 } from "./db/queries";
 import type { ScanProgress, TrackMetadataPatch } from "../shared/types";
+import { buildFolderTree, type LibraryTree } from "../shared/folderTree";
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle("dialog:selectFolder", async () => {
@@ -82,6 +84,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 앱 시작 시 저장돼 있던 전체 라이브러리/트랙 로드
   ipcMain.handle("app:loadAll", () => {
     return { libraries: getAllLibraries(), tracks: getAllTracks() };
+  });
+
+  // 시작 시 사이드바를 즉시 그리기 위한 경량 로드 — 전체 트랙(모든 컬럼, 수백 MB)을 넘기지
+  // 않고 file_path만으로 폴더 트리를 메인에서 만들어 보낸다. 렌더러는 이 트리를 먼저 띄우고,
+  // 무거운 전체 트랙 로드(app:loadAll)는 백그라운드로 이어서 수행한다.
+  ipcMain.handle("app:loadTree", () => {
+    const libraries = getAllLibraries();
+    const pathsByLib = getTrackPathsByLibrary();
+    const trees: LibraryTree[] = libraries.map((library) => ({
+      library,
+      node: buildFolderTree(
+        (pathsByLib.get(library.id) ?? []).map((filePath) => ({ filePath })),
+        library.rootPath,
+      ),
+    }));
+    return { libraries, trees };
   });
 
   ipcMain.handle("library:remove", (_event, libraryId: number) => {

@@ -35,6 +35,7 @@ import {
   buildFolderTree,
   tracksUnder,
   type FolderNode,
+  type LibraryTree,
 } from "./lib/folderTree";
 import { applyAccent, loadAccent, saveAccent } from "./lib/theme";
 import { loadJSON, loadNumber, saveJSON, saveNumber } from "./lib/uiState";
@@ -75,6 +76,11 @@ function newTab(): WorkspaceTab {
 export default function App(): JSX.Element {
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [tracks, setTracks] = useState<Track[]>([]);
+  // 시작 시 메인이 만들어 보내주는 사이드바 폴더 트리 — 전체 트랙(tracks)이 백그라운드로
+  // 다 로드되기 전까지 사이드바를 즉시 그리는 데 쓴다. tracks가 채워지면 그때부터는
+  // tracks에서 파생한 트리(watcher 추가/삭제까지 반영)를 쓰고 이 값은 무시된다.
+  const [serverTrees, setServerTrees] = useState<LibraryTree[]>([]);
+  const [tracksLoaded, setTracksLoaded] = useState(false);
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null);
   const [search, setSearch] = useState("");
   const [subSearch, setSubSearch] = useState("");
@@ -421,14 +427,26 @@ export default function App(): JSX.Element {
         requestAnimationFrame(() => window.api?.notifyReady()),
       );
     };
-    const loadTracksP = window.api?.loadAll().then(({ libraries, tracks }) => {
+    // 1) 사이드바 폴더 트리를 먼저 받아 즉시 그린다(경량 페이로드). 이게 끝나면 바로 창을
+    //    노출하므로, 수십만 트랙 라이브러리에서도 시작이 몇 초 안에 끝난 것처럼 보인다.
+    const loadTreeP = window.api
+      ?.loadTree()
+      .then(({ libraries, trees }) => {
+        setLibraries(libraries);
+        setServerTrees(trees);
+      })
+      .catch(() => {});
+    const loadCollectionsP = window.api?.getCollections().then(setCollections);
+    // 트리 + 컬렉션(둘 다 가벼움)이 그려지면 창을 노출한다 — 무거운 전체 트랙 로드를 기다리지 않는다.
+    Promise.all([loadTreeP, loadCollectionsP]).finally(notifyAfterPaint);
+
+    // 2) 전체 트랙(리스트·검색·정렬용, 무거움)은 백그라운드로 이어서 로드한다. 완료되면
+    //    tracks가 채워지고 tracksLoaded가 true가 되어 사이드바 트리가 tracks 파생 버전으로 전환된다.
+    void window.api?.loadAll().then(({ libraries, tracks }) => {
       setLibraries(libraries);
       setTracks(tracks);
+      setTracksLoaded(true);
     });
-    const loadCollectionsP = window.api?.getCollections().then(setCollections);
-    // 메인 프로세스의 스플래시 창은 이 초기 로드가 끝날 때까지 유지된다 — 실패하더라도
-    // 스플래시에 갇히지 않도록 finally에서 알린다(단, 페인트 이후에).
-    Promise.all([loadTracksP, loadCollectionsP]).finally(notifyAfterPaint);
   }, []);
 
   function handleCreateCollection(): void {
@@ -658,17 +676,22 @@ export default function App(): JSX.Element {
   }
 
   // ?�이브러리별 ?�더 ?�리
-  const trees = useMemo(
+  // 전체 트랙이 로드되기 전에는 메인이 만들어 준 트리(serverTrees)를 그대로 쓰고, 로드가
+  // 끝나면 tracks에서 파생한 트리로 전환한다 — 후자는 watcher의 추가/삭제까지 실시간 반영한다.
+  const derivedTrees = useMemo(
     () =>
-      libraries.map((lib) => ({
-        library: lib,
-        node: buildFolderTree(
-          tracks.filter((t) => t.libraryId === lib.id),
-          lib.rootPath,
-        ),
-      })),
-    [libraries, tracks],
+      tracksLoaded
+        ? libraries.map((lib) => ({
+            library: lib,
+            node: buildFolderTree(
+              tracks.filter((t) => t.libraryId === lib.id),
+              lib.rootPath,
+            ),
+          }))
+        : null,
+    [libraries, tracks, tracksLoaded],
   );
+  const trees = derivedTrees ?? serverTrees;
   // 루트(진입) ?�면 그리?�에 보일 ?�더 = 모든 ?�이브러리의 최상???�더
   const rootFolders = useMemo(
     () => trees.flatMap((t) => t.node.children),
@@ -1509,9 +1532,24 @@ export default function App(): JSX.Element {
                   <span className="breadcrumb__count">
                     {showGrid
                       ? `${rootFolders.length} folders`
-                      : `${visibleTracks.length} sounds`}
+                      : !tracksLoaded
+                        ? "사운드 로딩 중…"
+                        : `${visibleTracks.length} sounds`}
                   </span>
                 </div>
+
+                {/* 폴더 트리는 즉시 뜨지만 전체 트랙은 백그라운드로 로드된다 — 아직 로드가
+                    끝나지 않아 리스트가 비어 보일 때, 사용자가 "폴더가 비었다"고 오해하지
+                    않도록 로딩 중임을 알린다. */}
+                {!tracksLoaded && !showGrid && visibleTracks.length === 0 && (
+                  <div className="empty-state">
+                    <div className="empty-state__big">사운드 로딩 중…</div>
+                    <div>
+                      폴더는 준비됐어요. 전체 사운드 목록을 불러오는 중입니다 —
+                      곧 이 폴더의 사운드가 표시됩니다.
+                    </div>
+                  </div>
+                )}
 
                 {showGrid ? (
                   <FolderGrid

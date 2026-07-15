@@ -243,8 +243,35 @@ export function hasTrackFilePath(filePath: string): boolean {
   );
 }
 
+// library_id가 실재하는 라이브러리를 가리키는 트랙만 반환한다. 과거에 라이브러리 행만
+// 사라지고 트랙이 남은 "고아 트랙"은 사이드바 어디에도 뜨지 않으면서 로딩 페이로드만
+// 키우므로 여기서 제외한다(비파괴적 — DB에는 그대로 남는다).
 export function getAllTracks(): Track[] {
-  return selectRows("SELECT * FROM tracks ORDER BY filename").map(rowToTrack);
+  return selectRows(
+    "SELECT * FROM tracks WHERE library_id IN (SELECT id FROM libraries) ORDER BY filename",
+  ).map(rowToTrack);
+}
+
+// 사이드바 폴더 트리 구성에만 필요한 최소 데이터(library_id, file_path)를 라이브러리별로
+// 모아 반환한다. 전체 트랙(모든 컬럼)을 렌더러로 넘기는 것보다 페이로드가 수십 배 작아
+// 시작 시 사이드바를 즉시 그릴 수 있다. getAsObject 대신 exec를 써 대용량에서도 빠르다.
+export function getTrackPathsByLibrary(): Map<number, string[]> {
+  const res = getDb().exec(
+    "SELECT library_id, file_path FROM tracks WHERE library_id IN (SELECT id FROM libraries)",
+  );
+  const byLib = new Map<number, string[]>();
+  if (!res.length) return byLib;
+  const rows = res[0].values;
+  for (const [libId, filePath] of rows) {
+    const id = libId as number;
+    let arr = byLib.get(id);
+    if (!arr) {
+      arr = [];
+      byLib.set(id, arr);
+    }
+    arr.push(filePath as string);
+  }
+  return byLib;
 }
 
 function rowToLibrary(row: SqlRow): Library {

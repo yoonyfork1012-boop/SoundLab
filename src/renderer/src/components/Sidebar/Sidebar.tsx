@@ -6,15 +6,13 @@ import type {
   Track,
   WatchStatus,
 } from "@shared/types";
-import type { FolderNode } from "../../lib/folderTree";
 import { loadBool, loadJSON, saveBool, saveJSON } from "../../lib/uiState";
 import FolderTree from "./FolderTree";
 import IndexingIndicator from "../IndexingIndicator/IndexingIndicator";
+import type { LibraryTree } from "../../lib/folderTree";
 
-export interface LibraryTree {
-  library: Library;
-  node: FolderNode;
-}
+// 트리 타입은 메인/렌더러 공유 모듈에서 온다 — 기존 임포트 호환을 위해 재-export.
+export type { LibraryTree };
 
 const EXPANDED_KEY = "soundlib.tree.expanded";
 const LOCAL_OPEN_KEY = "soundlib.localOpen";
