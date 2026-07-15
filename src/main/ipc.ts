@@ -53,6 +53,7 @@ import {
   updateTrackLoopRegion,
   updateTrackMarkers,
 } from "./db/queries";
+import { runExclusive } from "./db/txLock";
 import type { ScanProgress, TrackMetadataPatch } from "../shared/types";
 import { buildFolderTree, type LibraryTree } from "../shared/folderTree";
 
@@ -246,8 +247,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // folderPath는 트리 노드의 정규화 경로(슬래시). 갱신된 목록을 돌려준다.
   ipcMain.handle(
     "folder:remove",
-    (_event, libraryId: number, folderPath: string) => {
-      removeTracksUnderFolder(libraryId, folderPath);
+    async (_event, libraryId: number, folderPath: string) => {
+      // 트랜잭션을 여는 쓰기라 진행 중인 스캔과 겹치면 안 된다 — 같은 큐로 직렬화한다.
+      await runExclusive(() => removeTracksUnderFolder(libraryId, folderPath));
       return { libraries: getAllLibraries(), tracks: getAllTracks() };
     },
   );
@@ -274,7 +276,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         throw new Error("A folder with that name already exists");
 
       await rename(oldRealFolder, newRealFolder);
-      updateFolderTrackPaths(rows, oldRealFolder, newRealFolder);
+      // 트랜잭션을 여는 쓰기라 진행 중인 스캔과 겹치면 안 된다 — 같은 큐로 직렬화한다.
+      // (디스크 rename은 느린 I/O라 큐 밖에서 먼저 끝낸다.)
+      await runExclusive(() =>
+        updateFolderTrackPaths(rows, oldRealFolder, newRealFolder),
+      );
       return {
         libraries: getAllLibraries(),
         tracks: getAllTracks(),

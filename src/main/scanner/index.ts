@@ -13,6 +13,7 @@ import {
   upsertLibrary,
   upsertTrack,
 } from "../db/queries";
+import { runExclusive } from "../db/txLock";
 import { dirname } from "path";
 import { categoryFromFilename } from "../../shared/ucsCatId";
 import { classifySound } from "../../shared/soundTaxonomy";
@@ -262,57 +263,63 @@ export async function scanLibrary(
   const presentFilePaths = new Set<string>();
   const dirCoverCache = new Map<string, string | null>();
 
-  beginScanBatch();
-  try {
-    for (let i = 0; i < files.length; i++) {
-      const filePath = files[i];
-      presentFilePaths.add(filePath);
-      try {
-        let fileStat: { mtimeMs: number; size: number } | null = null;
+  // 스캔은 BEGIN 상태로 파일마다 await(stat/parse/hash)를 넘기며 트랜잭션을 오래 열어둔다.
+  // 그 사이 다른 트랜잭션 쓰기(다른 스캔, 폴더 제거/이름변경)가 끼어들면 중첩 BEGIN 실패 →
+  // 그쪽 ROLLBACK이 이 스캔의 트랜잭션을 닫아 endScanBatch의 COMMIT이 터진다. 트랜잭션을 여는
+  // 쓰기들을 runExclusive 큐로 직렬화해 절대 겹치지 않게 한다.
+  await runExclusive(async () => {
+    beginScanBatch();
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const filePath = files[i];
+        presentFilePaths.add(filePath);
         try {
-          const info = await stat(filePath);
-          fileStat = { mtimeMs: info.mtimeMs, size: info.size };
-        } catch {
-          /* stat 실패 시 변경 여부를 알 수 없으므로 항상 재파싱 */
-        }
-        const prev = existingStats.get(filePath);
-        const unchanged =
-          fileStat != null &&
-          prev != null &&
-          prev.mtimeMs === fileStat.mtimeMs &&
-          prev.fileSize === fileStat.size;
-        if (!unchanged) {
-          await parseAndUpsert(
+          let fileStat: { mtimeMs: number; size: number } | null = null;
+          try {
+            const info = await stat(filePath);
+            fileStat = { mtimeMs: info.mtimeMs, size: info.size };
+          } catch {
+            /* stat 실패 시 변경 여부를 알 수 없으므로 항상 재파싱 */
+          }
+          const prev = existingStats.get(filePath);
+          const unchanged =
+            fileStat != null &&
+            prev != null &&
+            prev.mtimeMs === fileStat.mtimeMs &&
+            prev.fileSize === fileStat.size;
+          if (!unchanged) {
+            await parseAndUpsert(
+              filePath,
+              library.id,
+              rootPath,
+              loggedErrorRef,
+              dirCoverCache,
+              fileStat,
+            );
+          }
+        } catch (err) {
+          // 파일 한 개의 처리 실패로 전체 스캔(트랜잭션)이 롤백돼 이미 스캔된 다른 파일까지
+          // 통째로 사라지면 안 되므로, 개별 파일 단위로 격리해 로그만 남기고 계속 진행한다.
+          console.error(
+            "scan: skipping file after error:",
             filePath,
-            library.id,
-            rootPath,
-            loggedErrorRef,
-            dirCoverCache,
-            fileStat,
+            (err as Error)?.message,
           );
         }
-      } catch (err) {
-        // 파일 한 개의 처리 실패로 전체 스캔(트랜잭션)이 롤백돼 이미 스캔된 다른 파일까지
-        // 통째로 사라지면 안 되므로, 개별 파일 단위로 격리해 로그만 남기고 계속 진행한다.
-        console.error(
-          "scan: skipping file after error:",
-          filePath,
-          (err as Error)?.message,
-        );
+        onProgress?.({
+          phase: "parsing",
+          scanned: i + 1,
+          total: files.length,
+          currentFile: filePath.split(/[\\/]/).pop() ?? filePath,
+        });
       }
-      onProgress?.({
-        phase: "parsing",
-        scanned: i + 1,
-        total: files.length,
-        currentFile: filePath.split(/[\\/]/).pop() ?? filePath,
-      });
+      deleteMissingTracks(library.id, presentFilePaths);
+      endScanBatch();
+    } catch (err) {
+      rollbackScanBatch();
+      throw err;
     }
-    deleteMissingTracks(library.id, presentFilePaths);
-    endScanBatch();
-  } catch (err) {
-    rollbackScanBatch();
-    throw err;
-  }
+  });
 
   return library;
 }
@@ -329,46 +336,50 @@ export async function scanNewFilesOnly(
   const loggedErrorRef = { v: false };
   const dirCoverCache = new Map<string, string | null>();
 
-  beginScanBatch();
-  try {
-    for (let i = 0; i < newFiles.length; i++) {
-      const filePath = newFiles[i];
-      try {
-        let fileStat: { mtimeMs: number; size: number } | null = null;
+  // scanLibrary와 동일 — 트랜잭션을 여는 스캔을 runExclusive로 직렬화해 다른 트랜잭션 쓰기와
+  // 겹치지 않게 한다(겹치면 스캔의 COMMIT이 "no transaction is active"로 터진다).
+  await runExclusive(async () => {
+    beginScanBatch();
+    try {
+      for (let i = 0; i < newFiles.length; i++) {
+        const filePath = newFiles[i];
         try {
-          const info = await stat(filePath);
-          fileStat = { mtimeMs: info.mtimeMs, size: info.size };
-        } catch {
-          /* noop */
+          let fileStat: { mtimeMs: number; size: number } | null = null;
+          try {
+            const info = await stat(filePath);
+            fileStat = { mtimeMs: info.mtimeMs, size: info.size };
+          } catch {
+            /* noop */
+          }
+          await parseAndUpsert(
+            filePath,
+            libraryId,
+            rootPath,
+            loggedErrorRef,
+            dirCoverCache,
+            fileStat,
+          );
+        } catch (err) {
+          // scanLibrary와 동일한 이유로 파일 단위 실패를 격리한다.
+          console.error(
+            "scanNewFilesOnly: skipping file after error:",
+            filePath,
+            (err as Error)?.message,
+          );
         }
-        await parseAndUpsert(
-          filePath,
-          libraryId,
-          rootPath,
-          loggedErrorRef,
-          dirCoverCache,
-          fileStat,
-        );
-      } catch (err) {
-        // scanLibrary와 동일한 이유로 파일 단위 실패를 격리한다.
-        console.error(
-          "scanNewFilesOnly: skipping file after error:",
-          filePath,
-          (err as Error)?.message,
-        );
+        onProgress?.({
+          phase: "parsing",
+          scanned: i + 1,
+          total: newFiles.length,
+          currentFile: filePath.split(/[\\/]/).pop() ?? filePath,
+        });
       }
-      onProgress?.({
-        phase: "parsing",
-        scanned: i + 1,
-        total: newFiles.length,
-        currentFile: filePath.split(/[\\/]/).pop() ?? filePath,
-      });
+      endScanBatch();
+    } catch (err) {
+      rollbackScanBatch();
+      throw err;
     }
-    endScanBatch();
-  } catch (err) {
-    rollbackScanBatch();
-    throw err;
-  }
+  });
 
   return newFiles.length;
 }
