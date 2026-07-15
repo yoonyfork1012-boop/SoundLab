@@ -9,7 +9,9 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
-    "pack:win": "electron-vite build && electron-builder --win --config electron-builder.yml"
+    "pack:win": "electron-vite build && electron-builder --win --config electron-builder.yml",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "music-metadata": "^10.6.4",
@@ -31,6 +33,7 @@
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
     "typescript": "^5.6.3",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8"
   }
 }
