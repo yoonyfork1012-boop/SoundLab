@@ -506,8 +506,11 @@ export default function App(): JSX.Element {
         requestAnimationFrame(() => window.api?.notifyReady()),
       );
     };
-    // 1) 사이드바 폴더 트리를 먼저 받아 즉시 그린다(경량 페이로드). 이게 끝나면 바로 창을
-    //    노출하므로, 수십만 트랙 라이브러리에서도 시작이 몇 초 안에 끝난 것처럼 보인다.
+    // 사이드바 폴더 트리 + 컬렉션(경량). 예전에는 이 둘만 그려지면 곧바로 창을 노출하고
+    // 무거운 전체 트랙 로드는 백그라운드로 미뤘는데, 그러면 창이 열린 직후 loadAll이 도착해
+    // 519k 트랙에서 파생되는 인덱스(trackKeys/searchBlobs/폴더트리)를 메인 스레드에서 한꺼번에
+    // 동기 계산하면서 수 초간 프리즈(= 켜진 직후 "버벅임")가 발생했다. 이제는 아래 loadAll까지
+    // 모두 끝나고 그 무거운 계산이 실제로 렌더·페인트된 뒤에야 창을 노출한다.
     const loadTreeP = window.api
       ?.loadTree()
       .then(({ libraries, trees }) => {
@@ -516,20 +519,28 @@ export default function App(): JSX.Element {
       })
       .catch(() => {});
     const loadCollectionsP = window.api?.getCollections().then(setCollections);
-    // 트리 + 컬렉션(둘 다 가벼움)이 그려지면 창을 노출한다 — 무거운 전체 트랙 로드를 기다리지 않는다.
-    Promise.all([loadTreeP, loadCollectionsP]).finally(notifyAfterPaint);
 
-    // 2) 전체 트랙(리스트·검색·정렬용, 무거움)은 백그라운드로 이어서 로드한다. 완료되면
-    //    tracks가 채워지고 tracksLoaded가 true가 되어 사이드바 트리가 tracks 파생 버전으로 전환된다.
-    void window.api?.loadAll().then(({ libraries, tracks }) => {
-      // 로드가 시작된 뒤 사용자가 라이브러리를 변경했다면(세대 != 0) 이 오래된 스냅샷은 버린다.
-      // 트랙 리스트는 loadAll 완료 전까지 비어 있어 트랙 단위 변경은 이 구간에 불가능하므로,
-      // 여기서 보호해야 하는 건 사이드바에서 일으킨 라이브러리 단위 변경뿐이다.
-      if (serverStateGenRef.current !== 0) return;
-      setLibraries(libraries);
-      setTracks(tracks);
-      setTracksLoaded(true);
-    });
+    // 전체 트랙(리스트·검색·정렬용, 무거움)까지 로드해 tracks를 채우면, tracksLoaded가 true가
+    // 되어 사이드바 트리가 tracks 파생 버전으로 전환되고 trackKeys/searchBlobs 인덱스가 만들어진다.
+    const loadAllP = window.api
+      ?.loadAll()
+      .then(({ libraries, tracks }) => {
+        // 로드가 시작된 뒤 사용자가 라이브러리를 변경했다면(세대 != 0) 이 오래된 스냅샷은 버린다.
+        // 트랙 리스트는 loadAll 완료 전까지 비어 있어 트랙 단위 변경은 이 구간에 불가능하므로,
+        // 여기서 보호해야 하는 건 사이드바에서 일으킨 라이브러리 단위 변경뿐이다.
+        if (serverStateGenRef.current !== 0) return;
+        setLibraries(libraries);
+        setTracks(tracks);
+        setTracksLoaded(true);
+      })
+      .catch(() => {});
+
+    // 트리·컬렉션·전체 트랙이 모두 로드되고(→ 무거운 파생 인덱스 계산까지 이 렌더에 포함), 그
+    // 렌더가 페인트된 뒤(double rAF)에만 창을 노출한다. 그래야 창이 열린 순간 이미 인덱싱이 끝나
+    // 있어 버벅임이 없다. 어느 하나가 실패해도 finally로 반드시 노출한다(스플래시에 갇히지 않게).
+    Promise.all([loadTreeP, loadCollectionsP, loadAllP]).finally(
+      notifyAfterPaint,
+    );
   }, []);
 
   function handleCreateCollection(): void {
