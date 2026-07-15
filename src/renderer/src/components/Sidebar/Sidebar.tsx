@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import type {
   Collection,
   Library,
@@ -88,6 +88,64 @@ function Chevron({ open }: { open: boolean }): JSX.Element {
   );
 }
 
+// 라이브러리 한 개분 트리 래퍼 — memo로 감싸, Sidebar가 폴더와 무관한 이유로 리렌더돼도
+// props(아래는 모두 Sidebar에서 참조 고정됨)가 그대로면 트리를 다시 그리지 않는다.
+// 라이브러리별 onRemove/onContextMenu 클로저를 여기서 useCallback으로 만들어 안정화한다.
+interface LibraryFolderTreeProps {
+  library: Library;
+  node: FolderNode;
+  selectedFolder: string | null;
+  expandedMap: Record<string, boolean>;
+  onToggleExpand: (path: string, next: boolean) => void;
+  defaultExpanded: boolean;
+  onSelectFolder: (path: string) => void;
+  onRemoveNode: (node: FolderNode, library: Library) => void;
+  onNodeContextMenu?: (
+    e: React.MouseEvent,
+    node: FolderNode,
+    library: Library,
+  ) => void;
+}
+
+const LibraryFolderTree = memo(function LibraryFolderTree({
+  library,
+  node,
+  selectedFolder,
+  expandedMap,
+  onToggleExpand,
+  defaultExpanded,
+  onSelectFolder,
+  onRemoveNode,
+  onNodeContextMenu,
+}: LibraryFolderTreeProps): JSX.Element {
+  const handleRemove = useCallback(
+    (n: FolderNode) => onRemoveNode(n, library),
+    [onRemoveNode, library],
+  );
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, n: FolderNode) => {
+      e.preventDefault();
+      onNodeContextMenu?.(e, n, library);
+    },
+    [onNodeContextMenu, library],
+  );
+  return (
+    <div className="ftree__lib">
+      <FolderTree
+        node={node}
+        depth={1}
+        selectedPath={selectedFolder}
+        onSelectFolder={onSelectFolder}
+        expandedMap={expandedMap}
+        onToggleExpand={onToggleExpand}
+        defaultExpanded={defaultExpanded}
+        onRemoveNode={handleRemove}
+        onContextMenu={handleContextMenu}
+      />
+    </div>
+  );
+});
+
 export default function Sidebar({
   trees,
   tracks,
@@ -113,13 +171,31 @@ export default function Sidebar({
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(() =>
     loadJSON(EXPANDED_KEY, {}),
   );
-  function toggleExpand(path: string, next: boolean): void {
+  // App이 넘기는 콜백은 매 렌더 새 참조라, 그대로 트리에 내리면 memo가 매번 깨진다.
+  // 최신 콜백을 ref에 담아두고, 트리에는 참조가 고정된(useCallback([])) 래퍼만 내려보낸다.
+  const cbRef = useRef({ onSelectFolder, onRemoveNode, onNodeContextMenu });
+  cbRef.current = { onSelectFolder, onRemoveNode, onNodeContextMenu };
+  const toggleExpand = useCallback((path: string, next: boolean): void => {
     setExpandedMap((prev) => {
       const updated = { ...prev, [path]: next };
       saveJSON(EXPANDED_KEY, updated);
       return updated;
     });
-  }
+  }, []);
+  const stableSelectFolder = useCallback(
+    (p: string) => cbRef.current.onSelectFolder(p),
+    [],
+  );
+  const stableRemoveNode = useCallback(
+    (node: FolderNode, library: Library) =>
+      cbRef.current.onRemoveNode(node, library),
+    [],
+  );
+  const stableNodeContextMenu = useCallback(
+    (e: React.MouseEvent, node: FolderNode, library: Library) =>
+      cbRef.current.onNodeContextMenu?.(e, node, library),
+    [],
+  );
   const [localOpen, setLocalOpen] = useState(() =>
     loadBool(LOCAL_OPEN_KEY, true),
   );
@@ -202,22 +278,18 @@ export default function Sidebar({
         {localOpen &&
           (trees.length > 0 ? (
             trees.map(({ library, node }) => (
-              <div key={library.id} className="ftree__lib">
-                <FolderTree
-                  node={node}
-                  depth={1}
-                  selectedPath={selectedFolder}
-                  onSelectFolder={(p) => onSelectFolder(p)}
-                  expandedMap={expandedMap}
-                  onToggleExpand={toggleExpand}
-                  defaultExpanded={trees.length === 1}
-                  onRemoveNode={(node) => onRemoveNode(node, library)}
-                  onContextMenu={(e, node) => {
-                    e.preventDefault();
-                    onNodeContextMenu?.(e, node, library);
-                  }}
-                />
-              </div>
+              <LibraryFolderTree
+                key={library.id}
+                library={library}
+                node={node}
+                selectedFolder={selectedFolder}
+                expandedMap={expandedMap}
+                onToggleExpand={toggleExpand}
+                defaultExpanded={trees.length === 1}
+                onSelectFolder={stableSelectFolder}
+                onRemoveNode={stableRemoveNode}
+                onNodeContextMenu={stableNodeContextMenu}
+              />
             ))
           ) : (
             <div

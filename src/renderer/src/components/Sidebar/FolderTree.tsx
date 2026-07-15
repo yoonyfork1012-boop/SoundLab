@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { FolderNode } from "../../lib/folderTree";
 
 interface FolderTreeProps {
@@ -35,7 +36,10 @@ function Chevron({ open }: { open: boolean }): JSX.Element {
   );
 }
 
-export default function FolderTree({
+// React.memo — App이 폴더와 무관한 상태(트랙 선택/미리듣기/재생 등)로 리렌더될 때
+// Sidebar가 함께 리렌더되어도, props가 그대로면 펼쳐진 트리 전체를 다시 그리지 않는다.
+// 재귀 자식도 이 메모 컴포넌트를 참조해 같은 이득을 받는다. props 안정화는 Sidebar 쪽에서 함.
+const FolderTree = memo(function FolderTree({
   node,
   depth,
   selectedPath,
@@ -109,4 +113,6 @@ export default function FolderTree({
         ))}
     </div>
   );
-}
+});
+
+export default FolderTree;

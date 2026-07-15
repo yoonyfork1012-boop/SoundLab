@@ -865,6 +865,59 @@ button {
   flex-direction: column;
   background: var(--bg-content);
   overflow: hidden;
+  position: relative;
+}
+/* 폴더/컬렉션 전환 중 리스트가 아직 채워지지 않은 짧은 구간에 뜨는 옅은 로딩 연출.
+   콘텐츠 상단에 얇은 라인 하나가 가로로 흐른다. 글자는 없다. */
+.list-loading-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+  /* 아주 짧은 pending에도 튀지 않도록 은은하게 페이드-인 */
+  animation: list-loading-fade 0.16s ease both;
+}
+.list-loading-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0.6;
+  /* transform만 애니메이션 → 컴포지터에서만 처리(레이아웃/페인트 유발 없음) */
+  will-change: transform;
+  animation: list-loading-slide 0.9s ease-in-out infinite;
+}
+@keyframes list-loading-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes list-loading-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* 모션 최소화 설정에서는 흐르는 애니메이션을 끄고 정적인 옅은 라인만 남긴다 */
+@media (prefers-reduced-motion: reduce) {
+  .list-loading-bar {
+    animation: none;
+  }
+  .list-loading-bar::before {
+    animation: none;
+    transform: none;
+    opacity: 0.4;
+  }
 }
 /* Metadata(?? + Analysis(?�래)�??�나???�속???�측 컬럼?�로 묶는????
    콘텐�??�과 ?�레?�어 ????줄에 걸쳐 ?�어, ?�이브폼 ?�른�?�?공간까�? ?�용?�다 */

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import MenuBar from "./components/MenuBar/MenuBar";
 import Sidebar from "./components/Sidebar/Sidebar";
 import ResultList from "./components/ResultList/ResultList";
@@ -106,6 +106,17 @@ export default function App(): JSX.Element {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const selectedFolder = activeTab?.folder ?? null;
   const selectedCollection = activeTab?.collection ?? null;
+  // 폴더/컬렉션 선택은 즉시 하이라이트되어야 하지만, 그 선택으로 리스트(visibleTracks)를
+  // 다시 거르고 정렬하는 일은 수십만 트랙에서 무거워 클릭을 막는다. 리스트를 구동하는 값만
+  // 지연본으로 분리해, 하이라이트는 urgent로 즉시 커밋하고 리스트 재계산은 interruptible
+  // 렌더로 넘긴다 — 빠르게 훑어도 React가 중간 계산을 버리고 최신 폴더만 계산한다.
+  const deferredFolder = useDeferredValue(selectedFolder);
+  const deferredCollection = useDeferredValue(selectedCollection);
+  // 지연본이 아직 즉시값을 따라잡지 못한 짧은 구간 = "리스트를 불러오는 중". 리스트에 옅은
+  // 로딩 연출을 켜는 신호로만 쓴다(텍스트/카운트는 건드리지 않음).
+  const listPending =
+    selectedFolder !== deferredFolder ||
+    selectedCollection !== deferredCollection;
   const pendingTabIdRef = useRef<number | null>(null);
 
   // 기존 호출부는 setSelectedFolder(x); setSelectedCollection(null); 처럼 한 렌더 안에서
@@ -771,9 +782,7 @@ export default function App(): JSX.Element {
           };
           // selectedFolder는 활성 탭 folder에서 파생 — 탭들을 새 경로로 재지정하면 선택도 따라온다.
           setTabs((prev) =>
-            prev.map((t) =>
-              t.folder ? { ...t, folder: remap(t.folder) } : t,
-            ),
+            prev.map((t) => (t.folder ? { ...t, folder: remap(t.folder) } : t)),
           );
           showToast(`Renamed folder (${res.renamed.toLocaleString()} sounds)`);
         } catch (err) {
@@ -1070,6 +1079,9 @@ export default function App(): JSX.Element {
 
   const activeCollection =
     collections.find((c) => c.id === selectedCollection) ?? null;
+  // 리스트/그리드 본문은 지연본 기준으로 그려 하이라이트만 앞서고 본문은 함께 뒤따르게 한다.
+  const deferredActiveCollection =
+    collections.find((c) => c.id === deferredCollection) ?? null;
 
   // CollectionHero 통계(전체 개수/재생시간/카테고리 구성)는 검색·즐겨찾기 필터와 무관하게
   // 컬렉션 전체를 기준으로 보여줘야 하므로 visibleTracks와 별도로 계산한다
@@ -1091,13 +1103,13 @@ export default function App(): JSX.Element {
     // 재생 큐(next/prev)와 전체 선택(Ctrl+A)도 전체 라이브러리를 훑지 않는다.
     if (!activeTab) return [];
     let base: Track[];
-    if (activeCollection) {
+    if (deferredActiveCollection) {
       const byId = new Map(tracks.map((t) => [t.id, t]));
-      base = activeCollection.trackIds
+      base = deferredActiveCollection.trackIds
         .map((id) => byId.get(id))
         .filter((t): t is Track => !!t);
     } else {
-      base = selectedFolder ? tracksUnder(tracks, selectedFolder) : tracks;
+      base = deferredFolder ? tracksUnder(tracks, deferredFolder) : tracks;
     }
     if (showStarredOnly) base = base.filter((t) => t.starred);
     if (search.trim()) {
@@ -1130,8 +1142,8 @@ export default function App(): JSX.Element {
   }, [
     activeTab,
     tracks,
-    selectedFolder,
-    activeCollection,
+    deferredFolder,
+    deferredActiveCollection,
     showStarredOnly,
     search,
     subSearch,
@@ -1142,14 +1154,14 @@ export default function App(): JSX.Element {
   ]);
 
   const isFiltering = Boolean(
-    search.trim() || showStarredOnly || activeCollection,
+    search.trim() || showStarredOnly || deferredActiveCollection,
   );
   // ?�더�??�택?�면(=selectedFolder ?�음) ?�위 ?�더가 ?�어???�운?��? ?��?�?보여�?(Soundly 방식).
   // ?�더 카드 그리?�는 최상??진입 ?�면(?�무 ?�더???�택 ?????�서�??�시.
   const showGrid =
     view === "grid" &&
     !isFiltering &&
-    !selectedFolder &&
+    !deferredFolder &&
     rootFolders.length > 0;
 
   function selectRelative(delta: number): void {
@@ -1604,6 +1616,11 @@ export default function App(): JSX.Element {
 
         {!dockMode && (
           <div className="content-wrap">
+            {/* 폴더/컬렉션 전환 중 리스트가 아직 따라잡는 짧은 구간에만 켜지는 옅은 로딩
+                연출(글자 없음). transform/opacity 애니메이션만 써서 유휴 부하가 없다. */}
+            {listPending && (
+              <div className="list-loading-bar" aria-hidden="true" />
+            )}
             {!activeTab ? (
               // 탭이 하나도 없는 빈 워크스페이스 — 루트 폴더/전체 트랙을 흘리지 않고
               // 안내만 보여준다. All Sounds를 열면 전체 사운드 탭이 생긴다.
