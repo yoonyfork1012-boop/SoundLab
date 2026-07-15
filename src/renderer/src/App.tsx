@@ -41,6 +41,12 @@ import { applyAccent, loadAccent, saveAccent } from "./lib/theme";
 import { loadJSON, loadNumber, saveJSON, saveNumber } from "./lib/uiState";
 import { shuffleTracks, sortTracks } from "./components/ResultList/columns";
 import { DEFAULT_PUBLISHER_RULE } from "@shared/publisher";
+import {
+  buildSearchBlob,
+  trackMatchesQuery,
+  searchTabLabel,
+  shouldSpawnSearchTab,
+} from "./lib/searchIndex";
 
 function norm(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -72,13 +78,19 @@ interface WorkspaceTab {
   id: number;
   folder: string | null;
   collection: number | null;
+  search: string; // 빈 문자열이면 검색 탭이 아님
 }
 
 // Date.now()는 같은 밀리초에 두 번 부르면 겹친다(빠른 연속 클릭). 단조 증가 카운터로 보강.
 let tabIdSeq = 0;
 function newTab(): WorkspaceTab {
   tabIdSeq += 1;
-  return { id: Date.now() * 1000 + tabIdSeq, folder: null, collection: null };
+  return {
+    id: Date.now() * 1000 + tabIdSeq,
+    folder: null,
+    collection: null,
+    search: "",
+  };
 }
 
 export default function App(): JSX.Element {
@@ -90,7 +102,6 @@ export default function App(): JSX.Element {
   const [serverTrees, setServerTrees] = useState<LibraryTree[]>([]);
   const [tracksLoaded, setTracksLoaded] = useState(false);
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null);
-  const [search, setSearch] = useState("");
   const [subSearch, setSubSearch] = useState("");
   // Shuffle?� ?��????�니??"버튼 ?�릭 = 지�?즉시 ?�로 ?�기" ?�작. shuffled???�재 리스?��?
   // ?�플???�서�?보이??중인지�??��??�며(컬럼 ?�렬???�릭?�면 ?�시 false), ?�속 ?�?�하지 ?�는??
@@ -111,17 +122,22 @@ export default function App(): JSX.Element {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const selectedFolder = activeTab?.folder ?? null;
   const selectedCollection = activeTab?.collection ?? null;
+  const search = activeTab?.search ?? "";
   // 폴더/컬렉션 선택은 즉시 하이라이트되어야 하지만, 그 선택으로 리스트(visibleTracks)를
   // 다시 거르고 정렬하는 일은 수십만 트랙에서 무거워 클릭을 막는다. 리스트를 구동하는 값만
   // 지연본으로 분리해, 하이라이트는 urgent로 즉시 커밋하고 리스트 재계산은 interruptible
   // 렌더로 넘긴다 — 빠르게 훑어도 React가 중간 계산을 버리고 최신 폴더만 계산한다.
   const deferredFolder = useDeferredValue(selectedFolder);
   const deferredCollection = useDeferredValue(selectedCollection);
+  const deferredSearch = useDeferredValue(search);
+  const deferredSubSearch = useDeferredValue(subSearch);
   // 지연본이 아직 즉시값을 따라잡지 못한 짧은 구간 = "리스트를 불러오는 중". 리스트에 옅은
   // 로딩 연출을 켜는 신호로만 쓴다(텍스트/카운트는 건드리지 않음).
   const listPending =
     selectedFolder !== deferredFolder ||
-    selectedCollection !== deferredCollection;
+    selectedCollection !== deferredCollection ||
+    search !== deferredSearch ||
+    subSearch !== deferredSubSearch;
   const pendingTabIdRef = useRef<number | null>(null);
 
   // 시작 시 백그라운드로 도는 loadAll(무거운 전체 트랙)은 늦게 도착한다. 그 사이 사용자가
@@ -169,6 +185,29 @@ export default function App(): JSX.Element {
   }
   function setSelectedCollection(collection: number | null): void {
     patchActiveTab({ collection });
+  }
+
+  // 상단 검색창 입력 핸들러. 검색 아닌 탭에서 검색을 시작하면 검색어를 이름으로 한
+  // 전역 검색 탭(folder/collection 없음)을 새로 열어 원래 폴더 뷰를 보존한다.
+  // 이미 검색 탭이거나 빈 워크스페이스면 그 자리에서 검색어만 갱신한다.
+  function handleSearchChange(value: string): void {
+    if (shouldSpawnSearchTab(activeTab, value)) {
+      const tab: WorkspaceTab = {
+        ...newTab(),
+        folder: null,
+        collection: null,
+        search: value,
+      };
+      pendingTabIdRef.current = tab.id;
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
+      return;
+    }
+    const targetId = activeTab?.id ?? pendingTabIdRef.current;
+    if (targetId == null) return;
+    setTabs((prev) =>
+      prev.map((t) => (t.id === targetId ? { ...t, search: value } : t)),
+    );
   }
 
   function addTab(): void {
@@ -864,8 +903,10 @@ export default function App(): JSX.Element {
     return best;
   }, [selectedFolder, libraries]);
 
-  // 탭에 표시할 이름: 최상위 라이브러리명이 아니라 지금 보고 있는 폴더명.
+  // 탭에 표시할 이름: 검색 탭이면 검색어, 아니면 지금 보고 있는 폴더/컬렉션명.
   function tabLabel(tab: WorkspaceTab): string {
+    const searchLabel = searchTabLabel(tab, "");
+    if (searchLabel) return searchLabel;
     if (tab.collection != null) {
       return (
         collections.find((c) => c.id === tab.collection)?.name ?? "Collection"
@@ -1132,12 +1173,26 @@ export default function App(): JSX.Element {
     [tracks],
   );
 
+  // 검색 필터 비용을 트랙당 1회 includes로 줄이기 위한 사전 소문자 인덱스.
+  // tracks와 동일 인덱스로 정렬돼 있어(같은 배열 map) 전역 검색 시 인덱스로 바로 쓴다.
+  // "시작 시 전체 파일 미리 인덱싱"이 이 배열 생성에 해당한다.
+  const searchBlobs = useMemo(() => tracks.map(buildSearchBlob), [tracks]);
+
   const visibleTracks = useMemo(() => {
     // 탭이 없는 빈 워크스페이스에서는 아무 트랙도 없다. 렌더뿐 아니라 여기서 막아야
     // 재생 큐(next/prev)와 전체 선택(Ctrl+A)도 전체 라이브러리를 훑지 않는다.
     if (!activeTab) return [];
+    // 검색 탭(검색어 있음)은 폴더/컬렉션 범위를 무시하고 전체 라이브러리에서 검색한다.
+    const querying = deferredSearch.trim() !== "";
     let base: Track[];
-    if (deferredActiveCollection) {
+    if (querying) {
+      // 전역 검색: tracks와 searchBlobs가 같은 인덱스이므로 blob을 바로 쓴다.
+      const q = deferredSearch.toLowerCase();
+      base = [];
+      for (let i = 0; i < tracks.length; i++) {
+        if (trackMatchesQuery(searchBlobs[i], q)) base.push(tracks[i]);
+      }
+    } else if (deferredActiveCollection) {
       const byId = new Map(tracks.map((t) => [t.id, t]));
       base = deferredActiveCollection.trackIds
         .map((id) => byId.get(id))
@@ -1153,29 +1208,12 @@ export default function App(): JSX.Element {
       base = tracks;
     }
     if (showStarredOnly) base = base.filter((t) => t.starred);
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      base = base.filter(
-        (t) =>
-          t.filename.toLowerCase().includes(q) ||
-          (t.category ?? "").toLowerCase().includes(q) ||
-          (t.subcategory ?? "").toLowerCase().includes(q) ||
-          (t.description ?? "").toLowerCase().includes(q) ||
-          t.tags.some((tag) => tag.toLowerCase().includes(q)),
-      );
+    if (deferredSubSearch.trim()) {
+      // subSearch는 결과 부분집합에 적용 — blob 인덱스 정렬이 깨지므로 즉석 계산.
+      const q = deferredSubSearch.toLowerCase();
+      base = base.filter((t) => trackMatchesQuery(buildSearchBlob(t), q));
     }
-    if (subSearch.trim()) {
-      const q = subSearch.toLowerCase();
-      base = base.filter(
-        (t) =>
-          t.filename.toLowerCase().includes(q) ||
-          (t.category ?? "").toLowerCase().includes(q) ||
-          (t.subcategory ?? "").toLowerCase().includes(q) ||
-          (t.description ?? "").toLowerCase().includes(q) ||
-          t.tags.some((tag) => tag.toLowerCase().includes(q)),
-      );
-    }
-    // shuffled�?리스???�시 ?�서 ?�체�??�고, ?�니�??�렬 ?�태(?�는 기본 ?�서)�??�시
+    // shuffled면 리스트를 매번 새 순서로 섞고, 아니면 정렬 상태(또는 기본 순서)로 표시
     base = shuffled
       ? shuffleTracks(base, shuffleSeed)
       : sortTracks(base, sort.key, sort.dir, { libraries, publisherRule });
@@ -1184,19 +1222,21 @@ export default function App(): JSX.Element {
     activeTab,
     tracks,
     trackKeys,
+    searchBlobs,
     deferredFolder,
     deferredActiveCollection,
+    deferredSearch,
+    deferredSubSearch,
     showStarredOnly,
-    search,
-    subSearch,
     sort,
     libraries,
+    publisherRule,
     shuffled,
     shuffleSeed,
   ]);
 
   const isFiltering = Boolean(
-    search.trim() || showStarredOnly || deferredActiveCollection,
+    deferredSearch.trim() || showStarredOnly || deferredActiveCollection,
   );
   // ?�더�??�택?�면(=selectedFolder ?�음) ?�위 ?�더가 ?�어???�운?��? ?��?�?보여�?(Soundly 방식).
   // ?�더 카드 그리?�는 최상??진입 ?�면(?�무 ?�더???�택 ?????�서�??�시.
@@ -1458,7 +1498,7 @@ export default function App(): JSX.Element {
               className="topbar__search"
               placeholder="Search sounds"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
             />
           </div>
 
@@ -1642,7 +1682,6 @@ export default function App(): JSX.Element {
               setSelectedFolder(null);
               setSelectedCollection(null);
               setShowStarredOnly(false);
-              setSearch("");
               setSubSearch("");
               setView("grid");
             }}
