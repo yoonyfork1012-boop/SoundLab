@@ -332,18 +332,23 @@ export function computeSimilarityKeys(libraryId: number): number {
   return tracks.length;
 }
 
-// 트랙이 하나도 남지 않은 라이브러리를 정리한다. 폴더를 겹쳐 추가하면 겹치는 파일이
-// 새로 추가한 라이브러리로 재귀속(upsertTrack의 ON CONFLICT library_id 갱신)되면서
-// 예전 라이브러리가 빈 껍데기로 남을 수 있는데, 그것을 제거하기 위함.
-// exceptLibraryId(방금 스캔한 라이브러리)는 오디오가 없는 폴더를 방금 추가했거나
-// 네트워크 드라이브가 일시적으로 비어 보이는 경우 사용자의 폴더가 사라지지 않도록 보호한다.
-export function deleteEmptyLibraries(exceptLibraryId?: number): number[] {
-  const ids = selectRows(
+// 현재 트랙이 0개인 라이브러리 id 목록.
+export function getEmptyLibraryIds(): number[] {
+  return selectRows(
     `SELECT id FROM libraries
      WHERE id NOT IN (SELECT DISTINCT library_id FROM tracks WHERE library_id IS NOT NULL)`,
-  )
-    .map((row) => row.id as number)
-    .filter((id) => id !== exceptLibraryId);
+  ).map((row) => row.id as number);
+}
+
+// 트랙이 하나도 남지 않은 라이브러리를 정리한다. 폴더를 겹쳐 추가하면 겹치는 파일이
+// 새로 추가한 라이브러리로 재귀속(upsertTrack의 ON CONFLICT library_id 갱신)되면서
+// 예전 라이브러리가 빈 껍데기로 남을 수 있는데, 그것만 제거하기 위함.
+// protectedIds에는 "이번 스캔이 비운 게 아닌" 라이브러리 id를 넘겨 보호한다 — 방금 스캔한
+// 라이브러리와, 스캔 전부터 이미 비어 있던(의도적으로 비운/네트워크 드라이브가 일시적으로
+// 비어 보이던) 라이브러리. 이렇게 하면 무관한 빈 라이브러리가 다른 폴더 추가로 사라지지 않는다.
+export function deleteEmptyLibraries(protectedIds: number[] = []): number[] {
+  const protectedSet = new Set(protectedIds);
+  const ids = getEmptyLibraryIds().filter((id) => !protectedSet.has(id));
   const db = getDb();
   for (const id of ids) {
     db.run("DELETE FROM libraries WHERE id = ?", [id]);

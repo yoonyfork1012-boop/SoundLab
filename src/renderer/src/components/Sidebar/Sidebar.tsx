@@ -6,7 +6,7 @@ import type {
   Track,
   WatchStatus,
 } from "@shared/types";
-import { loadBool, loadJSON, saveBool, saveJSON } from "../../lib/uiState";
+import { saveBool, saveJSON } from "../../lib/uiState";
 import FolderTree from "./FolderTree";
 import IndexingIndicator from "../IndexingIndicator/IndexingIndicator";
 import type { FolderNode, LibraryTree } from "../../lib/folderTree";
@@ -168,9 +168,9 @@ export default function Sidebar({
   scanProgress = null,
   watchStatus = null,
 }: SidebarProps): JSX.Element {
-  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>(() =>
-    loadJSON(EXPANDED_KEY, {}),
-  );
+  // 시작 시 모든 폴더는 닫힌 상태로 둔다 — 이전 세션의 펼침 상태를 복원하지 않는다.
+  // (세션 중 펼침/접힘은 아래 toggleExpand가 저장하지만, 시작 시 그 값을 읽지 않는다.)
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
   // App이 넘기는 콜백은 매 렌더 새 참조라, 그대로 트리에 내리면 memo가 매번 깨진다.
   // 최신 콜백을 ref에 담아두고, 트리에는 참조가 고정된(useCallback([])) 래퍼만 내려보낸다.
   const cbRef = useRef({ onSelectFolder, onRemoveNode, onNodeContextMenu });
@@ -196,9 +196,8 @@ export default function Sidebar({
       cbRef.current.onNodeContextMenu?.(e, node, library),
     [],
   );
-  const [localOpen, setLocalOpen] = useState(() =>
-    loadBool(LOCAL_OPEN_KEY, true),
-  );
+  // 시작 시 항상 Local을 펼쳐 보여준다(무조건 로컬로 시작).
+  const [localOpen, setLocalOpen] = useState(true);
   function toggleLocal(): void {
     setLocalOpen((v) => {
       const next = !v;

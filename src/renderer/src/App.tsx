@@ -46,6 +46,14 @@ function norm(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
+// path가 root 아래(또는 root 자신)에 있는지 경로 "경계"로 판정한다. 단순 startsWith는
+// C:/Sounds 와 C:/Sounds2 를 혼동하므로, 정확히 일치하거나 뒤에 "/"가 오는 경우만 인정한다.
+function isPathUnder(path: string, root: string): boolean {
+  const p = norm(path);
+  const r = norm(root);
+  return p === r || p.startsWith(r + "/");
+}
+
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 440;
 const META_MIN = 220;
@@ -95,14 +103,11 @@ export default function App(): JSX.Element {
   // 탭 하나가 곧 "무엇을 보고 있는지"(폴더 또는 컬렉션)다. selectedFolder/selectedCollection을
   // 별도 state로 두지 않고 활성 탭에서 파생시켜, 탭을 바꾸면 보던 위치가 그대로 따라오게 한다.
   // 탭이 0개인 상태도 유효하다(첫 실행). 그때는 중앙에 빈 상태 안내만 뜬다.
-  const [tabs, setTabs] = useState<WorkspaceTab[]>(() =>
-    loadJSON<WorkspaceTab[]>(TABS_KEY, []),
-  );
-  const [activeTabId, setActiveTabId] = useState<number | null>(() => {
-    const saved = loadNumber(ACTIVE_TAB_KEY, -1);
-    if (tabs.some((t) => t.id === saved)) return saved;
-    return tabs[0]?.id ?? null;
-  });
+  // 프로그램을 껐다 켜면 항상 로컬(아무것도 선택 안 된 상태)에서 시작한다 — 이전 세션에서
+  // 열려 있던 폴더 탭은 복원하지 않는다. (세션 중에는 아래 useEffect가 계속 저장하지만,
+  // 시작 시 그 값을 읽지 않으므로 흔적이 남지 않는다.)
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const selectedFolder = activeTab?.folder ?? null;
   const selectedCollection = activeTab?.collection ?? null;
@@ -118,6 +123,24 @@ export default function App(): JSX.Element {
     selectedFolder !== deferredFolder ||
     selectedCollection !== deferredCollection;
   const pendingTabIdRef = useRef<number | null>(null);
+
+  // 시작 시 백그라운드로 도는 loadAll(무거운 전체 트랙)은 늦게 도착한다. 그 사이 사용자가
+  // 사이드바에서 라이브러리를 스캔/삭제/새로고침하면 최신 상태가 먼저 반영되는데, 뒤늦게
+  // 온 loadAll이 시작 시점 스냅샷으로 그걸 덮어써 "방금 추가한 라이브러리가 사라짐" 같은
+  // 문제가 생긴다. 서버 응답으로 상태를 통째로 교체하는 뮤테이션은 commitServerState로
+  // 세대를 올려두고, loadAll은 세대가 0일 때(그 사이 아무 변경도 없었을 때)만 적용한다.
+  const serverStateGenRef = useRef(0);
+  function commitServerState(libs: Library[], nextTracks?: Track[]): void {
+    serverStateGenRef.current++;
+    setLibraries(libs);
+    // nextTracks가 오는 응답은 항상 전체 트랙(getAllTracks)이다. 이 뮤테이션이 startup
+    // loadAll을 앞질러 그것을 건너뛰게 만들더라도, 여기서 전체 트랙이 채워졌음을 표시해
+    // tracksLoaded가 계속 false로 남지 않게 한다(트리가 tracks 파생 버전으로 전환됨).
+    if (nextTracks) {
+      setTracks(nextTracks);
+      setTracksLoaded(true);
+    }
+  }
 
   // 기존 호출부는 setSelectedFolder(x); setSelectedCollection(null); 처럼 한 렌더 안에서
   // 연달아 부른다. 함수형 업데이터를 써야 뒤 호출이 앞 호출을 덮어쓰지 않는다.
@@ -276,8 +299,8 @@ export default function App(): JSX.Element {
   useEffect(() => {
     if (!window.api?.onLibraryUpdated) return;
     return window.api.onLibraryUpdated(({ libraries, tracks }) => {
-      setLibraries(libraries);
-      setTracks(tracks);
+      // 감시(watcher) 재스캔도 늦게 오는 startup loadAll이 덮어쓰면 안 되므로 세대를 올린다.
+      commitServerState(libraries, tracks);
       setScanning(false);
       setScanProgress(null);
     });
@@ -460,6 +483,10 @@ export default function App(): JSX.Element {
     // 2) 전체 트랙(리스트·검색·정렬용, 무거움)은 백그라운드로 이어서 로드한다. 완료되면
     //    tracks가 채워지고 tracksLoaded가 true가 되어 사이드바 트리가 tracks 파생 버전으로 전환된다.
     void window.api?.loadAll().then(({ libraries, tracks }) => {
+      // 로드가 시작된 뒤 사용자가 라이브러리를 변경했다면(세대 != 0) 이 오래된 스냅샷은 버린다.
+      // 트랙 리스트는 loadAll 완료 전까지 비어 있어 트랙 단위 변경은 이 구간에 불가능하므로,
+      // 여기서 보호해야 하는 건 사이드바에서 일으킨 라이브러리 단위 변경뿐이다.
+      if (serverStateGenRef.current !== 0) return;
       setLibraries(libraries);
       setTracks(tracks);
       setTracksLoaded(true);
@@ -599,8 +626,7 @@ export default function App(): JSX.Element {
         tracks: allTracks,
         addedCount,
       } = await window.api.scanNewFiles(library.id, library.rootPath);
-      setLibraries(allLibs);
-      setTracks(allTracks);
+      commitServerState(allLibs, allTracks);
       showToast(
         addedCount > 0 ? `Added ${addedCount} new files` : "No new files",
       );
@@ -627,8 +653,7 @@ export default function App(): JSX.Element {
     try {
       const { libraries: allLibs, tracks: allTracks } =
         await window.api.rescanLibrary(library.rootPath);
-      setLibraries(allLibs);
-      setTracks(allTracks);
+      commitServerState(allLibs, allTracks);
       showToast("Rescanned");
     } catch (err) {
       showToast(`Rescan failed: ${(err as Error)?.message ?? "unknown error"}`);
@@ -648,8 +673,7 @@ export default function App(): JSX.Element {
     try {
       const { libraries: allLibs, tracks: allTracks } =
         await window.api.refreshAllLibraries();
-      setLibraries(allLibs);
-      setTracks(allTracks);
+      commitServerState(allLibs, allTracks);
       showToast("Library refreshed");
     } catch (err) {
       showToast(
@@ -666,7 +690,7 @@ export default function App(): JSX.Element {
     showToast("Analyzing sounds...");
     const { libraries: allLibs, analyzedCount } =
       await window.api.analyzeLibrary(library.id);
-    setLibraries(allLibs);
+    commitServerState(allLibs);
     showToast(`Analyzed ${analyzedCount} tracks`);
   }
 
@@ -677,7 +701,7 @@ export default function App(): JSX.Element {
       confirmLabel: "Rename",
       onSubmit: async (name) => {
         if (window.api)
-          setLibraries(await window.api.renameLibrary(library.id, name));
+          commitServerState(await window.api.renameLibrary(library.id, name));
         setNamePrompt(null);
       },
     });
@@ -729,8 +753,7 @@ export default function App(): JSX.Element {
       return;
     const { libraries: allLibs, tracks: allTracks } =
       await window.api.removeFolder(library.id, node.path);
-    setLibraries(allLibs);
-    setTracks(allTracks);
+    commitServerState(allLibs, allTracks);
     // selectedFolder는 활성 탭의 folder에서 파생되므로, 탭들을 정리하면 선택도 함께 풀린다.
     const prefix = norm(node.path) + "/";
     setTabs((prev) =>
@@ -768,8 +791,7 @@ export default function App(): JSX.Element {
             trimmed,
           );
           if (!res) return;
-          setLibraries(res.libraries);
-          setTracks(res.tracks);
+          commitServerState(res.libraries, res.tracks);
           const oldNorm = norm(folderPath);
           const newNorm =
             oldNorm.slice(0, oldNorm.length - currentName.length) + trimmed;
@@ -797,7 +819,7 @@ export default function App(): JSX.Element {
   async function handleToggleMonitor(library: Library): Promise<void> {
     if (!window.api) return;
     const next = !library.monitor;
-    setLibraries(
+    commitServerState(
       await window.api.setLibraryMonitor(library.id, library.rootPath, next),
     );
     showToast(next ? "Monitoring enabled" : "Monitoring disabled");
@@ -828,11 +850,18 @@ export default function App(): JSX.Element {
   // Current selected library for the breadcrumb and shortcuts
   const currentLibrary = useMemo(() => {
     if (!selectedFolder) return null;
-    return (
-      libraries.find((l) =>
-        norm(selectedFolder).startsWith(norm(l.rootPath)),
-      ) ?? null
-    );
+    // 한 루트가 다른 루트의 접두어일 수 있으므로(C:/Sounds ⊂ C:/Sounds2), 경계로 매칭하고
+    // 여러 루트가 걸리면 가장 긴(= 가장 구체적인) 루트를 고른다.
+    let best: Library | null = null;
+    for (const l of libraries) {
+      if (
+        isPathUnder(selectedFolder, l.rootPath) &&
+        (!best || norm(l.rootPath).length > norm(best.rootPath).length)
+      ) {
+        best = l;
+      }
+    }
+    return best;
   }, [selectedFolder, libraries]);
 
   // 탭에 표시할 이름: 최상위 라이브러리명이 아니라 지금 보고 있는 폴더명.
@@ -863,8 +892,7 @@ export default function App(): JSX.Element {
       // ?�더 추�? = ?�적. ?�캔 ???�체�??�시 받아 반영(기존 ?�이브러�??��?)
       const { libraries: allLibs, tracks: allTracks } =
         await window.api.scanLibrary(folder);
-      setLibraries(allLibs);
-      setTracks(allTracks);
+      commitServerState(allLibs, allTracks);
       // 라이브러리를 추가하면 그 루트를 연 탭을 새로 띄운다(첫 실행 시 유일한 탭 생성 경로)
       const tab = { ...newTab(), folder };
       setTabs((prev) => [...prev, tab]);
@@ -943,13 +971,11 @@ export default function App(): JSX.Element {
     if (!window.api) return;
     const { libraries: allLibs, tracks: allTracks } =
       await window.api.removeLibrary(id);
-    setLibraries(allLibs);
-    setTracks(allTracks);
+    commitServerState(allLibs, allTracks);
     // 사라진 라이브러리 하위를 가리키던 탭은 모두 "All Sounds"로 되돌린다
     setTabs((prev) =>
       prev.map((t) =>
-        t.folder &&
-        !allLibs.some((l) => norm(t.folder!).startsWith(norm(l.rootPath)))
+        t.folder && !allLibs.some((l) => isPathUnder(t.folder!, l.rootPath))
           ? { ...t, folder: null }
           : t,
       ),
@@ -1098,6 +1124,14 @@ export default function App(): JSX.Element {
   const collectionReorderable =
     Boolean(activeCollection) && !shuffled && sort.key === null;
 
+  // 폴더 하위 트랙 필터가 매 폴더 클릭마다 519k개 filePath에 정규식(normPath 2회)을 돌려
+  // 느렸다 — 이게 사이드바까지 멈추게 하던 근본 원인. 정규화(+구분 슬래시)한 경로를 tracks
+  // 기준으로 한 번만 만들어 두고, 필터 때는 정규식 없이 문자열 startsWith 스캔만 한다.
+  const trackKeys = useMemo(
+    () => tracks.map((t) => norm(t.filePath) + "/"),
+    [tracks],
+  );
+
   const visibleTracks = useMemo(() => {
     // 탭이 없는 빈 워크스페이스에서는 아무 트랙도 없다. 렌더뿐 아니라 여기서 막아야
     // 재생 큐(next/prev)와 전체 선택(Ctrl+A)도 전체 라이브러리를 훑지 않는다.
@@ -1108,8 +1142,15 @@ export default function App(): JSX.Element {
       base = deferredActiveCollection.trackIds
         .map((id) => byId.get(id))
         .filter((t): t is Track => !!t);
+    } else if (deferredFolder) {
+      // 정규식 없는 단일 스캔 — trackKeys는 tracks와 같은 인덱스로 정렬돼 있다.
+      const prefix = norm(deferredFolder) + "/";
+      base = [];
+      for (let i = 0; i < tracks.length; i++) {
+        if (trackKeys[i].startsWith(prefix)) base.push(tracks[i]);
+      }
     } else {
-      base = deferredFolder ? tracksUnder(tracks, deferredFolder) : tracks;
+      base = tracks;
     }
     if (showStarredOnly) base = base.filter((t) => t.starred);
     if (search.trim()) {
@@ -1142,6 +1183,7 @@ export default function App(): JSX.Element {
   }, [
     activeTab,
     tracks,
+    trackKeys,
     deferredFolder,
     deferredActiveCollection,
     showStarredOnly,

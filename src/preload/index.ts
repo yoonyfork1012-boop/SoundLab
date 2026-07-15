@@ -54,7 +54,8 @@ const api = {
     libraries: Library[];
     tracks: Track[];
     renamed: number;
-  } | null> => ipcRenderer.invoke("folder:rename", libraryId, folderPath, newName),
+  } | null> =>
+    ipcRenderer.invoke("folder:rename", libraryId, folderPath, newName),
 
   renameLibrary: (libraryId: number, name: string): Promise<Library[]> =>
     ipcRenderer.invoke("library:rename", libraryId, name),

@@ -28,6 +28,7 @@ import {
   updateFolderTrackPaths,
   deleteLibrary,
   deleteEmptyLibraries,
+  getEmptyLibraryIds,
   toggleStarred,
   updateLastPlayed,
   getCollections,
@@ -74,12 +75,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // 폴더 추가 = 라이브러리 누적. 스캔 후 전체(모든 라이브러리/트랙)를 반환.
   ipcMain.handle("library:scan", async (_event, rootPath: string) => {
+    // 스캔 전 이미 비어 있던 라이브러리는 이번 재귀속의 결과가 아니므로 보호한다.
+    const preEmpty = getEmptyLibraryIds();
     const library = await scanLibrary(rootPath, (progress: ScanProgress) => {
       mainWindow.webContents.send("library:scanProgress", progress);
     });
     startWatching(library.id, library.rootPath, mainWindow);
-    // 폴더를 겹쳐 추가해 파일이 이 라이브러리로 재귀속되면서 비게 된 예전 라이브러리 정리
-    for (const removedId of deleteEmptyLibraries(library.id))
+    // 폴더를 겹쳐 추가해 파일이 이 라이브러리로 재귀속되면서 "이번에" 비게 된 예전 라이브러리만 정리
+    for (const removedId of deleteEmptyLibraries([library.id, ...preEmpty]))
       stopWatching(removedId);
     return { libraries: getAllLibraries(), tracks: getAllTracks() };
   });
@@ -142,11 +145,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 다시 훑어 추가/삭제/변경을 한 번에 반영한다. scanLibrary는 mtime/size가 그대로인 파일은
   // 건너뛰므로(증분) 대용량 폴더에서도 전체 재파싱이 아니다.
   ipcMain.handle("library:rescan", async (_event, rootPath: string) => {
+    const preEmpty = getEmptyLibraryIds();
     const library = await scanLibrary(rootPath, (progress: ScanProgress) => {
       mainWindow.webContents.send("library:scanProgress", progress);
     });
     startWatching(library.id, library.rootPath, mainWindow);
-    for (const removedId of deleteEmptyLibraries(library.id))
+    for (const removedId of deleteEmptyLibraries([library.id, ...preEmpty]))
       stopWatching(removedId);
     return { libraries: getAllLibraries(), tracks: getAllTracks() };
   });
