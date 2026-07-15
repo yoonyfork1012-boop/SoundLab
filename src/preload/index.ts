@@ -38,6 +38,24 @@ const api = {
   ): Promise<{ libraries: Library[]; tracks: Track[] }> =>
     ipcRenderer.invoke("library:remove", libraryId),
 
+  // 사이드바 하위 폴더: 인덱스에서만 제거(실제 파일 보존)
+  removeFolder: (
+    libraryId: number,
+    folderPath: string,
+  ): Promise<{ libraries: Library[]; tracks: Track[] }> =>
+    ipcRenderer.invoke("folder:remove", libraryId, folderPath),
+
+  // 사이드바 하위 폴더: 실제 디스크 폴더 리네임 + 하위 트랙 경로 갱신
+  renameFolder: (
+    libraryId: number,
+    folderPath: string,
+    newName: string,
+  ): Promise<{
+    libraries: Library[];
+    tracks: Track[];
+    renamed: number;
+  } | null> => ipcRenderer.invoke("folder:rename", libraryId, folderPath, newName),
+
   renameLibrary: (libraryId: number, name: string): Promise<Library[]> =>
     ipcRenderer.invoke("library:rename", libraryId, name),
 

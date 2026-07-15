@@ -7,7 +7,8 @@ interface FolderTreeProps {
   onSelectFolder: (path: string) => void;
   expandedMap: Record<string, boolean>;
   onToggleExpand: (path: string, next: boolean) => void;
-  onRemove?: () => void; // 라이브러리 루트에만 전달 (폴더 제거)
+  // 어느 폴더든(라이브러리 루트/하위 폴더) ✕로 제거 가능 — 실제 제거 의미/확인은 호출부가 결정.
+  onRemoveNode?: (node: FolderNode) => void;
   onContextMenu?: (e: React.MouseEvent, node: FolderNode) => void;
   // 라이브러리 루트(depth===1)의 기본 펼침 여부 — 라이브러리가 하나뿐일 때만 기본 펼침
   // (여러 개면 사이드바가 과도하게 길어지지 않도록 기본 접힘). 하위 폴더는 항상 기본 접힘.
@@ -41,7 +42,7 @@ export default function FolderTree({
   onSelectFolder,
   expandedMap,
   onToggleExpand,
-  onRemove,
+  onRemoveNode,
   onContextMenu,
   defaultExpanded = false,
 }: FolderTreeProps): JSX.Element {
@@ -58,7 +59,7 @@ export default function FolderTree({
         style={{ paddingLeft: 10 + depth * 14 }}
         onClick={() => onSelectFolder(node.path)}
         onContextMenu={
-          depth === 1 ? (e) => onContextMenu?.(e, node) : undefined
+          onContextMenu ? (e) => onContextMenu(e, node) : undefined
         }
       >
         <span
@@ -77,19 +78,13 @@ export default function FolderTree({
           )}
         </span>
         <span className="ftree__name">{node.name}</span>
-        {onRemove && (
+        {onRemoveNode && (
           <span
             className="ftree__remove"
-            title="이 라이브러리 폴더 제거"
+            title="이 폴더를 라이브러리에서 제거"
             onClick={(e) => {
               e.stopPropagation();
-              if (
-                confirm(
-                  `"${node.name}" 폴더를 라이브러리에서 제거할까요? (실제 파일은 삭제되지 않습니다)`,
-                )
-              ) {
-                onRemove();
-              }
+              onRemoveNode(node);
             }}
           >
             ✕
@@ -108,6 +103,7 @@ export default function FolderTree({
             onSelectFolder={onSelectFolder}
             expandedMap={expandedMap}
             onToggleExpand={onToggleExpand}
+            onRemoveNode={onRemoveNode}
             onContextMenu={onContextMenu}
           />
         ))}

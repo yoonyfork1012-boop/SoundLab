@@ -28,6 +28,22 @@ declare const api: {
     libraries: Library[];
     tracks: Track[];
   }>;
+  removeFolder: (
+    libraryId: number,
+    folderPath: string,
+  ) => Promise<{
+    libraries: Library[];
+    tracks: Track[];
+  }>;
+  renameFolder: (
+    libraryId: number,
+    folderPath: string,
+    newName: string,
+  ) => Promise<{
+    libraries: Library[];
+    tracks: Track[];
+    renamed: number;
+  } | null>;
   renameLibrary: (libraryId: number, name: string) => Promise<Library[]>;
   scanNewFiles: (
     libraryId: number,

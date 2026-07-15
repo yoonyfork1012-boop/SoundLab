@@ -23,6 +23,9 @@ import {
   getAllLibraries,
   getAllTracks,
   getTrackPathsByLibrary,
+  getFolderTrackRows,
+  removeTracksUnderFolder,
+  updateFolderTrackPaths,
   deleteLibrary,
   deleteEmptyLibraries,
   toggleStarred,
@@ -160,7 +163,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMain.handle("library:showInExplorer", async (_event, rootPath: string) => {
-    const err = await shell.openPath(rootPath);
+    // 사이드바 하위 폴더는 정규화 경로(슬래시)를 넘길 수 있으므로 OS 구분자로 되돌린다.
+    const osPath =
+      process.platform === "win32" ? rootPath.replace(/\//g, "\\") : rootPath;
+    const err = await shell.openPath(osPath);
     if (err) console.error("openPath failed:", err);
   });
 
@@ -231,6 +237,47 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle("track:remove", (_event, trackId: number) => {
     removeTrack(trackId);
   });
+
+  // 사이드바 하위 폴더 "Remove" — 폴더 하위 트랙을 인덱스에서만 제거(실제 파일 보존).
+  // folderPath는 트리 노드의 정규화 경로(슬래시). 갱신된 목록을 돌려준다.
+  ipcMain.handle(
+    "folder:remove",
+    (_event, libraryId: number, folderPath: string) => {
+      removeTracksUnderFolder(libraryId, folderPath);
+      return { libraries: getAllLibraries(), tracks: getAllTracks() };
+    },
+  );
+
+  // 사이드바 하위 폴더 "Rename" — 실제 디스크 폴더를 리네임하고 하위 트랙들의 경로를 갱신.
+  // 트리는 file_path에서 파생되므로, 이름 변경이 영속되려면 실제 폴더를 바꿔야 한다.
+  ipcMain.handle(
+    "folder:rename",
+    async (_event, libraryId: number, folderPath: string, newName: string) => {
+      const trimmed = newName.trim();
+      if (!trimmed) throw new Error("Folder name cannot be empty");
+      if (/[\\/:*?"<>|]/.test(trimmed))
+        throw new Error('Folder name cannot contain \\ / : * ? " < > |');
+
+      const rows = getFolderTrackRows(libraryId, folderPath);
+      if (rows.length === 0)
+        throw new Error("No tracks found under this folder");
+
+      // 실제 OS 폴더 경로는 트랙의 실제 file_path에서 잘라 얻는다(정규화는 길이를 보존).
+      const oldRealFolder = rows[0].filePath.slice(0, folderPath.length);
+      const newRealFolder = join(dirname(oldRealFolder), trimmed);
+      if (newRealFolder === oldRealFolder) return null;
+      if (existsSync(newRealFolder))
+        throw new Error("A folder with that name already exists");
+
+      await rename(oldRealFolder, newRealFolder);
+      updateFolderTrackPaths(rows, oldRealFolder, newRealFolder);
+      return {
+        libraries: getAllLibraries(),
+        tracks: getAllTracks(),
+        renamed: rows.length,
+      };
+    },
+  );
 
   // 리스트 우클릭 메뉴 "Rename" — 실제 파일을 같은 폴더 안에서 리네임하고 DB 경로를 갱신
   ipcMain.handle(

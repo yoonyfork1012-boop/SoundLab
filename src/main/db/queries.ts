@@ -391,6 +391,89 @@ export function removeTrack(trackId: number): void {
   persistDb();
 }
 
+// 사이드바 폴더(및 그 하위)에 속한 트랙의 (id, file_path)를 모은다. folderPathNorm은
+// 트리 노드의 정규화 경로(슬래시 '/', 뒤 슬래시 없음). DB의 file_path는 실제 OS 경로라
+// 구분자가 다를 수 있어(SQL LIKE는 폴더명 속 '_' 등을 와일드카드로 오인) JS에서 정확히 거른다.
+export function getFolderTrackRows(
+  libraryId: number,
+  folderPathNorm: string,
+): { id: number; filePath: string }[] {
+  const rows = selectRows(
+    "SELECT id, file_path FROM tracks WHERE library_id = ?",
+    [libraryId],
+  );
+  const prefix = folderPathNorm.replace(/\/+$/, "") + "/";
+  const out: { id: number; filePath: string }[] = [];
+  for (const r of rows) {
+    const fp = r.file_path as string;
+    if ((fp.replace(/\\/g, "/") + "/").startsWith(prefix)) {
+      out.push({ id: r.id as number, filePath: fp });
+    }
+  }
+  return out;
+}
+
+// 폴더 하위 트랙을 인덱스에서만 제거 (실제 파일은 그대로) — 라이브러리 "Remove"와 같은
+// 비파괴 동작을 폴더 단위로 적용. 지운 트랙 수를 반환한다.
+export function removeTracksUnderFolder(
+  libraryId: number,
+  folderPathNorm: string,
+): number {
+  const ids = getFolderTrackRows(libraryId, folderPathNorm).map((r) => r.id);
+  if (ids.length === 0) return 0;
+  const db = getDb();
+  db.run("BEGIN TRANSACTION");
+  try {
+    const delColl = db.prepare(
+      "DELETE FROM collection_tracks WHERE track_id = ?",
+    );
+    const delTrack = db.prepare("DELETE FROM tracks WHERE id = ?");
+    for (const id of ids) {
+      delColl.bind([id]);
+      delColl.step();
+      delColl.reset();
+      delTrack.bind([id]);
+      delTrack.step();
+      delTrack.reset();
+    }
+    delColl.free();
+    delTrack.free();
+    db.run("COMMIT");
+  } catch (err) {
+    db.run("ROLLBACK");
+    throw err;
+  }
+  persistDb();
+  return ids.length;
+}
+
+// 폴더 rename(디스크 rename은 호출부에서 이미 수행)에 맞춰 하위 트랙들의 file_path 접두사를
+// 옛 폴더 경로 → 새 폴더 경로로 일괄 치환한다. filename(파일명)은 바뀌지 않는다.
+export function updateFolderTrackPaths(
+  rows: { id: number; filePath: string }[],
+  oldRealFolder: string,
+  newRealFolder: string,
+): void {
+  const db = getDb();
+  db.run("BEGIN TRANSACTION");
+  try {
+    const upd = db.prepare("UPDATE tracks SET file_path = ? WHERE id = ?");
+    for (const r of rows) {
+      const suffix = r.filePath.slice(oldRealFolder.length);
+      const newPath = newRealFolder + suffix;
+      upd.bind([newPath, r.id]);
+      upd.step();
+      upd.reset();
+    }
+    upd.free();
+    db.run("COMMIT");
+  } catch (err) {
+    db.run("ROLLBACK");
+    throw err;
+  }
+  persistDb();
+}
+
 function applyTagPatch(
   currentTags: string[],
   patch: TrackMetadataPatch,

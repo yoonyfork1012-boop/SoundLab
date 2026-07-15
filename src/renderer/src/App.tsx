@@ -182,6 +182,12 @@ export default function App(): JSX.Element {
     y: number;
     library: Library;
   } | null>(null);
+  const [folderMenu, setFolderMenu] = useState<{
+    x: number;
+    y: number;
+    node: FolderNode;
+    library: Library;
+  } | null>(null);
   const [colorPicker, setColorPicker] = useState<{
     x: number;
     y: number;
@@ -666,6 +672,119 @@ export default function App(): JSX.Element {
     });
   }
 
+  // 사이드바 노드가 라이브러리 루트인지(하위 폴더가 아니라) 판정
+  function isLibraryRoot(node: FolderNode, library: Library): boolean {
+    return norm(node.path) === norm(library.rootPath);
+  }
+
+  // ✕ 제거 — 라이브러리 루트면 라이브러리 제거, 하위 폴더면 그 폴더 하위 트랙만 인덱스에서 제거.
+  function handleRemoveNode(node: FolderNode, library: Library): void {
+    if (isLibraryRoot(node, library)) {
+      if (
+        confirm(
+          `"${node.name}" 라이브러리를 제거할까요? (실제 파일은 삭제되지 않습니다)`,
+        )
+      )
+        void handleRemoveLibrary(library.id);
+    } else {
+      void handleRemoveFolder(node, library);
+    }
+  }
+
+  // 우클릭 — 라이브러리 루트면 라이브러리 메뉴, 하위 폴더면 폴더 메뉴.
+  function handleNodeContextMenu(
+    e: React.MouseEvent,
+    node: FolderNode,
+    library: Library,
+  ): void {
+    if (isLibraryRoot(node, library)) {
+      setLibraryMenu({ x: e.clientX, y: e.clientY, library });
+    } else {
+      setFolderMenu({ x: e.clientX, y: e.clientY, node, library });
+    }
+  }
+
+  // 하위 폴더 제거 — 폴더 하위 트랙을 인덱스에서만 제거(실제 파일 보존). 선택/탭도 정리.
+  async function handleRemoveFolder(
+    node: FolderNode,
+    library: Library,
+  ): Promise<void> {
+    if (!window.api) return;
+    if (
+      !confirm(
+        `"${node.name}" 폴더의 사운드 ${node.trackCount.toLocaleString()}개를 라이브러리에서 제거할까요? (실제 파일은 삭제되지 않습니다)`,
+      )
+    )
+      return;
+    const { libraries: allLibs, tracks: allTracks } =
+      await window.api.removeFolder(library.id, node.path);
+    setLibraries(allLibs);
+    setTracks(allTracks);
+    // selectedFolder는 활성 탭의 folder에서 파생되므로, 탭들을 정리하면 선택도 함께 풀린다.
+    const prefix = norm(node.path) + "/";
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.folder && (norm(t.folder) + "/").startsWith(prefix)
+          ? { ...t, folder: null }
+          : t,
+      ),
+    );
+    showToast(
+      `Removed ${node.trackCount.toLocaleString()} sounds from library`,
+    );
+  }
+
+  // 하위 폴더 이름변경 — 실제 디스크 폴더를 리네임하고 하위 트랙 경로를 갱신. 트리가 경로에서
+  // 파생되므로 이름 변경을 영속하려면 실제 폴더를 바꿔야 한다. 성공 후 선택/탭을 새 경로로 재지정.
+  function handleRenameFolder(
+    libraryId: number,
+    folderPath: string,
+    currentName: string,
+  ): void {
+    setNamePrompt({
+      title: "Rename folder",
+      defaultValue: currentName,
+      confirmLabel: "Rename",
+      onSubmit: async (name) => {
+        setNamePrompt(null);
+        if (!window.api) return;
+        const trimmed = name.trim();
+        if (!trimmed || trimmed === currentName) return;
+        try {
+          const res = await window.api.renameFolder(
+            libraryId,
+            folderPath,
+            trimmed,
+          );
+          if (!res) return;
+          setLibraries(res.libraries);
+          setTracks(res.tracks);
+          const oldNorm = norm(folderPath);
+          const newNorm =
+            oldNorm.slice(0, oldNorm.length - currentName.length) + trimmed;
+          const remap = (p: string): string => {
+            const n = norm(p);
+            if (n === oldNorm) return newNorm;
+            if ((n + "/").startsWith(oldNorm + "/"))
+              return newNorm + n.slice(oldNorm.length);
+            return p;
+          };
+          // selectedFolder는 활성 탭 folder에서 파생 — 탭들을 새 경로로 재지정하면 선택도 따라온다.
+          setTabs((prev) =>
+            prev.map((t) =>
+              t.folder ? { ...t, folder: remap(t.folder) } : t,
+            ),
+          );
+          showToast(`Renamed folder (${res.renamed.toLocaleString()} sounds)`);
+        } catch (err) {
+          showToast(
+            `Rename failed: ${(err as Error)?.message ?? "unknown error"}`,
+          );
+        }
+      },
+    });
+  }
+
   async function handleToggleMonitor(library: Library): Promise<void> {
     if (!window.api) return;
     const next = !library.monitor;
@@ -1091,10 +1210,20 @@ export default function App(): JSX.Element {
       if (selectedTrack?.starred) void handleToggleStar(selectedTrack);
     }
   }
-  // F2: rename the active collection or the current library
+  // F2: 활성 컬렉션 → 컬렉션 이름변경; 라이브러리 루트 선택 → 라이브러리(표시명) 변경;
+  // 하위 폴더 선택 → 실제 폴더 이름변경(디스크 rename + 경로 갱신).
   function handleRenameShortcut(): void {
-    if (activeCollection) handleRenameCollection(activeCollection);
-    else if (currentLibrary) handleRenameLibrary(currentLibrary);
+    if (activeCollection) {
+      handleRenameCollection(activeCollection);
+      return;
+    }
+    if (!currentLibrary || !selectedFolder) return;
+    if (norm(selectedFolder) === norm(currentLibrary.rootPath)) {
+      handleRenameLibrary(currentLibrary);
+    } else {
+      const name = norm(selectedFolder).split("/").pop() ?? selectedFolder;
+      handleRenameFolder(currentLibrary.id, selectedFolder, name);
+    }
   }
 
   useEffect(() => {
@@ -1433,7 +1562,7 @@ export default function App(): JSX.Element {
             tracks={tracks}
             onOpenFolder={handleOpenFolder}
             onRefreshLocal={() => void handleRefreshAllLibraries()}
-            onRemoveLibrary={handleRemoveLibrary}
+            onRemoveNode={handleRemoveNode}
             selectedFolder={selectedFolder}
             onSelectFolder={(p) => {
               setSelectedFolder(p);
@@ -1466,9 +1595,7 @@ export default function App(): JSX.Element {
             onCollectionContextMenu={(e, collection) =>
               setCollectionMenu({ x: e.clientX, y: e.clientY, collection })
             }
-            onLibraryContextMenu={(e, library) =>
-              setLibraryMenu({ x: e.clientX, y: e.clientY, library })
-            }
+            onNodeContextMenu={handleNodeContextMenu}
             scanning={scanning}
             scanProgress={scanProgress}
             watchStatus={watchStatus}
@@ -1778,6 +1905,51 @@ export default function App(): JSX.Element {
               label: "Remove",
               danger: true,
               onClick: () => void handleRemoveLibrary(libraryMenu.library.id),
+            },
+          ]}
+        />
+      )}
+
+      {folderMenu && (
+        <ContextMenu
+          x={folderMenu.x}
+          y={folderMenu.y}
+          onClose={() => setFolderMenu(null)}
+          width={220}
+          items={[
+            {
+              key: "search",
+              label: "Search in this folder",
+              onClick: () => {
+                setSelectedFolder(folderMenu.node.path);
+                setSelectedCollection(null);
+                setShowStarredOnly(false);
+                searchInputRef.current?.focus();
+              },
+            },
+            {
+              key: "explorer",
+              label: "Show in Explorer",
+              onClick: () =>
+                void window.api?.showInExplorer(folderMenu.node.path),
+            },
+            {
+              key: "rename",
+              label: "Rename",
+              onClick: () =>
+                handleRenameFolder(
+                  folderMenu.library.id,
+                  folderMenu.node.path,
+                  folderMenu.node.name,
+                ),
+            },
+            { key: "sep1", separator: true },
+            {
+              key: "remove",
+              label: "Remove",
+              danger: true,
+              onClick: () =>
+                void handleRemoveFolder(folderMenu.node, folderMenu.library),
             },
           ]}
         />

@@ -9,7 +9,7 @@ import type {
 import { loadBool, loadJSON, saveBool, saveJSON } from "../../lib/uiState";
 import FolderTree from "./FolderTree";
 import IndexingIndicator from "../IndexingIndicator/IndexingIndicator";
-import type { LibraryTree } from "../../lib/folderTree";
+import type { FolderNode, LibraryTree } from "../../lib/folderTree";
 
 // 트리 타입은 메인/렌더러 공유 모듈에서 온다 — 기존 임포트 호환을 위해 재-export.
 export type { LibraryTree };
@@ -22,7 +22,8 @@ interface SidebarProps {
   tracks: Track[];
   onOpenFolder: () => void;
   onRefreshLocal: () => void;
-  onRemoveLibrary: (id: number) => void;
+  // 어느 폴더든(라이브러리 루트/하위) ✕ 제거 — 루트/하위 구분과 확인은 상위(App)가 처리.
+  onRemoveNode: (node: FolderNode, library: Library) => void;
   selectedFolder: string | null;
   onSelectFolder: (path: string | null) => void;
   collections: Collection[];
@@ -37,7 +38,12 @@ interface SidebarProps {
     e: React.MouseEvent,
     collection: Collection,
   ) => void;
-  onLibraryContextMenu?: (e: React.MouseEvent, library: Library) => void;
+  // 어느 폴더든 우클릭 — 라이브러리 루트/하위 폴더에 따라 App이 알맞은 메뉴를 연다.
+  onNodeContextMenu?: (
+    e: React.MouseEvent,
+    node: FolderNode,
+    library: Library,
+  ) => void;
   scanning?: boolean;
   scanProgress?: ScanProgress | null;
   watchStatus?: WatchStatus | null;
@@ -87,7 +93,7 @@ export default function Sidebar({
   tracks,
   onOpenFolder,
   onRefreshLocal,
-  onRemoveLibrary,
+  onRemoveNode,
   selectedFolder,
   onSelectFolder,
   collections,
@@ -99,7 +105,7 @@ export default function Sidebar({
   onToggleStarredView,
   onSelectLocalRoot,
   onCollectionContextMenu,
-  onLibraryContextMenu,
+  onNodeContextMenu,
   scanning = false,
   scanProgress = null,
   watchStatus = null,
@@ -205,10 +211,10 @@ export default function Sidebar({
                   expandedMap={expandedMap}
                   onToggleExpand={toggleExpand}
                   defaultExpanded={trees.length === 1}
-                  onRemove={() => onRemoveLibrary(library.id)}
-                  onContextMenu={(e) => {
+                  onRemoveNode={(node) => onRemoveNode(node, library)}
+                  onContextMenu={(e, node) => {
                     e.preventDefault();
-                    onLibraryContextMenu?.(e, library);
+                    onNodeContextMenu?.(e, node, library);
                   }}
                 />
               </div>
