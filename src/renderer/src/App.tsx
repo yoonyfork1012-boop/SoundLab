@@ -16,11 +16,13 @@ import ShortcutsModal from "./components/ShortcutsModal/ShortcutsModal";
 import PublisherSettingsModal from "./components/PublisherSettingsModal/PublisherSettingsModal";
 import BatchEditModal from "./components/BatchEditModal/BatchEditModal";
 import DuplicatesModal from "./components/DuplicatesModal/DuplicatesModal";
+import ScanErrorsModal from "./components/ScanErrorsModal/ScanErrorsModal";
 import type {
   Collection,
   Library,
   PublisherRule,
   ScanProgress,
+  ScanSummary,
   Track,
   TrackMetadataPatch,
   WatchStatus,
@@ -146,7 +148,12 @@ export default function App(): JSX.Element {
   // 문제가 생긴다. 서버 응답으로 상태를 통째로 교체하는 뮤테이션은 commitServerState로
   // 세대를 올려두고, loadAll은 세대가 0일 때(그 사이 아무 변경도 없었을 때)만 적용한다.
   const serverStateGenRef = useRef(0);
-  function commitServerState(libs: Library[], nextTracks?: Track[]): void {
+  function commitServerState(
+    libs: Library[],
+    // null이면 "이번 작업으로 트랙이 하나도 바뀌지 않았다"는 뜻 — 메인이 519k 트랙을
+    // 굳이 실어 보내지 않으므로, 렌더러도 기존 목록을 그대로 유지한다.
+    nextTracks?: Track[] | null,
+  ): void {
     serverStateGenRef.current++;
     setLibraries(libs);
     // nextTracks가 오는 응답은 항상 전체 트랙(getAllTracks)이다. 이 뮤테이션이 startup
@@ -323,6 +330,28 @@ export default function App(): JSX.Element {
   }
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [watchStatus, setWatchStatus] = useState<WatchStatus | null>(null);
+  // 손상/읽기 실패로 건너뛴 파일 목록 — 인덱싱은 중단하지 않고 여기 모아 뒤에 보여준다.
+  const [scanErrors, setScanErrors] = useState<
+    { filePath: string; message: string }[]
+  >([]);
+  const [scanErrorsOpen, setScanErrorsOpen] = useState(false);
+
+  // 스캔 결과를 토스트 한 줄로 요약하고, 오류가 있으면 목록으로 넘긴다.
+  function applyScanSummary(summary: ScanSummary): void {
+    setScanErrors(summary.errors);
+    const parts: string[] = [];
+    if (summary.added) parts.push(`신규 ${summary.added.toLocaleString()}`);
+    if (summary.updated) parts.push(`변경 ${summary.updated.toLocaleString()}`);
+    if (summary.moved) parts.push(`이동 ${summary.moved.toLocaleString()}`);
+    if (summary.removed) parts.push(`삭제 ${summary.removed.toLocaleString()}`);
+    let text =
+      parts.length > 0
+        ? `인덱싱 완료 — ${parts.join(", ")}`
+        : `변경 없음 (기존 ${summary.skipped.toLocaleString()}개 그대로 사용)`;
+    if (summary.errors.length > 0)
+      text += ` · 오류 ${summary.errors.length}개 건너뜀`;
+    showToast(text);
+  }
 
   // 진행 ?�벤?��? ?�면(?�동 ?�캔?�든 백그?�운??감시 ?�스캔이?? ?�덱???�시�?켠다
   useEffect(() => {
@@ -337,47 +366,80 @@ export default function App(): JSX.Element {
   // (?�동 ?�캔 ?�들?��? 거치지 ?�으므�? ?�기??직접 ?�덱???�시�??�다
   useEffect(() => {
     if (!window.api?.onLibraryUpdated) return;
-    return window.api.onLibraryUpdated(({ libraries, tracks }) => {
+    return window.api.onLibraryUpdated(({ libraries, tracks, summary }) => {
       // 감시(watcher) 재스캔도 늦게 오는 startup loadAll이 덮어쓰면 안 되므로 세대를 올린다.
       commitServerState(libraries, tracks);
       setScanning(false);
       setScanProgress(null);
+      if (summary) applyScanSummary(summary);
     });
   }, []);
 
-  // 실시간 감시(watcher)가 보내는 세분화 이벤트 — 폴더 전체를 다시 받지 않고 tracks 배열에
+  // 실시간 감시(watcher)가 보내는 배치 변경분 — 폴더 전체를 다시 받지 않고 tracks 배열에
   // 추가/갱신/제거만 patch한다. 정렬/검색/필터/스크롤은 이 상태들과 무관하게 유지되므로
   // 리스트가 위아래로 튀거나 초기화되지 않는다.
+  //
+  // 한 배치를 setTracks 한 번으로 적용하는 게 핵심이다 — 파일을 100개 복사했을 때 트랙마다
+  // 상태를 갱신하면 tracks에서 파생되는 인덱스(폴더트리/trackKeys/searchBlobs)가 519k 규모로
+  // 100번 다시 계산되어 앱이 그동안 굳는다.
   useEffect(() => {
-    if (!window.api?.onTrackAdded) return;
-    return window.api.onTrackAdded((track) => {
-      setTracks((prev) =>
-        prev.some((t) => t.id === track.id)
-          ? prev.map((t) => (t.id === track.id ? track : t))
-          : [...prev, track],
-      );
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!window.api?.onTrackUpdated) return;
-    return window.api.onTrackUpdated((track) => {
-      setTracks((prev) => prev.map((t) => (t.id === track.id ? track : t)));
-      setSelectedTrack((prev) => (prev && prev.id === track.id ? track : prev));
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!window.api?.onTrackRemoved) return;
-    return window.api.onTrackRemoved((trackId) => {
-      setTracks((prev) => prev.filter((t) => t.id !== trackId));
-      setSelectedTrack((prev) => (prev && prev.id === trackId ? null : prev));
-      setSelectedIds((prev) => {
-        if (!prev.has(trackId)) return prev;
-        const next = new Set(prev);
-        next.delete(trackId);
+    if (!window.api?.onTracksChanged) return;
+    return window.api.onTracksChanged(({ added, updated, removedIds }) => {
+      setTracks((prev) => {
+        if (
+          added.length === 0 &&
+          updated.length === 0 &&
+          removedIds.length === 0
+        )
+          return prev;
+        const removed = new Set(removedIds);
+        // 추가분 중 이미 목록에 있는 것(같은 경로 재인덱싱)은 갱신으로 취급한다.
+        const patch = new Map<number, Track>();
+        for (const t of updated) patch.set(t.id, t);
+        for (const t of added) patch.set(t.id, t);
+        let next = prev;
+        if (removed.size > 0 || patch.size > 0) {
+          next = [];
+          for (const t of prev) {
+            if (removed.has(t.id)) continue;
+            const patched = patch.get(t.id);
+            if (patched) {
+              next.push(patched);
+              patch.delete(t.id);
+            } else {
+              next.push(t);
+            }
+          }
+          // 목록에 없던 신규 트랙은 뒤에 붙인다(정렬은 visibleTracks가 담당).
+          for (const t of patch.values()) next.push(t);
+        }
         return next;
       });
+      const byId = new Map<number, Track>();
+      for (const t of updated) byId.set(t.id, t);
+      for (const t of added) byId.set(t.id, t);
+      setSelectedTrack((prev) => {
+        if (!prev) return prev;
+        if (removedIds.includes(prev.id)) return null;
+        return byId.get(prev.id) ?? prev;
+      });
+      if (removedIds.length > 0) {
+        setSelectedIds((prev) => {
+          if (!removedIds.some((id) => prev.has(id))) return prev;
+          const next = new Set(prev);
+          for (const id of removedIds) next.delete(id);
+          return next;
+        });
+      }
+    });
+  }, []);
+
+  // 백그라운드 스캔이 "변경 없음"으로 끝났을 때 — 인덱싱 표시만 끈다.
+  useEffect(() => {
+    if (!window.api?.onScanDone) return;
+    return window.api.onScanDone(() => {
+      setScanning(false);
+      setScanProgress(null);
     });
   }, []);
 
@@ -671,18 +733,12 @@ export default function App(): JSX.Element {
     if (!window.api) return;
     setScanning(true);
     try {
-      const {
-        libraries: allLibs,
-        tracks: allTracks,
-        addedCount,
-      } = await window.api.scanNewFiles(library.id, library.rootPath);
-      commitServerState(allLibs, allTracks);
-      showToast(
-        addedCount > 0 ? `Added ${addedCount} new files` : "No new files",
-      );
+      const res = await window.api.scanNewFiles(library.id, library.rootPath);
+      commitServerState(res.libraries, res.tracks);
+      applyScanSummary(res.summary);
     } catch (err) {
       showToast(
-        `Failed to scan for new files: ${(err as Error)?.message ?? "unknown error"}`,
+        `새 파일 검사 실패: ${(err as Error)?.message ?? "unknown error"}`,
       );
     } finally {
       setScanning(false);
@@ -695,39 +751,65 @@ export default function App(): JSX.Element {
   }
 
   // 수동 "Refresh / Rescan" — 실시간 감시가 켜져 있어도, 사용자가 원할 때 해당 라이브러리
-  // 폴더 하나만 즉시 재확인. scanLibrary는 mtime/size가 그대로인 파일은 건너뛰므로 대용량
-  // 폴더에서도 증분으로 동작한다(전체 앱 재인덱싱이 아님).
+  // 폴더 하나만 즉시 재확인. 증분이라 변경되지 않은 기존 파일은 다시 분석하지 않는다.
   async function handleRescanLibrary(library: Library): Promise<void> {
     if (!window.api) return;
     setScanning(true);
     try {
-      const { libraries: allLibs, tracks: allTracks } =
-        await window.api.rescanLibrary(library.rootPath);
-      commitServerState(allLibs, allTracks);
-      showToast("Rescanned");
+      const res = await window.api.rescanLibrary(library.rootPath);
+      commitServerState(res.libraries, res.tracks);
+      applyScanSummary(res.summary);
     } catch (err) {
-      showToast(`Rescan failed: ${(err as Error)?.message ?? "unknown error"}`);
+      showToast(`재검사 실패: ${(err as Error)?.message ?? "unknown error"}`);
     } finally {
       setScanning(false);
       setScanProgress(null);
     }
   }
 
+  // Local 옆 인덱싱 버튼 — 전체 라이브러리 증분 인덱싱. 새로 추가/변경/이동/삭제된 것만
+  // 처리하고 그대로인 파일은 건드리지 않는다. 전체 재인덱싱은 라이브러리 우클릭 메뉴에 있다.
   async function handleRefreshAllLibraries(): Promise<void> {
     if (!window.api) return;
     if (libraries.length === 0) {
-      showToast("No libraries to refresh");
+      showToast("인덱싱할 라이브러리가 없습니다");
       return;
     }
     setScanning(true);
     try {
-      const { libraries: allLibs, tracks: allTracks } =
-        await window.api.refreshAllLibraries();
-      commitServerState(allLibs, allTracks);
-      showToast("Library refreshed");
+      const res = await window.api.refreshAllLibraries();
+      commitServerState(res.libraries, res.tracks);
+      applyScanSummary(res.summary);
+    } catch (err) {
+      showToast(`인덱싱 실패: ${(err as Error)?.message ?? "unknown error"}`);
+    } finally {
+      setScanning(false);
+      setScanProgress(null);
+    }
+  }
+
+  // 보조 메뉴 전용 — 인덱스가 실제 파일과 어긋났을 때만 쓰는 복구 수단.
+  // 증분 비교를 전부 무시하고 라이브러리의 모든 파일을 처음부터 다시 분석한다.
+  async function handleFullReindex(library: Library): Promise<void> {
+    if (!window.api) return;
+    if (
+      !confirm(
+        `"${library.name}" 라이브러리의 모든 사운드를 처음부터 다시 분석할까요?\n` +
+          `파일이 많으면 오래 걸립니다. 평소에는 인덱싱 버튼(변경분만)을 쓰세요.`,
+      )
+    )
+      return;
+    setScanning(true);
+    try {
+      const res = await window.api.fullReindexLibrary(
+        library.id,
+        library.rootPath,
+      );
+      commitServerState(res.libraries, res.tracks);
+      applyScanSummary(res.summary);
     } catch (err) {
       showToast(
-        `Refresh failed: ${(err as Error)?.message ?? "unknown error"}`,
+        `전체 재인덱싱 실패: ${(err as Error)?.message ?? "unknown error"}`,
       );
     } finally {
       setScanning(false);
@@ -941,10 +1023,10 @@ export default function App(): JSX.Element {
     if (!folder) return;
     setScanning(true);
     try {
-      // ?�더 추�? = ?�적. ?�캔 ???�체�??�시 받아 반영(기존 ?�이브러�??��?)
-      const { libraries: allLibs, tracks: allTracks } =
-        await window.api.scanLibrary(folder);
-      commitServerState(allLibs, allTracks);
+      // 폴더 추가 = 누적. 스캔 후 전체를 다시 받아 반영(기존 라이브러리 유지)
+      const res = await window.api.scanLibrary(folder);
+      commitServerState(res.libraries, res.tracks);
+      applyScanSummary(res.summary);
       // 라이브러리를 추가하면 그 루트를 연 탭을 새로 띄운다(첫 실행 시 유일한 탭 생성 경로)
       const tab = { ...newTab(), folder };
       setTabs((prev) => [...prev, tab]);
@@ -1189,6 +1271,17 @@ export default function App(): JSX.Element {
   // "시작 시 전체 파일 미리 인덱싱"이 이 배열 생성에 해당한다.
   const searchBlobs = useMemo(() => tracks.map(buildSearchBlob), [tracks]);
 
+  // 폴더를 선택하면(=selectedFolder 있음) 하위 폴더가 없어도 사운드를 리스트로 보여주고
+  // (Soundly 방식), 폴더 카드 그리드는 최상위 진입 화면(아무것도 선택 안 된 상태)에서만 뜬다.
+  const isFiltering = Boolean(
+    deferredSearch.trim() || showStarredOnly || deferredActiveCollection,
+  );
+  const showGrid =
+    view === "grid" &&
+    !isFiltering &&
+    !deferredFolder &&
+    rootFolders.length > 0;
+
   const visibleTracks = useMemo(() => {
     // 탭이 없는 빈 워크스페이스에서는 아무 트랙도 없다. 렌더뿐 아니라 여기서 막아야
     // 재생 큐(next/prev)와 전체 선택(Ctrl+A)도 전체 라이브러리를 훑지 않는다.
@@ -1224,6 +1317,10 @@ export default function App(): JSX.Element {
       const q = deferredSubSearch.toLowerCase();
       base = base.filter((t) => trackMatchesQuery(buildSearchBlob(t), q));
     }
+    // 폴더 카드 그리드를 보고 있을 때는 리스트를 그리지 않는다. 그런데 여기서 정렬까지
+    // 해버리면 Local을 누를 때마다 라이브러리 전체(수십만 트랙)를 정렬하느라 클릭이 멈춘다.
+    // 화면에 쓰이지 않는 정렬은 건너뛴다(리스트로 전환되면 그때 정렬된다).
+    if (showGrid) return base;
     // shuffled면 리스트를 매번 새 순서로 섞고, 아니면 정렬 상태(또는 기본 순서)로 표시
     base = shuffled
       ? shuffleTracks(base, shuffleSeed)
@@ -1231,6 +1328,7 @@ export default function App(): JSX.Element {
     return base;
   }, [
     activeTab,
+    showGrid,
     tracks,
     trackKeys,
     searchBlobs,
@@ -1245,17 +1343,6 @@ export default function App(): JSX.Element {
     shuffled,
     shuffleSeed,
   ]);
-
-  const isFiltering = Boolean(
-    deferredSearch.trim() || showStarredOnly || deferredActiveCollection,
-  );
-  // ?�더�??�택?�면(=selectedFolder ?�음) ?�위 ?�더가 ?�어???�운?��? ?��?�?보여�?(Soundly 방식).
-  // ?�더 카드 그리?�는 최상??진입 ?�면(?�무 ?�더???�택 ?????�서�??�시.
-  const showGrid =
-    view === "grid" &&
-    !isFiltering &&
-    !deferredFolder &&
-    rootFolders.length > 0;
 
   function selectRelative(delta: number): void {
     // Shuffle mode still moves through the visible track list
@@ -1703,6 +1790,8 @@ export default function App(): JSX.Element {
             scanning={scanning}
             scanProgress={scanProgress}
             watchStatus={watchStatus}
+            scanErrorCount={scanErrors.length}
+            onShowScanErrors={() => setScanErrorsOpen(true)}
           />
         )}
 
@@ -1985,13 +2074,18 @@ export default function App(): JSX.Element {
             },
             {
               key: "scannew",
-              label: "Scan for new files",
+              label: "새 파일만 검사",
               onClick: () => void handleScanNewFiles(libraryMenu.library),
             },
             {
               key: "rescan",
-              label: "Refresh / Rescan",
+              label: "변경분 인덱싱 (증분)",
               onClick: () => void handleRescanLibrary(libraryMenu.library),
+            },
+            {
+              key: "fullreindex",
+              label: "전체 재인덱싱 (복구용)",
+              onClick: () => void handleFullReindex(libraryMenu.library),
             },
             {
               key: "explorer",
@@ -2066,6 +2160,12 @@ export default function App(): JSX.Element {
 
       {showShortcuts && (
         <ShortcutsModal onClose={() => setShowShortcuts(false)} />
+      )}
+      {scanErrorsOpen && scanErrors.length > 0 && (
+        <ScanErrorsModal
+          errors={scanErrors}
+          onClose={() => setScanErrorsOpen(false)}
+        />
       )}
       {duplicatesOpen && (
         <DuplicatesModal

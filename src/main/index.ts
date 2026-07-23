@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow, ipcMain } from "electron";
 import { join } from "path";
 import { rm } from "fs/promises";
 import { readFileSync } from "fs";
-import { registerIpcHandlers } from "./ipc";
+import { registerIpcHandlers, runStartupReconcile } from "./ipc";
 import { closeDb, flushPersist, initDb } from "./db";
 import { getAllLibraries } from "./db/queries";
 import { startWatching, stopAllWatching } from "./watcher";
@@ -255,6 +255,12 @@ if (!gotLock) {
     ipcMain.once("app:renderer-ready", () => {
       rendererReady = true;
       tryReveal();
+      // 앱이 꺼져 있는 동안 폴더에서 일어난 변경을 백그라운드로 따라잡는다. 창이 이미
+      // 보인 뒤에 시작하므로 사용자는 기다리지 않고, 변경이 없으면 폴더 mtime 확인만
+      // 하고 곧바로 끝난다(전체 재인덱싱이 아니다).
+      setTimeout(() => {
+        if (!mainWindow.isDestroyed()) void runStartupReconcile(mainWindow);
+      }, 1500);
     });
 
     // 안전장치: 렌더러가 어떤 이유로든 준비 신호를 못 보내는 경우(예외 등) 무한정

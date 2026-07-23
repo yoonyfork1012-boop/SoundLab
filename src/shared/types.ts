@@ -58,10 +58,40 @@ export interface Library {
 }
 
 export interface ScanProgress {
-  phase: "discovering" | "parsing";
+  phase: "discovering" | "parsing" | "finalizing";
   scanned: number;
   total: number;
   currentFile: string;
+  // 증분 인덱싱 진행 상황 — 신규/변경/이동/삭제/건너뜀을 구분해 보여준다.
+  // (기존 호출부 호환을 위해 전부 선택 필드)
+  added?: number;
+  updated?: number;
+  moved?: number;
+  removed?: number;
+  skipped?: number;
+  errors?: number;
+  libraryName?: string;
+}
+
+// 스캔 한 번의 결과 요약 — 토스트/로그로 사용자에게 보여준다.
+export interface ScanSummary {
+  added: number;
+  updated: number;
+  moved: number;
+  removed: number;
+  // 변경이 없어 재분석을 건너뛴 파일 수(디렉터리 프루닝으로 stat조차 생략한 것 포함)
+  skipped: number;
+  // 손상/읽기 실패로 건너뛴 파일. 전체 인덱싱을 중단시키지 않고 여기에만 모인다.
+  errors: { filePath: string; message: string }[];
+}
+
+// watcher가 배치로 모아 보내는 라이브러리 변경분 — 트랙 1건마다 렌더러 상태를 갱신하면
+// 수십만 트랙에서 파생 인덱스(폴더트리/검색 blob)가 매번 통째로 재계산되므로,
+// 한 배치를 한 번의 상태 업데이트로 적용할 수 있게 묶어서 보낸다.
+export interface TracksChanged {
+  added: Track[];
+  updated: Track[];
+  removedIds: number[];
 }
 
 export interface Collection {

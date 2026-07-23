@@ -87,6 +87,16 @@ export async function initDb(): Promise<void> {
       PRIMARY KEY (collection_id, track_id)
     );
 
+    -- 증분 인덱싱용 디렉터리 스냅샷. 폴더의 mtime이 지난 스캔 때와 같으면 그 폴더
+    -- 직속 파일들은 추가/삭제/이름변경이 없었다는 뜻이라 파일별 stat을 통째로 건너뛴다.
+    -- (수십만 파일 라이브러리에서 재스캔 시간을 지배하던 것이 이 stat 호출이었다.)
+    CREATE TABLE IF NOT EXISTS scan_dirs (
+      library_id INTEGER NOT NULL,
+      dir_path TEXT NOT NULL,
+      mtime_ms REAL,
+      PRIMARY KEY (library_id, dir_path)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tracks_category ON tracks(category);
     CREATE INDEX IF NOT EXISTS idx_tracks_filename ON tracks(filename);
     CREATE INDEX IF NOT EXISTS idx_tracks_library ON tracks(library_id);

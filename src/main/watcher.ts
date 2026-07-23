@@ -1,12 +1,14 @@
 import { watch as fsWatch, type FSWatcher } from "fs";
 import { existsSync } from "fs";
 import { stat as fsStat } from "fs/promises";
-import { extname, join } from "path";
+import { join } from "path";
 import type { BrowserWindow } from "electron";
 import {
+  collectAudioFilesUnder,
   computeFileHash,
   indexSingleFile,
-  SUPPORTED_EXTENSIONS,
+  isIgnoredFilename,
+  isIndexableAudioFile,
 } from "./scanner";
 import {
   deleteTrackByPath,
@@ -14,9 +16,10 @@ import {
   getTrackByPath,
   updateTrackPathOnly,
 } from "./db/queries";
-import { persistDb } from "./db";
+import { schedulePersist } from "./db";
+import { runExclusive } from "./db/txLock";
 import { removeEmbeddedArtworkCache } from "./artwork";
-import type { WatchStatus } from "../shared/types";
+import type { Track, TracksChanged, WatchStatus } from "../shared/types";
 
 // 실시간 라이브러리 감시 — Soundly의 "Monitor for changes".
 //
@@ -34,6 +37,8 @@ const DEBOUNCE_MS = 400;
 // 안정화 체크 — 이 간격을 두고 두 번 stat해서 size/mtime이 같으면 "쓰기가 끝났다"고 판단한다.
 // 대용량 파일 복사 도중에는 계속 달라지므로 안정될 때까지 재검사를 반복한다.
 const STABILITY_GAP_MS = 400;
+// 안정화 재시도 상한 — 계속 쓰이는 로그성 파일이 무한 루프를 돌지 않도록.
+const MAX_SETTLE_ATTEMPTS = 40;
 // unlink 이후 이 시간 안에 동일 내용의 add가 오면 rename/move로 간주. 그 전에는 실제 삭제를
 // 확정하지 않는다 — "삭제 후 재추가" 같은 연속 이벤트에도 중복/오탐 없이 대응하기 위함.
 const RENAME_GRACE_MS = 3000;
@@ -41,8 +46,14 @@ const RENAME_GRACE_MS = 3000;
 const STATUS_LINGER_MS = 3000;
 // watcher 오류 발생 시 자동 재시작까지의 대기 시간
 const RESTART_DELAY_MS = 5000;
+// 폴더 하나가 통째로 복사되었을 때 한 번에 받아들일 파일 수 상한 — 그 이상은 수동/증분
+// 스캔이 처리한다(감시 큐가 수만 건으로 부풀어 앱이 굳는 것을 방지).
+const DIR_ADD_LIMIT = 5000;
 
-type QueueEvent = { type: "add" | "change" | "unlink"; path: string };
+type QueueEvent = {
+  type: "add" | "change" | "unlink" | "adddir";
+  path: string;
+};
 
 interface PendingRemoval {
   filePath: string;
@@ -52,10 +63,6 @@ interface PendingRemoval {
   timer: NodeJS.Timeout;
 }
 
-function isSupportedFile(path: string): boolean {
-  return SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase());
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -63,14 +70,20 @@ function delay(ms: number): Promise<void> {
 class LibraryWatcher {
   private watcher: FSWatcher | null = null;
   private queue: QueueEvent[] = [];
+  private queued = new Set<string>();
   private draining = false;
   private restarting = false;
   private stopped = false;
   private pendingUnlinks = new Map<string, PendingRemoval>();
   // 경로별 디바운스 타이머 — 안정화 체크가 끝나기 전에 또 이벤트가 오면 다시 미룬다.
   private debounceTimers = new Map<string, NodeJS.Timeout>();
+  private settleAttempts = new Map<string, number>();
   private batchIndexed = 0;
   private batchMoved = 0;
+  // 렌더러로 한 번에 보낼 변경분. 트랙 1건마다 IPC를 보내면 렌더러가 수십만 트랙의 파생
+  // 인덱스(폴더트리/검색 인덱스)를 매 건마다 통째로 다시 만들어 앱이 굳는다.
+  private batchAdded: Track[] = [];
+  private batchUpdated: Track[] = [];
   private lingerTimer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -87,9 +100,11 @@ class LibraryWatcher {
       { recursive: true },
       (_eventType, filename) => {
         if (!filename) return;
-        const absPath = join(this.rootPath, filename.toString());
-        if (!isSupportedFile(absPath)) return;
-        this.scheduleCheck(absPath);
+        const name = filename.toString();
+        const base = name.split(/[\\/]/).pop() ?? name;
+        // 임시 파일/숨김 파일은 아예 큐에 올리지 않는다(복사 중 만들어졌다 사라지는 것들).
+        if (isIgnoredFilename(base)) return;
+        this.scheduleCheck(join(this.rootPath, name));
       },
     );
     watcher.on("error", (err) => this.handleError(err as Error));
@@ -118,27 +133,55 @@ class LibraryWatcher {
     if (this.stopped) return;
     const first = await fsStat(absPath).catch(() => null);
     if (!first) {
-      this.enqueue("unlink", absPath);
+      this.settleAttempts.delete(absPath);
+      // 사라진 경로 — DB에 있던 오디오 파일일 때만 삭제 후보로 다룬다.
+      if (isIndexableAudioFile(absPath)) this.enqueue("unlink", absPath);
       return;
     }
+    // 새로 생긴 폴더(폴더째 복사/이동) — 하위 파일 이벤트가 개별로 오지 않는 경우가 있어
+    // 폴더 단위로 훑어 보완한다.
+    if (first.isDirectory()) {
+      this.settleAttempts.delete(absPath);
+      this.enqueue("adddir", absPath);
+      return;
+    }
+    if (!isIndexableAudioFile(absPath)) {
+      this.settleAttempts.delete(absPath);
+      return;
+    }
+
     await delay(STABILITY_GAP_MS);
     if (this.stopped) return;
     const second = await fsStat(absPath).catch(() => null);
     if (!second) {
+      this.settleAttempts.delete(absPath);
       this.enqueue("unlink", absPath);
       return;
     }
     if (second.size !== first.size || second.mtimeMs !== first.mtimeMs) {
-      // 아직 쓰는 중(대용량 파일 복사 등) — 다시 한 번 디바운스 사이클을 건다
+      // 아직 쓰는 중(대용량 파일 복사 등) — 다시 한 번 디바운스 사이클을 건다.
+      // 끝없이 쓰이는 파일에 물리지 않도록 재시도 횟수에 상한을 둔다.
+      const attempts = (this.settleAttempts.get(absPath) ?? 0) + 1;
+      if (attempts > MAX_SETTLE_ATTEMPTS) {
+        this.settleAttempts.delete(absPath);
+        return;
+      }
+      this.settleAttempts.set(absPath, attempts);
       this.scheduleCheck(absPath);
       return;
     }
+    this.settleAttempts.delete(absPath);
     const alreadyIndexed = !!getTrackByPath(absPath);
     this.enqueue(alreadyIndexed ? "change" : "add", absPath);
   }
 
   private enqueue(type: QueueEvent["type"], path: string): void {
     if (this.stopped) return;
+    // 같은 경로가 큐에 이미 들어 있으면 다시 넣지 않는다 — 자동 감지와 폴더 단위 보완
+    // 스캔이 같은 파일을 두 번 인덱싱하는 것을 막는다.
+    const key = `${type}:${path}`;
+    if (this.queued.has(key)) return;
+    this.queued.add(key);
     this.queue.push({ type, path });
     this.sendStatus({ kind: "updating", count: this.queue.length });
     void this.drain();
@@ -149,6 +192,7 @@ class LibraryWatcher {
     this.draining = true;
     while (this.queue.length > 0) {
       const event = this.queue.shift()!;
+      this.queued.delete(`${event.type}:${event.path}`);
       try {
         await this.process(event);
       } catch (err) {
@@ -167,8 +211,22 @@ class LibraryWatcher {
 
   private async process(event: QueueEvent): Promise<void> {
     if (event.type === "unlink") return this.handleUnlink(event.path);
+    if (event.type === "adddir") return this.handleAddDir(event.path);
     if (event.type === "add") return this.handleAdd(event.path);
     return this.handleChange(event.path);
+  }
+
+  // 새로 생긴(또는 이동해 들어온) 폴더 — 하위 오디오 파일을 큐에 밀어 넣는다.
+  // 이미 인덱싱된 파일은 큐 dedupe와 handleAdd/handleChange가 알아서 정리한다.
+  private async handleAddDir(dirPath: string): Promise<void> {
+    const files = await collectAudioFilesUnder(dirPath, DIR_ADD_LIMIT);
+    for (let i = 0; i < files.length; i++) {
+      // 이미 인덱싱된 파일은 건드리지 않는다(중복 처리 방지)
+      if (getTrackByPath(files[i])) continue;
+      this.enqueue("add", files[i]);
+      // sql.js 조회는 동기라 수천 건을 한 루프에서 돌리면 그동안 메인 프로세스가 멈춘다.
+      if (i % 200 === 199) await new Promise((r) => setImmediate(r));
+    }
   }
 
   // 파일이 사라진 즉시 지우지 않고 그레이스 윈도우 동안 보류한다 — 곧 이름변경/이동으로
@@ -179,7 +237,7 @@ class LibraryWatcher {
     const existing = this.pendingUnlinks.get(filePath);
     if (existing) clearTimeout(existing.timer);
     const timer = setTimeout(
-      () => this.finalizeRemoval(filePath),
+      () => void this.finalizeRemoval(filePath),
       RENAME_GRACE_MS,
     );
     this.pendingUnlinks.set(filePath, {
@@ -193,18 +251,19 @@ class LibraryWatcher {
 
   // 그레이스 윈도우(RENAME_GRACE_MS) 타이머가 만료되면 호출된다 — 이 시점은 큐 드레인
   // 루프가 이미 끝나고 finishBatch()도 이미 실행된 뒤일 수 있으므로(add/change 배치와
-  // 타이밍이 완전히 분리돼 있음), finishBatch의 배치 persist에 얹혀가지 않고 여기서
-  // 직접 persistDb()를 호출한다 — 그렇지 않으면 삭제가 메모리에서만 반영되고 디스크에는
-  // 저장되지 않는 채로 남는다.
-  private finalizeRemoval(filePath: string): void {
+  // 타이밍이 완전히 분리돼 있음), 여기서 직접 변경분을 렌더러로 보내고 저장을 예약한다.
+  private async finalizeRemoval(filePath: string): Promise<void> {
     const pending = this.pendingUnlinks.get(filePath);
     if (!pending) return;
     this.pendingUnlinks.delete(filePath);
-    deleteTrackByPath(filePath);
+    // 진행 중인 스캔 트랜잭션과 겹치지 않도록 같은 큐를 탄다.
+    await runExclusive(() => {
+      deleteTrackByPath(filePath);
+    });
     removeEmbeddedArtworkCache(filePath);
-    persistDb();
+    schedulePersist();
     this.sendStatus({ kind: "removed", message: "Removed 1 missing file" });
-    this.win.webContents.send("library:trackRemoved", pending.trackId);
+    this.sendChanges({ added: [], updated: [], removedIds: [pending.trackId] });
     this.scheduleLinger();
   }
 
@@ -242,36 +301,40 @@ class LibraryWatcher {
       }
       const trackId = matched?.trackId ?? dbCandidateId!;
       const filename = filePath.split(/[\\/]/).pop() ?? filePath;
-      updateTrackPathOnly(trackId, filePath, filename, info.mtimeMs, info.size);
-      const track = getTrackByPath(filePath);
+      const track = await runExclusive(() => {
+        updateTrackPathOnly(
+          trackId,
+          filePath,
+          filename,
+          info.mtimeMs,
+          info.size,
+        );
+        return getTrackByPath(filePath);
+      });
       this.batchMoved++;
-      if (track) this.win.webContents.send("library:trackUpdated", track);
+      if (track) this.batchUpdated.push(track);
       this.scheduleLinger();
       return;
     }
 
     // 3) 완전히 새로운 파일
-    const track = await indexSingleFile(
-      filePath,
-      this.libraryId,
-      this.rootPath,
+    const track = await runExclusive(() =>
+      indexSingleFile(filePath, this.libraryId, this.rootPath),
     );
     if (track) {
       this.batchIndexed++;
-      this.win.webContents.send("library:trackAdded", track);
+      this.batchAdded.push(track);
       this.scheduleLinger();
     }
   }
 
   private async handleChange(filePath: string): Promise<void> {
-    const track = await indexSingleFile(
-      filePath,
-      this.libraryId,
-      this.rootPath,
+    const track = await runExclusive(() =>
+      indexSingleFile(filePath, this.libraryId, this.rootPath),
     );
     if (track) {
       this.batchIndexed++;
-      this.win.webContents.send("library:trackUpdated", track);
+      this.batchUpdated.push(track);
       this.scheduleLinger();
     }
   }
@@ -286,14 +349,21 @@ class LibraryWatcher {
   }
 
   // add/change 이벤트는(삭제와 달리) 큐 드레인 루프 안에서 동기적으로 끝나므로, 배치가
-  // 끝난 시점에 batchIndexed/batchMoved 값이 정확하다 — 삭제(finalizeRemoval)는 별도
-  // 그레이스 타이머로 처리되므로 여기서는 다루지 않는다(자체적으로 persist/상태 전송함).
+  // 끝난 시점에 카운트가 정확하다 — 삭제(finalizeRemoval)는 별도 그레이스 타이머로
+  // 처리되므로 여기서는 다루지 않는다(자체적으로 저장/상태 전송함).
   private finishBatch(): void {
     if (this.batchIndexed === 0 && this.batchMoved === 0) {
       this.sendStatus({ kind: "watching" });
       return;
     }
-    persistDb();
+    // sql.js는 저장할 때마다 DB 전체를 직렬화하므로(대용량에서 수백 ms~수 초) 배치마다
+    // 즉시 쓰지 않고 디바운스 저장에 맡긴다. 종료 시에는 flushPersist가 기록을 보장한다.
+    schedulePersist();
+    this.sendChanges({
+      added: this.batchAdded,
+      updated: this.batchUpdated,
+      removedIds: [],
+    });
     const parts: string[] = [];
     if (this.batchIndexed > 0)
       parts.push(
@@ -306,6 +376,8 @@ class LibraryWatcher {
     this.sendStatus({ kind: "indexed", message: parts.join(" · ") });
     this.batchIndexed = 0;
     this.batchMoved = 0;
+    this.batchAdded = [];
+    this.batchUpdated = [];
     this.scheduleLinger();
   }
 
@@ -323,6 +395,17 @@ class LibraryWatcher {
     }, RESTART_DELAY_MS);
   }
 
+  private sendChanges(changes: TracksChanged): void {
+    if (this.win.isDestroyed()) return;
+    if (
+      changes.added.length === 0 &&
+      changes.updated.length === 0 &&
+      changes.removedIds.length === 0
+    )
+      return;
+    this.win.webContents.send("library:tracksChanged", changes);
+  }
+
   private sendStatus(status: Omit<WatchStatus, "libraryId">): void {
     if (this.win.isDestroyed()) return;
     this.win.webContents.send("library:watchStatus", {
@@ -338,8 +421,10 @@ class LibraryWatcher {
     this.pendingUnlinks.clear();
     for (const timer of this.debounceTimers.values()) clearTimeout(timer);
     this.debounceTimers.clear();
+    this.settleAttempts.clear();
     if (this.lingerTimer) clearTimeout(this.lingerTimer);
     this.queue = [];
+    this.queued.clear();
     this.watcher?.close();
   }
 }

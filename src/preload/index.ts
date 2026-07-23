@@ -3,11 +3,20 @@ import type {
   Collection,
   Library,
   ScanProgress,
+  ScanSummary,
   Track,
   TrackMetadataPatch,
+  TracksChanged,
   WatchStatus,
 } from "../shared/types";
 import type { LibraryTree } from "../shared/folderTree";
+
+// 스캔류 응답 — tracks는 실제로 바뀐 게 있을 때만 실려 온다(null이면 기존 목록 유지).
+interface ScanResult {
+  libraries: Library[];
+  tracks: Track[] | null;
+  summary: ScanSummary;
+}
 
 const api = {
   selectFolder: (): Promise<string | null> =>
@@ -18,9 +27,7 @@ const api = {
 
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
 
-  scanLibrary: (
-    rootPath: string,
-  ): Promise<{ libraries: Library[]; tracks: Track[] }> =>
+  scanLibrary: (rootPath: string): Promise<ScanResult> =>
     ipcRenderer.invoke("library:scan", rootPath),
 
   loadAll: (): Promise<{ libraries: Library[]; tracks: Track[] }> =>
@@ -60,23 +67,26 @@ const api = {
   renameLibrary: (libraryId: number, name: string): Promise<Library[]> =>
     ipcRenderer.invoke("library:rename", libraryId, name),
 
-  scanNewFiles: (
-    libraryId: number,
-    rootPath: string,
-  ): Promise<{ libraries: Library[]; tracks: Track[]; addedCount: number }> =>
+  scanNewFiles: (libraryId: number, rootPath: string): Promise<ScanResult> =>
     ipcRenderer.invoke("library:scanNew", libraryId, rootPath),
 
   showInExplorer: (rootPath: string): Promise<void> =>
     ipcRenderer.invoke("library:showInExplorer", rootPath),
 
   // 수동 "Refresh / Rescan" — 선택한 라이브러리 폴더 하나만 다시 훑어 추가/삭제/변경 반영
-  rescanLibrary: (
-    rootPath: string,
-  ): Promise<{ libraries: Library[]; tracks: Track[] }> =>
+  rescanLibrary: (rootPath: string): Promise<ScanResult> =>
     ipcRenderer.invoke("library:rescan", rootPath),
 
-  refreshAllLibraries: (): Promise<{ libraries: Library[]; tracks: Track[] }> =>
+  // Local 옆 인덱싱 버튼 — 전체 라이브러리 증분 인덱싱(변경분만)
+  refreshAllLibraries: (): Promise<ScanResult> =>
     ipcRenderer.invoke("library:refreshAll"),
+
+  // 보조 메뉴 전용 — 증분 비교를 무시하고 라이브러리를 처음부터 전부 다시 분석
+  fullReindexLibrary: (
+    libraryId: number,
+    rootPath: string,
+  ): Promise<ScanResult> =>
+    ipcRenderer.invoke("library:fullReindex", libraryId, rootPath),
 
   setLibraryMonitor: (
     libraryId: number,
@@ -102,37 +112,42 @@ const api = {
   },
 
   onLibraryUpdated: (
-    callback: (data: { libraries: Library[]; tracks: Track[] }) => void,
+    callback: (data: {
+      libraries: Library[];
+      tracks: Track[];
+      summary?: ScanSummary;
+    }) => void,
   ): (() => void) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
-      data: { libraries: Library[]; tracks: Track[] },
+      data: { libraries: Library[]; tracks: Track[]; summary?: ScanSummary },
     ): void => callback(data);
     ipcRenderer.on("library:updated", listener);
     return () => ipcRenderer.removeListener("library:updated", listener);
   },
 
-  // 실시간 감시(watcher)로 파일 1개가 추가/이동/변경/삭제됐을 때 오는 세분화 이벤트.
-  // 리스트 전체를 다시 받지 않고 tracks 배열에 patch만 적용해 정렬/검색/스크롤 상태를 지킨다.
-  onTrackAdded: (callback: (track: Track) => void): (() => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, track: Track): void =>
-      callback(track);
-    ipcRenderer.on("library:trackAdded", listener);
-    return () => ipcRenderer.removeListener("library:trackAdded", listener);
-  },
-  onTrackUpdated: (callback: (track: Track) => void): (() => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, track: Track): void =>
-      callback(track);
-    ipcRenderer.on("library:trackUpdated", listener);
-    return () => ipcRenderer.removeListener("library:trackUpdated", listener);
-  },
-  onTrackRemoved: (callback: (trackId: number) => void): (() => void) => {
+  // 백그라운드 스캔이 "변경 없음"으로 끝났을 때 — 인덱싱 표시만 끄면 된다.
+  onScanDone: (callback: (summary: ScanSummary) => void): (() => void) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
-      trackId: number,
-    ): void => callback(trackId);
-    ipcRenderer.on("library:trackRemoved", listener);
-    return () => ipcRenderer.removeListener("library:trackRemoved", listener);
+      summary: ScanSummary,
+    ): void => callback(summary);
+    ipcRenderer.on("library:scanDone", listener);
+    return () => ipcRenderer.removeListener("library:scanDone", listener);
+  },
+
+  // 실시간 감시(watcher)가 한 배치에서 처리한 추가/변경/삭제를 묶어 보내는 이벤트.
+  // 리스트 전체를 다시 받지 않고 tracks 배열에 patch만 적용해 정렬/검색/스크롤 상태를
+  // 지키면서, 파일 여러 개가 한꺼번에 들어와도 렌더러 상태 갱신은 배치당 한 번만 일어난다.
+  onTracksChanged: (
+    callback: (changes: TracksChanged) => void,
+  ): (() => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      changes: TracksChanged,
+    ): void => callback(changes);
+    ipcRenderer.on("library:tracksChanged", listener);
+    return () => ipcRenderer.removeListener("library:tracksChanged", listener);
   },
   onWatchStatus: (callback: (status: WatchStatus) => void): (() => void) => {
     const listener = (

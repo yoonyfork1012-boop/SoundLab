@@ -12,7 +12,7 @@ import { readFile, stat, rename, copyFile } from "fs/promises";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { join, dirname, basename, extname } from "path";
 import { pathToFileURL } from "url";
-import { scanLibrary, scanNewFilesOnly } from "./scanner";
+import { scanLibrary } from "./scanner";
 import { startWatching, stopWatching } from "./watcher";
 import {
   findCoverInDir,
@@ -41,6 +41,7 @@ import {
   removeTrackFromCollection,
   reorderCollectionTracks,
   hasTrackFilePath,
+  clearDirSnapshot,
   renameLibrary,
   setLibraryMonitor,
   markLibraryAnalyzed,
@@ -54,10 +55,53 @@ import {
   updateTrackMarkers,
 } from "./db/queries";
 import { runExclusive } from "./db/txLock";
-import type { ScanProgress, TrackMetadataPatch } from "../shared/types";
+import type {
+  Library,
+  ScanProgress,
+  ScanSummary,
+  Track,
+  TrackMetadataPatch,
+} from "../shared/types";
 import { buildFolderTree, type LibraryTree } from "../shared/folderTree";
 
+// 스캔류 IPC의 공통 응답. tracks는 실제로 바뀐 게 있을 때만 싣는다 — 변경이 0건인데도
+// 519k 트랙을 IPC로 넘기면 그 직렬화/역직렬화만으로 앱이 몇 초씩 멈춘다.
+export interface ScanResult {
+  libraries: Library[];
+  tracks: Track[] | null;
+  summary: ScanSummary;
+}
+
+function scanResult(summary: ScanSummary): ScanResult {
+  const changed =
+    summary.added + summary.updated + summary.moved + summary.removed > 0;
+  return {
+    libraries: getAllLibraries(),
+    tracks: changed ? getAllTracks() : null,
+    summary,
+  };
+}
+
+function mergeSummaries(list: ScanSummary[]): ScanSummary {
+  return list.reduce<ScanSummary>(
+    (acc, s) => ({
+      added: acc.added + s.added,
+      updated: acc.updated + s.updated,
+      moved: acc.moved + s.moved,
+      removed: acc.removed + s.removed,
+      skipped: acc.skipped + s.skipped,
+      errors: [...acc.errors, ...s.errors].slice(0, 200),
+    }),
+    { added: 0, updated: 0, moved: 0, removed: 0, skipped: 0, errors: [] },
+  );
+}
+
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
+  const sendProgress = (progress: ScanProgress): void => {
+    if (!mainWindow.isDestroyed())
+      mainWindow.webContents.send("library:scanProgress", progress);
+  };
+
   ipcMain.handle("dialog:selectFolder", async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ["openDirectory"],
@@ -78,14 +122,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle("library:scan", async (_event, rootPath: string) => {
     // 스캔 전 이미 비어 있던 라이브러리는 이번 재귀속의 결과가 아니므로 보호한다.
     const preEmpty = getEmptyLibraryIds();
-    const library = await scanLibrary(rootPath, (progress: ScanProgress) => {
-      mainWindow.webContents.send("library:scanProgress", progress);
+    const { library, summary } = await scanLibrary(rootPath, {
+      onProgress: sendProgress,
     });
     startWatching(library.id, library.rootPath, mainWindow);
     // 폴더를 겹쳐 추가해 파일이 이 라이브러리로 재귀속되면서 "이번에" 비게 된 예전 라이브러리만 정리
     for (const removedId of deleteEmptyLibraries([library.id, ...preEmpty]))
       stopWatching(removedId);
-    return { libraries: getAllLibraries(), tracks: getAllTracks() };
+    // 폴더 추가는 항상 목록을 새로 그려야 하므로 변경 여부와 무관하게 전체 트랙을 싣는다.
+    return {
+      libraries: getAllLibraries(),
+      tracks: getAllTracks(),
+      summary,
+    } satisfies ScanResult;
   });
 
   // 앱 시작 시 저장돼 있던 전체 라이브러리/트랙 로드
@@ -123,49 +172,65 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     },
   );
 
-  // "Scan for new files" — DB에 없는 새 파일만 추가 (기존 파일/삭제 정리는 건드리지 않음)
+  // "Scan for new files" — 디스크에서 사라진 파일은 건드리지 않고 새 파일만 추가하는
+  // 비파괴 스캔. 변경 없는 파일은 폴더 mtime 프루닝으로 stat조차 하지 않는다.
   ipcMain.handle(
     "library:scanNew",
-    async (_event, libraryId: number, rootPath: string) => {
-      const addedCount = await scanNewFilesOnly(
-        rootPath,
-        libraryId,
-        (progress: ScanProgress) => {
-          mainWindow.webContents.send("library:scanProgress", progress);
-        },
-      );
-      return {
-        libraries: getAllLibraries(),
-        tracks: getAllTracks(),
-        addedCount,
-      };
+    async (_event, _libraryId: number, rootPath: string) => {
+      const { summary } = await scanLibrary(rootPath, {
+        deleteMissing: false,
+        onProgress: sendProgress,
+      });
+      return scanResult(summary);
     },
   );
 
   // 수동 "Refresh / Rescan" — 실시간 감시와 별개로, 사용자가 선택한 라이브러리 폴더 하나만
-  // 다시 훑어 추가/삭제/변경을 한 번에 반영한다. scanLibrary는 mtime/size가 그대로인 파일은
-  // 건너뛰므로(증분) 대용량 폴더에서도 전체 재파싱이 아니다.
+  // 다시 훑어 추가/삭제/변경을 한 번에 반영한다. 증분이므로 변경되지 않은 기존 파일은
+  // 다시 분석하지 않는다.
   ipcMain.handle("library:rescan", async (_event, rootPath: string) => {
     const preEmpty = getEmptyLibraryIds();
-    const library = await scanLibrary(rootPath, (progress: ScanProgress) => {
-      mainWindow.webContents.send("library:scanProgress", progress);
+    const { library, summary } = await scanLibrary(rootPath, {
+      onProgress: sendProgress,
     });
     startWatching(library.id, library.rootPath, mainWindow);
     for (const removedId of deleteEmptyLibraries([library.id, ...preEmpty]))
       stopWatching(removedId);
-    return { libraries: getAllLibraries(), tracks: getAllTracks() };
+    return scanResult(summary);
   });
 
+  // Local 옆 인덱싱 버튼 — 등록된 모든 라이브러리에 대한 "증분" 인덱싱.
+  // 새로 추가/변경/이동/삭제된 것만 찾아 처리하고, 그대로인 파일은 손대지 않는다.
   ipcMain.handle("library:refreshAll", async () => {
-    const libraries = getAllLibraries();
-    for (const library of libraries) {
-      await scanLibrary(library.rootPath, (progress: ScanProgress) => {
-        mainWindow.webContents.send("library:scanProgress", progress);
+    const summaries: ScanSummary[] = [];
+    for (const library of getAllLibraries()) {
+      const { summary } = await scanLibrary(library.rootPath, {
+        onProgress: sendProgress,
       });
+      summaries.push(summary);
       startWatching(library.id, library.rootPath, mainWindow);
     }
-    return { libraries: getAllLibraries(), tracks: getAllTracks() };
+    return scanResult(mergeSummaries(summaries));
   });
+
+  // 보조 메뉴 전용 "전체 재인덱싱" — 증분 비교를 전부 무시하고 모든 파일을 다시 분석한다.
+  // 인덱스가 실제 파일과 어긋났을 때의 복구 수단이며, 일반 인덱싱 버튼과는 분리돼 있다.
+  ipcMain.handle(
+    "library:fullReindex",
+    async (_event, libraryId: number, rootPath: string) => {
+      clearDirSnapshot(libraryId);
+      const { library, summary } = await scanLibrary(rootPath, {
+        mode: "full",
+        onProgress: sendProgress,
+      });
+      startWatching(library.id, library.rootPath, mainWindow);
+      return {
+        libraries: getAllLibraries(),
+        tracks: getAllTracks(),
+        summary,
+      } satisfies ScanResult;
+    },
+  );
 
   ipcMain.handle("library:showInExplorer", async (_event, rootPath: string) => {
     // 사이드바 하위 폴더는 정규화 경로(슬래시)를 넘길 수 있으므로 OS 구분자로 되돌린다.
@@ -410,12 +475,44 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   );
 
   // 폴더 커버(그리드 카드용): 폴더 안 커버 이미지 → 리사이즈 data URL
-  ipcMain.handle("artwork:getFolderCover", (_event, folderPath: string) => {
-    const cover = findCoverInDir(folderPath);
-    if (!cover) return null;
-    const url = getFolderCoverDataUrl(cover);
-    return url ? { url, source: "folder" as const } : null;
-  });
+  //
+  // findCoverInDir(readdirSync) + 이미지 디코드/리사이즈는 전부 동기라, 폴더 수십~수백 개가
+  // 한꺼번에 요청되면 메인 프로세스가 그동안 통째로 멈춘다(= Local 메뉴를 누를 때마다 렉).
+  // 결과를 프로세스 수명 동안 캐시해 두 번째 요청부터는 디스크를 건드리지 않고,
+  // 같은 폴더에 대한 동시 요청은 하나로 합친다.
+  type FolderCover = { url: string; source: "folder" } | null;
+  const folderCoverCache = new Map<string, FolderCover>();
+  const folderCoverInflight = new Map<string, Promise<FolderCover>>();
+
+  ipcMain.handle(
+    "artwork:getFolderCover",
+    (_event, folderPath: string): Promise<FolderCover> => {
+      const cached = folderCoverCache.get(folderPath);
+      if (cached !== undefined) return Promise.resolve(cached);
+      const inflight = folderCoverInflight.get(folderPath);
+      if (inflight) return inflight;
+
+      // setImmediate로 한 틱 미뤄, 동시에 밀려든 요청들이 이벤트 루프를 독점하지 않고
+      // 그 사이 다른 IPC(검색/재생)가 처리될 틈을 준다.
+      const task = new Promise<FolderCover>((resolve) => {
+        setImmediate(() => {
+          let result: FolderCover = null;
+          try {
+            const cover = findCoverInDir(folderPath);
+            const url = cover ? getFolderCoverDataUrl(cover) : null;
+            if (url) result = { url, source: "folder" };
+          } catch {
+            /* 커버는 장식이므로 실패는 조용히 무시하고 플레이스홀더를 쓴다 */
+          }
+          folderCoverCache.set(folderPath, result);
+          folderCoverInflight.delete(folderPath);
+          resolve(result);
+        });
+      });
+      folderCoverInflight.set(folderPath, task);
+      return task;
+    },
+  );
 
   ipcMain.handle("file:getAudioAccess", async (_event, filePath: string) => {
     if (!hasTrackFilePath(filePath)) {
@@ -509,5 +606,46 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       if (dockPrevBounds) mainWindow.setBounds(dockPrevBounds);
       dockPrevBounds = null;
     }
+  });
+}
+
+// 앱이 꺼져 있는 동안 폴더에서 일어난 변경(추가/수정/삭제/이동)을 시작 직후 조용히 따라잡는다.
+// 실시간 감시는 앱이 떠 있을 때만 동작하므로, 종료 구간의 공백은 이 시작 시 대조가 메운다.
+// 폴더 mtime 프루닝 덕에 변경이 없으면 폴더 stat만 하고 곧바로 끝난다.
+export async function runStartupReconcile(
+  mainWindow: BrowserWindow,
+): Promise<void> {
+  const summaries: ScanSummary[] = [];
+  for (const library of getAllLibraries()) {
+    if (mainWindow.isDestroyed()) return;
+    try {
+      const { summary } = await scanLibrary(library.rootPath, {
+        onProgress: (progress) => {
+          if (!mainWindow.isDestroyed())
+            mainWindow.webContents.send("library:scanProgress", progress);
+        },
+      });
+      summaries.push(summary);
+    } catch (err) {
+      console.error(
+        "startup reconcile failed for",
+        library.rootPath,
+        (err as Error)?.message,
+      );
+    }
+  }
+  if (mainWindow.isDestroyed()) return;
+  const merged = mergeSummaries(summaries);
+  const changed =
+    merged.added + merged.updated + merged.moved + merged.removed > 0;
+  // 변경이 없으면 아무것도 보내지 않는다 — 519k 트랙을 IPC로 넘기는 것 자체가 비싸다.
+  if (!changed) {
+    mainWindow.webContents.send("library:scanDone", merged);
+    return;
+  }
+  mainWindow.webContents.send("library:updated", {
+    libraries: getAllLibraries(),
+    tracks: getAllTracks(),
+    summary: merged,
   });
 }

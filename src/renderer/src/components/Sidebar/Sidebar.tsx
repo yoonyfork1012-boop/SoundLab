@@ -47,6 +47,9 @@ interface SidebarProps {
   scanning?: boolean;
   scanProgress?: ScanProgress | null;
   watchStatus?: WatchStatus | null;
+  // 마지막 인덱싱에서 손상/읽기 실패로 건너뛴 파일 수 — 0보다 크면 목록을 열 수 있는 줄을 띄운다.
+  scanErrorCount?: number;
+  onShowScanErrors?: () => void;
 }
 
 // "Watching" / "Updating N files…" / "Indexed 3 new files" 같은 실시간 감시 상태를 sentence로 변환.
@@ -167,6 +170,8 @@ export default function Sidebar({
   scanning = false,
   scanProgress = null,
   watchStatus = null,
+  scanErrorCount = 0,
+  onShowScanErrors,
 }: SidebarProps): JSX.Element {
   // 시작 시 모든 폴더는 닫힌 상태로 둔다 — 이전 세션의 펼침 상태를 복원하지 않는다.
   // (세션 중 펼침/접힘은 아래 toggleExpand가 저장하지만, 시작 시 그 값을 읽지 않는다.)
@@ -250,7 +255,7 @@ export default function Sidebar({
           <button
             type="button"
             className="ftree__refresh"
-            title="Refresh local libraries"
+            title="변경분 인덱싱 — 새로 추가·변경·삭제된 것만 찾습니다 (전체 재인덱싱은 라이브러리 우클릭 메뉴)"
             onClick={(e) => {
               e.stopPropagation();
               onRefreshLocal();
@@ -365,6 +370,17 @@ export default function Sidebar({
           </div>
         ))}
       </div>
+      {scanErrorCount > 0 && (
+        <button
+          type="button"
+          className="watch-status watch-status--error scan-errors-bar"
+          onClick={onShowScanErrors}
+          title="건너뛴 파일 목록 보기"
+        >
+          <span className="watch-status__dot" />
+          <span>{scanErrorCount.toLocaleString()}개 파일 건너뜀</span>
+        </button>
+      )}
       {scanning && <IndexingIndicator progress={scanProgress} />}
       {!scanning && watchStatus && (
         <div className={`watch-status watch-status--${watchStatus.kind}`}>

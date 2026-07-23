@@ -197,43 +197,97 @@ export function updateTrackPathOnly(
   );
 }
 
-// 라이브러리의 기존 트랙 파일별 mtime/size 스냅샷 — 스캔 시 파일별 stat과 비교해
-// 변경되지 않은 파일은 재파싱(메타데이터 재추출)을 건너뛰기 위한 증분 인덱싱 기반.
+// 라이브러리의 기존 트랙 파일별 스냅샷 — 스캔 시 파일별 stat과 비교해 변경되지 않은
+// 파일은 재파싱(메타데이터 재추출)을 건너뛰는 증분 인덱싱의 기반.
+// id/fileHash까지 함께 싣는 이유: 스캔 도중 "사라진 트랙"과 "새로 발견된 파일"을
+// size+hash로 짝지어 이동/이름변경으로 판정하고, 기존 분석 데이터를 재사용하기 위함.
+export interface TrackStatRow {
+  id: number;
+  mtimeMs: number | null;
+  fileSize: number | null;
+  fileHash: string | null;
+}
+
 export function getTrackStatsByLibrary(
   libraryId: number,
-): Map<string, { mtimeMs: number | null; fileSize: number | null }> {
-  const rows = selectRows(
-    "SELECT file_path, mtime_ms, file_size FROM tracks WHERE library_id = ?",
-    [libraryId],
+): Map<string, TrackStatRow> {
+  const res = getDb().exec(
+    `SELECT file_path, id, mtime_ms, file_size, file_hash
+     FROM tracks WHERE library_id = ${Number(libraryId)}`,
   );
-  const map = new Map<
-    string,
-    { mtimeMs: number | null; fileSize: number | null }
-  >();
-  for (const row of rows) {
-    map.set(row.file_path as string, {
-      mtimeMs: (row.mtime_ms as number) ?? null,
-      fileSize: (row.file_size as number) ?? null,
+  const map = new Map<string, TrackStatRow>();
+  if (!res.length) return map;
+  // 수십만 행에서 getAsObject는 행마다 객체를 만들어 느리다 — exec의 raw 배열을 그대로 쓴다.
+  for (const [filePath, id, mtimeMs, fileSize, fileHash] of res[0].values) {
+    map.set(filePath as string, {
+      id: id as number,
+      mtimeMs: (mtimeMs as number) ?? null,
+      fileSize: (fileSize as number) ?? null,
+      fileHash: (fileHash as string) ?? null,
     });
   }
   return map;
 }
 
-export function deleteMissingTracks(
-  libraryId: number,
-  presentFilePaths: Set<string>,
-): number {
-  const stale = selectRows(
-    "SELECT id, file_path FROM tracks WHERE library_id = ?",
-    [libraryId],
-  ).filter((row) => !presentFilePaths.has(row.file_path as string));
+// 스캔이 판정한 "사라진 트랙" id들을 한 번에 제거한다. 호출부가 이미 어떤 트랙이
+// 없어졌는지 알고 있으므로 여기서 다시 전체 목록을 훑지 않는다.
+export function deleteTracksByIds(trackIds: number[]): number {
+  if (trackIds.length === 0) return 0;
   const db = getDb();
-  for (const row of stale) {
-    const trackId = row.id as number;
-    db.run("DELETE FROM collection_tracks WHERE track_id = ?", [trackId]);
-    db.run("DELETE FROM tracks WHERE id = ?", [trackId]);
+  const delColl = db.prepare(
+    "DELETE FROM collection_tracks WHERE track_id = ?",
+  );
+  const delTrack = db.prepare("DELETE FROM tracks WHERE id = ?");
+  for (const id of trackIds) {
+    delColl.bind([id]);
+    delColl.step();
+    delColl.reset();
+    delTrack.bind([id]);
+    delTrack.step();
+    delTrack.reset();
   }
-  return stale.length;
+  delColl.free();
+  delTrack.free();
+  return trackIds.length;
+}
+
+// ── 증분 인덱싱: 디렉터리 mtime 스냅샷 ──
+// 폴더의 mtime은 그 폴더 "직속" 항목의 추가/삭제/이름변경 시에만 갱신된다(하위 폴더
+// 깊은 곳의 변경이나 기존 파일의 내용 수정은 반영되지 않는다). 그래서 이 스냅샷은
+// "직속 파일 목록이 그대로인가"만 판정하는 데 쓰고, 파일 내용 수정은 실시간 감시
+// (watcher)가 잡는다. 둘 다 놓친 경우는 전체 재인덱싱으로 복구한다.
+export function getDirSnapshot(libraryId: number): Map<string, number> {
+  const res = getDb().exec(
+    `SELECT dir_path, mtime_ms FROM scan_dirs WHERE library_id = ${Number(libraryId)}`,
+  );
+  const map = new Map<string, number>();
+  if (!res.length) return map;
+  for (const [dirPath, mtimeMs] of res[0].values) {
+    if (mtimeMs != null) map.set(dirPath as string, mtimeMs as number);
+  }
+  return map;
+}
+
+export function replaceDirSnapshot(
+  libraryId: number,
+  dirs: Map<string, number>,
+): void {
+  const db = getDb();
+  db.run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
+  const ins = db.prepare(
+    "INSERT OR REPLACE INTO scan_dirs (library_id, dir_path, mtime_ms) VALUES (?, ?, ?)",
+  );
+  for (const [dirPath, mtimeMs] of dirs) {
+    ins.bind([libraryId, dirPath, mtimeMs]);
+    ins.step();
+    ins.reset();
+  }
+  ins.free();
+}
+
+// 전체 재인덱싱 등, 다음 스캔이 무조건 모든 폴더를 훑게 만들고 싶을 때.
+export function clearDirSnapshot(libraryId: number): void {
+  getDb().run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
 }
 
 export function hasTrackFilePath(filePath: string): boolean {
@@ -364,6 +418,7 @@ export function deleteLibrary(libraryId: number): void {
     [libraryId],
   );
   db.run("DELETE FROM tracks WHERE library_id = ?", [libraryId]);
+  db.run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
   db.run("DELETE FROM libraries WHERE id = ?", [libraryId]);
   persistDb();
 }
@@ -391,8 +446,17 @@ export function updateLastPlayed(trackId: number): void {
 // 다시 스캔하면 그대로 재인덱싱되므로 되돌릴 수 있는 안전한 동작이다.
 export function removeTrack(trackId: number): void {
   const db = getDb();
+  // 이 트랙이 속한 폴더의 스냅샷을 무효화한다 — 안 그러면 폴더 mtime이 그대로라 다음
+  // 증분 스캔이 그 폴더를 통째로 건너뛰어, 파일이 디스크에 멀쩡히 있는데도 영영
+  // 다시 인덱싱되지 않는다("Remove는 재스캔으로 되돌릴 수 있다"는 약속이 깨진다).
+  const owner = selectRows("SELECT library_id FROM tracks WHERE id = ?", [
+    trackId,
+  ]);
   db.run("DELETE FROM collection_tracks WHERE track_id = ?", [trackId]);
   db.run("DELETE FROM tracks WHERE id = ?", [trackId]);
+  if (owner.length > 0 && owner[0].library_id != null) {
+    clearDirSnapshot(owner[0].library_id as number);
+  }
   persistDb();
 }
 
@@ -429,6 +493,9 @@ export function removeTracksUnderFolder(
   const db = getDb();
   db.run("BEGIN TRANSACTION");
   try {
+    // removeTrack과 같은 이유 — 인덱스에서 뺀 폴더가 다음 증분 스캔에서 프루닝되어
+    // 영영 돌아오지 않는 일이 없도록 이 라이브러리의 디렉터리 스냅샷을 무효화한다.
+    db.run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
     const delColl = db.prepare(
       "DELETE FROM collection_tracks WHERE track_id = ?",
     );

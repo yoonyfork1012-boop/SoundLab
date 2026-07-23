@@ -2,19 +2,26 @@ import type {
   Collection,
   Library,
   ScanProgress,
+  ScanSummary,
   Track,
   TrackMetadataPatch,
+  TracksChanged,
   WatchStatus,
 } from "../shared/types";
 import type { LibraryTree } from "../shared/folderTree";
+
+// 스캔류 응답 — tracks는 실제로 바뀐 게 있을 때만 실려 온다(null이면 기존 목록을 그대로 유지).
+interface ScanResult {
+  libraries: Library[];
+  tracks: Track[] | null;
+  summary: ScanSummary;
+}
+
 declare const api: {
   selectFolder: () => Promise<string | null>;
   isDirectory: (filePath: string) => Promise<boolean>;
   getPathForFile: (file: File) => string;
-  scanLibrary: (rootPath: string) => Promise<{
-    libraries: Library[];
-    tracks: Track[];
-  }>;
+  scanLibrary: (rootPath: string) => Promise<ScanResult>;
   loadAll: () => Promise<{
     libraries: Library[];
     tracks: Track[];
@@ -45,23 +52,14 @@ declare const api: {
     renamed: number;
   } | null>;
   renameLibrary: (libraryId: number, name: string) => Promise<Library[]>;
-  scanNewFiles: (
+  scanNewFiles: (libraryId: number, rootPath: string) => Promise<ScanResult>;
+  showInExplorer: (rootPath: string) => Promise<void>;
+  rescanLibrary: (rootPath: string) => Promise<ScanResult>;
+  refreshAllLibraries: () => Promise<ScanResult>;
+  fullReindexLibrary: (
     libraryId: number,
     rootPath: string,
-  ) => Promise<{
-    libraries: Library[];
-    tracks: Track[];
-    addedCount: number;
-  }>;
-  showInExplorer: (rootPath: string) => Promise<void>;
-  rescanLibrary: (rootPath: string) => Promise<{
-    libraries: Library[];
-    tracks: Track[];
-  }>;
-  refreshAllLibraries: () => Promise<{
-    libraries: Library[];
-    tracks: Track[];
-  }>;
+  ) => Promise<ScanResult>;
   setLibraryMonitor: (
     libraryId: number,
     rootPath: string,
@@ -73,11 +71,14 @@ declare const api: {
   }>;
   onScanProgress: (callback: (progress: ScanProgress) => void) => () => void;
   onLibraryUpdated: (
-    callback: (data: { libraries: Library[]; tracks: Track[] }) => void,
+    callback: (data: {
+      libraries: Library[];
+      tracks: Track[];
+      summary?: ScanSummary;
+    }) => void,
   ) => () => void;
-  onTrackAdded: (callback: (track: Track) => void) => () => void;
-  onTrackUpdated: (callback: (track: Track) => void) => () => void;
-  onTrackRemoved: (callback: (trackId: number) => void) => () => void;
+  onScanDone: (callback: (summary: ScanSummary) => void) => () => void;
+  onTracksChanged: (callback: (changes: TracksChanged) => void) => () => void;
   onWatchStatus: (callback: (status: WatchStatus) => void) => () => void;
   toggleStar: (trackId: number) => Promise<boolean>;
   updateLastPlayed: (trackId: number) => Promise<void>;
