@@ -258,9 +258,10 @@ const api = {
   ): Promise<{ url: string; source: "folder" } | null> =>
     ipcRenderer.invoke("artwork:getFolderCover", folderPath),
 
-  // 리스트 행을 OS 네이티브 드래그로 내보내기 (DAW/탐색기로 드롭)
-  startDrag: (filePath: string): void =>
-    ipcRenderer.send("drag:start", filePath),
+  // 리스트 행을 OS 네이티브 드래그로 내보내기 (DAW/탐색기로 드롭).
+  // 배열을 넘기면 선택한 사운드를 한 번에 전부 드래그한다(메인의 drag:start가 다중 파일 지원).
+  startDrag: (filePaths: string | string[]): void =>
+    ipcRenderer.send("drag:start", filePaths),
 
   // Waveform에서 선택한 구간만 잘라 임시 오디오로 만든 뒤 그 파일을 네이티브 드래그로 내보내기
   startDragFromBuffer: (bytes: Uint8Array, filename: string): void =>

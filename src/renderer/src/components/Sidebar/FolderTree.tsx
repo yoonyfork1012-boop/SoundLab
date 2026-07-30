@@ -67,7 +67,7 @@ const FolderTree = memo(function FolderTree({
         }
       >
         <span
-          className="ftree__toggle"
+          className={`ftree__toggle${hasChildren ? " ftree__toggle--clickable" : ""}`}
           onClick={(e) => {
             // 화살표를 클릭해도 폴더가 선택되어 리스트에 표시되도록 함(펼침/접힘은 별도로 함께 처리)
             e.stopPropagation();

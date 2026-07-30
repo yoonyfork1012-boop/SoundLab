@@ -742,11 +742,27 @@ button {
 }
 .ftree__toggle {
   width: 14px;
+  height: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--text-faint);
   flex-shrink: 0;
+  border-radius: 4px;
+  transition:
+    color 0.15s var(--ease),
+    background 0.15s var(--ease),
+    box-shadow 0.15s var(--ease);
+}
+/* 하위 폴더가 있어 실제로 펼칠 수 있는 화살표에만 hover 반응을 준다 —
+   자식이 없는 폴더의 빈 자리에까지 불이 들어오면 누를 수 있는 것처럼 보인다. */
+.ftree__toggle--clickable {
+  cursor: pointer;
+}
+.ftree__toggle--clickable:hover {
+  color: var(--accent-bright);
+  background: var(--accent-dim);
+  box-shadow: 0 0 7px var(--accent-glow);
 }
 .ftree__chevron {
   transition: transform 0.15s var(--ease);

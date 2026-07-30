@@ -140,7 +140,7 @@ declare const api: {
   getFolderCover: (
     folderPath: string,
   ) => Promise<{ url: string; source: "folder" } | null>;
-  startDrag: (filePath: string) => void;
+  startDrag: (filePaths: string | string[]) => void;
   startDragFromBuffer: (bytes: Uint8Array, filename: string) => void;
   windowMinimize: () => void;
   windowToggleMaximize: () => void;

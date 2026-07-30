@@ -5,6 +5,7 @@ import type { Collection, Library, PublisherRule, Track } from "@shared/types";
 import { colorForCategory } from "@shared/ucsCategories";
 import { ALL_COLUMNS, DEFAULT_VISIBLE, type ColumnDef } from "./columns";
 import { loadJSON, saveJSON } from "../../lib/uiState";
+import { rangeBetween } from "../../lib/rangeSelect";
 import ColumnMenu from "./ColumnMenu";
 
 interface ResultListProps {
@@ -14,6 +15,10 @@ interface ResultListProps {
   selectedTrackId: number | null;
   selectedIds?: Set<number>;
   onSelectTrack: (track: Track) => void;
+  // Shift+클릭 범위 선택 / Ctrl(⌘)+클릭 개별 토글. 미리듣기를 새로 시작하지 않고 선택만
+  // 바꾸므로, 여러 개를 골라 DAW로 한 번에 끌어다 놓는 도중 재생이 끊기지 않는다.
+  onSelectRange?: (tracksInRange: Track[]) => void;
+  onToggleSelect?: (track: Track) => void;
   onToggleStar: (track: Track) => void;
   onAddToCollection: (collectionId: number, trackId: number) => void;
   onCreateCollectionWith: (trackId: number) => void;
@@ -64,6 +69,11 @@ interface RowData {
   tracks: Track[];
   selectedTrackId: number | null;
   selectedIds?: Set<number>;
+  // 드래그 시작 시점의 "현재" 선택으로 파일 경로를 계산하는 안정 함수(참조가 바뀌지 않음).
+  // selectedIds를 행 클로저에 직접 담으면 안 된다 — rowPropsAreEqual이 그 행 자신의 선택
+  // 여부만 비교하므로, 이미 선택된 행은 다른 행이 선택에 추가돼도 리렌더되지 않아 낡은
+  // 선택을 들고 있게 되고, 그 행을 끌면 파일이 1개만 드래그된다.
+  getDragPaths: (track: Track) => string[];
   columns: ColumnDef[];
   gridTemplate: string;
   totalWidth: number;
@@ -238,6 +248,7 @@ const Row = memo(
       onReorderOver,
       onReorderDrop,
       onReorderCancel,
+      getDragPaths,
     } = data;
     const track = tracks[index];
     const isSelected =
@@ -256,9 +267,10 @@ const Row = memo(
         className={`list-row${isSelected ? " list-row--selected" : ""}${isPreviewed ? " list-row--previewed" : ""}${isDragOver ? " list-row--dragover" : ""}`}
         draggable
         onDragStart={(e) => {
-          // ?�택 ?��??� 무�??�게 ?�떤 ?�이??즉시 OS ?�이?�브 ?�래�?DAW/?�색기로 ?�롭)
+          // 어떤 행이든 즉시 OS 네이티브 드래그(DAW/탐색기로 드롭).
+          // 끄는 행이 다중 선택에 포함돼 있으면 선택된 사운드를 한 번에 전부 넘긴다.
           e.preventDefault();
-          window.api?.startDrag(track.filePath);
+          window.api?.startDrag(getDragPaths(track));
         }}
         onDragOver={
           reorderable
@@ -340,6 +352,8 @@ function ResultList({
   selectedTrackId,
   selectedIds,
   onSelectTrack,
+  onSelectRange,
+  onToggleSelect,
   onToggleStar,
   onAddToCollection,
   onCreateCollectionWith,
@@ -366,6 +380,33 @@ function ResultList({
   const mouseYRef = useRef<number | null>(null);
   const tracksRef = useRef(tracks);
   tracksRef.current = tracks;
+  // 드래그 시작 시점의 최신 선택을 읽기 위한 ref — 행 클로저에 selectedIds를 담으면
+  // 메모이제이션 때문에 낡은 값이 잡힌다(RowData.getDragPaths 주석 참고).
+  const selectedIdsRef = useRef(selectedIds);
+  selectedIdsRef.current = selectedIds;
+
+  // Shift+클릭 범위의 기준점. 수식키 없이 고른 마지막 행이 기준이 된다.
+  // 인덱스가 아니라 트랙 id로 들고 있는 이유는 rangeSelect.ts 주석 참고.
+  const anchorIdRef = useRef<number | null>(null);
+
+  // 이미 다중 선택된 행을 눌렀을 때, 그 자리에서 선택을 하나로 줄이지 않고 "뗄 때까지" 미룬다.
+  // mousedown은 dragstart보다 먼저 오므로, 여기서 곧바로 단일 선택으로 바꿔버리면 여러 개를
+  // 골라놓고 그중 하나를 끌어도 그 하나만 DAW로 넘어간다(파일 탐색기와 같은 지연 방식으로 해결).
+  const pendingCollapseIdRef = useRef<number | null>(null);
+
+  const getDragPaths = useCallback((track: Track): string[] => {
+    // 드래그가 실제로 시작됐다는 뜻 — 뗄 때 단일 선택으로 줄이려던 예약을 취소해
+    // 여러 개를 고른 상태 그대로 DAW로 넘어가게 한다.
+    pendingCollapseIdRef.current = null;
+    const sel = selectedIdsRef.current;
+    if (sel && sel.size > 1 && sel.has(track.id)) {
+      // 화면에 보이는 순서 그대로 넘겨 DAW에서 트랙 배치 순서가 리스트와 일치하게 한다.
+      return tracksRef.current
+        .filter((t) => sel.has(t.id))
+        .map((t) => t.filePath);
+    }
+    return [track.filePath];
+  }, []);
 
   const [visibleCols, setVisibleCols] = useState<Set<string>>(loadVisibleCols);
   // 컬럼�?고정 px ?????�나�??�려???�른 컬럼???�향 ?�이 ?�립?�으�?리사?�즈??
@@ -620,11 +661,13 @@ function ResultList({
       onReorderOver: handleReorderOver,
       onReorderDrop: handleReorderDrop,
       onReorderCancel: handleReorderCancel,
+      getDragPaths,
     }),
     [
       tracks,
       selectedTrackId,
       selectedIds,
+      getDragPaths,
       columns,
       gridTemplate,
       totalWidth,
@@ -732,7 +775,44 @@ function ResultList({
                 const rect = wrapRef.current!.getBoundingClientRect();
                 if (rect.right - e.clientX < SCROLLBAR_GUARD) return;
                 const idx = indexAtY(e.clientY);
-                if (idx >= 0) onSelectTrack(tracksRef.current[idx]);
+                if (idx < 0) return;
+                const list = tracksRef.current;
+                pendingCollapseIdRef.current = null;
+                if (e.shiftKey && onSelectRange) {
+                  // 기준점부터 여기까지 한 번에 선택. 기준점은 그대로 둬서 shift를 누른 채
+                  // 계속 범위를 늘였다 줄였다 할 수 있게 한다.
+                  const range = rangeBetween(list, anchorIdRef.current, idx);
+                  if (range) {
+                    onSelectRange(range);
+                    return;
+                  }
+                  // 기준점이 없거나 사라졌으면 아래로 흘려보내 단일 선택 + 기준점 재설정
+                }
+                if ((e.ctrlKey || e.metaKey) && onToggleSelect) {
+                  onToggleSelect(list[idx]);
+                  anchorIdRef.current = list[idx].id;
+                  return;
+                }
+                const track = list[idx];
+                const sel = selectedIdsRef.current;
+                if ((sel?.size ?? 0) > 1 && sel?.has(track.id)) {
+                  // 이미 다중 선택에 포함된 행 — 끌려는 것일 수 있으니 선택은 그대로 두고,
+                  // 드래그 없이 그냥 뗐을 때만(onMouseUp) 이 행 하나로 줄인다.
+                  pendingCollapseIdRef.current = track.id;
+                  return;
+                }
+                anchorIdRef.current = track.id;
+                onSelectTrack(track);
+              }}
+              onMouseUp={() => {
+                const pending = pendingCollapseIdRef.current;
+                pendingCollapseIdRef.current = null;
+                if (pending === null) return;
+                // 드래그가 시작됐다면 getDragPaths가 이미 예약을 지웠으므로 여기 오지 않는다.
+                const track = tracksRef.current.find((t) => t.id === pending);
+                if (!track) return;
+                anchorIdRef.current = track.id;
+                onSelectTrack(track);
               }}
               onMouseMove={(e) => {
                 mouseYRef.current = e.clientY;
@@ -922,11 +1002,17 @@ function ResultList({
                 title="Cubase 창으로 직접 끌어다 놓으면 트랙에 추가됩니다"
                 onDragStart={(e) => {
                   e.preventDefault();
-                  window.api?.startDrag(rowMenu.track.filePath);
+                  // 다중 선택 중이면 선택한 사운드를 전부 넘긴다(행 드래그와 동일한 규칙).
+                  window.api?.startDrag(getDragPaths(rowMenu.track));
                 }}
                 onClick={() => setRowMenu(null)}
               >
-                <span>Send to Cubase</span>
+                <span>
+                  {(selectedIds?.size ?? 0) > 1 &&
+                  selectedIds?.has(rowMenu.track.id)
+                    ? `Send ${selectedIds.size} sounds to Cubase`
+                    : "Send to Cubase"}
+                </span>
                 <span className="colmenu__shortcut">S</span>
               </button>
               <button

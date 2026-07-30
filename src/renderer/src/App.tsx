@@ -1366,6 +1366,25 @@ export default function App(): JSX.Element {
     },
   );
 
+  // Shift+클릭 범위 선택 / Ctrl(⌘)+클릭 개별 토글.
+  // 둘 다 selectedIds만 바꾸고 selectedTrack은 건드리지 않는다 — 여러 개를 골라 DAW로
+  // 끌어다 놓으려는 것이지 다른 사운드를 미리듣기하려는 게 아니므로, 재생 중인 사운드와
+  // 메타데이터 패널이 그대로 유지되어야 한다.
+  const handleSelectRange = useStableCallback(
+    (tracksInRange: Track[]): void => {
+      setSelectedIds(new Set(tracksInRange.map((t) => t.id)));
+    },
+  );
+
+  const handleToggleSelect = useStableCallback((track: Track): void => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(track.id)) next.delete(track.id);
+      else next.add(track.id);
+      return next;
+    });
+  });
+
   const handleOpenMetadataPanel = useStableCallback((): void => {
     setShowMeta(true);
   });
@@ -2043,6 +2062,8 @@ export default function App(): JSX.Element {
                     selectedTrackId={selectedTrack?.id ?? null}
                     selectedIds={selectedIds}
                     onSelectTrack={handleSelectTrack}
+                    onSelectRange={handleSelectRange}
+                    onToggleSelect={handleToggleSelect}
                     onToggleStar={handleToggleStar}
                     onAddToCollection={handleAddToCollection}
                     sortKey={sort.key}
