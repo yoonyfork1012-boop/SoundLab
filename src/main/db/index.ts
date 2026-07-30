@@ -1,11 +1,5 @@
-import initSqlJs, { Database, SqlJsStatic } from "sql.js";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  renameSync,
-} from "fs";
+import Database from "better-sqlite3";
+import { existsSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -13,7 +7,7 @@ const SOUNDLIB_DIR = join(homedir(), ".soundlib");
 export const ARTWORK_DIR = join(SOUNDLIB_DIR, "artwork");
 const DB_PATH = join(SOUNDLIB_DIR, "soundlib.db");
 
-let db: Database | null = null;
+let db: Database.Database | null = null;
 
 function ensureDirs(): void {
   if (!existsSync(SOUNDLIB_DIR)) mkdirSync(SOUNDLIB_DIR, { recursive: true });
@@ -24,28 +18,30 @@ export async function initDb(): Promise<void> {
   if (db) return;
   ensureDirs();
 
-  const wasmPath = require.resolve("sql.js/dist/sql-wasm.wasm");
-  const SQL: SqlJsStatic = await initSqlJs({ locateFile: () => wasmPath });
-
   // 손상된 DB(예: 비정상 종료/동시 쓰기)로 앱이 아예 안 켜지는 것을 방지 —
-  // 로드 실패 시 손상 파일을 백업으로 옮기고 새 DB로 시작
-  if (existsSync(DB_PATH)) {
-    try {
-      db = new SQL.Database(readFileSync(DB_PATH));
-    } catch (err) {
+  // 열기 실패 시 손상 파일을 백업으로 옮기고 새 DB로 시작
+  try {
+    db = new Database(DB_PATH);
+  } catch (err) {
+    if (existsSync(DB_PATH)) {
       try {
         renameSync(DB_PATH, `${DB_PATH}.corrupt-${Date.now()}`);
       } catch {
         /* noop */
       }
-      console.error("손상된 DB 감지 → 새 DB로 시작:", (err as Error)?.message);
-      db = new SQL.Database();
     }
-  } else {
-    db = new SQL.Database();
+    console.error("손상된 DB 감지 → 새 DB로 시작:", (err as Error)?.message);
+    db = new Database(DB_PATH);
   }
 
-  db.run(`
+  // better-sqlite3는 파일 기반 네이티브 SQLite라 sql.js와 달리 각 쓰기가 그 자리에서
+  // 바로 디스크(WAL)에 반영된다 — WAL은 리더가 쓰기를 막지 않고, NORMAL 동기화는
+  // 커밋마다 fsync하지 않아도 crash-safe하다(OS 크래시가 아닌 프로세스 크래시 기준).
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+  db.pragma("foreign_keys = ON");
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS libraries (
       id INTEGER PRIMARY KEY,
       root_path TEXT NOT NULL UNIQUE,
@@ -103,7 +99,6 @@ export async function initDb(): Promise<void> {
   `);
 
   runMigrations();
-  persistDb();
 }
 
 // CREATE TABLE IF NOT EXISTS는 기존 DB에 새 컬럼을 추가해주지 않으므로,
@@ -112,114 +107,75 @@ function runMigrations(): void {
   const d = getDb();
 
   function hasColumn(table: string, column: string): boolean {
-    const stmt = d.prepare(`PRAGMA table_info(${table})`);
-    let found = false;
-    while (stmt.step()) {
-      const row = stmt.getAsObject();
-      if (row.name === column) {
-        found = true;
-        break;
-      }
-    }
-    stmt.free();
-    return found;
+    const rows = d.prepare(`PRAGMA table_info(${table})`).all() as {
+      name: string;
+    }[];
+    return rows.some((row) => row.name === column);
   }
 
   if (!hasColumn("collections", "color")) {
-    d.run("ALTER TABLE collections ADD COLUMN color TEXT");
+    d.exec("ALTER TABLE collections ADD COLUMN color TEXT");
   }
   if (!hasColumn("libraries", "monitor")) {
-    d.run("ALTER TABLE libraries ADD COLUMN monitor INTEGER DEFAULT 0");
+    d.exec("ALTER TABLE libraries ADD COLUMN monitor INTEGER DEFAULT 0");
   }
   if (!hasColumn("libraries", "analyzed_at")) {
-    d.run("ALTER TABLE libraries ADD COLUMN analyzed_at INTEGER");
+    d.exec("ALTER TABLE libraries ADD COLUMN analyzed_at INTEGER");
   }
   if (!hasColumn("tracks", "similarity_key")) {
-    d.run("ALTER TABLE tracks ADD COLUMN similarity_key TEXT");
+    d.exec("ALTER TABLE tracks ADD COLUMN similarity_key TEXT");
   }
   if (!hasColumn("tracks", "mtime_ms")) {
-    d.run("ALTER TABLE tracks ADD COLUMN mtime_ms REAL");
+    d.exec("ALTER TABLE tracks ADD COLUMN mtime_ms REAL");
   }
   if (!hasColumn("tracks", "file_size")) {
-    d.run("ALTER TABLE tracks ADD COLUMN file_size INTEGER");
+    d.exec("ALTER TABLE tracks ADD COLUMN file_size INTEGER");
   }
   if (!hasColumn("tracks", "publisher")) {
-    d.run("ALTER TABLE tracks ADD COLUMN publisher TEXT");
+    d.exec("ALTER TABLE tracks ADD COLUMN publisher TEXT");
   }
   if (!hasColumn("tracks", "is_float")) {
-    d.run("ALTER TABLE tracks ADD COLUMN is_float INTEGER DEFAULT 0");
+    d.exec("ALTER TABLE tracks ADD COLUMN is_float INTEGER DEFAULT 0");
   }
   if (!hasColumn("tracks", "file_hash")) {
-    d.run("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
-  }
-  if (!hasColumn("tracks", "loop_start")) {
-    d.run("ALTER TABLE tracks ADD COLUMN loop_start REAL");
-  }
-  if (!hasColumn("tracks", "loop_end")) {
-    d.run("ALTER TABLE tracks ADD COLUMN loop_end REAL");
+    d.exec("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
   }
   if (!hasColumn("tracks", "markers")) {
-    d.run("ALTER TABLE tracks ADD COLUMN markers TEXT");
+    d.exec("ALTER TABLE tracks ADD COLUMN markers TEXT");
   }
   // 이름변경/이동 후보 탐색(size+hash) 성능을 위한 인덱스 — 대용량 라이브러리에서 매 add 이벤트마다
   // 풀스캔하지 않도록 함
-  d.run(
+  d.exec(
     "CREATE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(file_hash, file_size)",
   );
 }
 
-export function getDb(): Database {
+export function getDb(): Database.Database {
   if (!db) throw new Error("Database not initialized — call initDb() first");
   return db;
 }
 
-// sql.js는 메모리 DB라 저장할 때마다 DB 전체를 직렬화해(db.export()) 파일에 통째로 쓴다.
-// 수천 트랙 라이브러리에서는 이 한 번이 수십~수백 ms가 걸리고, 그동안 메인 스레드가 멈춰
-// 같은 스레드에서 처리되는 IPC(file:getAudioAccess 등)까지 함께 지연된다. 트랙을 클릭할
-// 때마다 호출되는 last_played 같은 고빈도 쓰기는 schedulePersist()로 묶어 유휴 시점에
-// 한 번만 저장한다. 스캔/컬렉션/메타데이터 편집처럼 드물고 중요한 쓰기는 persistDb()로 즉시.
-const PERSIST_DEBOUNCE_MS = 800;
-let persistTimer: NodeJS.Timeout | null = null;
-
-// 쓰는 도중 프로세스가 죽어도 기존 DB가 반쪽짜리로 남지 않도록 임시 파일에 쓴 뒤 교체한다
-function writeDbFile(): void {
-  if (!db) return;
-  const tmpPath = `${DB_PATH}.tmp`;
-  writeFileSync(tmpPath, Buffer.from(db.export()));
-  renameSync(tmpPath, DB_PATH);
-}
-
+// better-sqlite3는 매 쓰기가 즉시 파일(WAL)에 반영되는 네이티브 SQLite라, sql.js 시절
+// DB 전체를 재직렬화해 통째로 파일에 다시 쓰던 persistDb/schedulePersist/flushPersist
+// 파이프라인이 더 이상 필요 없다. 호출부(queries.ts, ipc.ts 전역)를 전부 고치는 대신
+// 이 함수들의 시그니처만 유지하고, WAL 체크포인트로 내용을 단순화했다.
 export function persistDb(): void {
   if (!db) return;
-  if (persistTimer) {
-    clearTimeout(persistTimer);
-    persistTimer = null;
-  }
-  writeDbFile();
+  db.pragma("wal_checkpoint(PASSIVE)");
 }
 
-// 고빈도 쓰기용 — 마지막 호출로부터 PERSIST_DEBOUNCE_MS 동안 조용하면 그때 한 번만 저장.
-// 저장 전에 앱이 강제 종료되면 그 사이의 변경(마지막 재생 시각 등)은 유실될 수 있다.
 export function schedulePersist(): void {
-  if (!db) return;
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    writeDbFile();
-  }, PERSIST_DEBOUNCE_MS);
-  // 저장 대기 타이머 때문에 앱 종료가 지연되지 않게 함
-  persistTimer.unref?.();
+  // better-sqlite3는 매 UPDATE가 이미 WAL에 반영되어 있으므로 디바운스로 미룰 저장이 없다.
 }
 
-// 종료 직전 등, 예약된 저장이 남아 있으면 지금 즉시 기록
 export function flushPersist(): void {
-  if (!persistTimer) return;
-  persistDb();
+  if (!db) return;
+  db.pragma("wal_checkpoint(TRUNCATE)");
 }
 
 export function closeDb(): void {
   if (!db) return;
-  persistDb();
+  flushPersist();
   db.close();
   db = null;
 }

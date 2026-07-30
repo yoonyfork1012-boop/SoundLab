@@ -1,9 +1,8 @@
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useRef, useState } from "react";
 import type {
   Collection,
   Library,
   ScanProgress,
-  Track,
   WatchStatus,
 } from "@shared/types";
 import { saveBool, saveJSON } from "../../lib/uiState";
@@ -19,7 +18,9 @@ const LOCAL_OPEN_KEY = "soundlib.localOpen";
 
 interface SidebarProps {
   trees: LibraryTree[];
-  tracks: Track[];
+  // 즐겨찾기 개수는 App이 별표 Set에서 O(1)로 넘겨준다 — 예전에는 트랙 배열 전체를
+  // 이 컴포넌트가 받아 매번 filter로 세느라, 별표를 누를 때마다 수십만 트랙을 훑었다.
+  starredCount: number;
   onOpenFolder: () => void;
   onRefreshLocal: () => void;
   // 어느 폴더든(라이브러리 루트/하위) ✕ 제거 — 루트/하위 구분과 확인은 상위(App)가 처리.
@@ -149,9 +150,9 @@ const LibraryFolderTree = memo(function LibraryFolderTree({
   );
 });
 
-export default function Sidebar({
+function Sidebar({
   trees,
-  tracks,
+  starredCount,
   onOpenFolder,
   onRefreshLocal,
   onRemoveNode,
@@ -210,12 +211,6 @@ export default function Sidebar({
       return next;
     });
   }
-  // 수십만 트랙 전체를 매 렌더마다 훑지 않도록 메모이즈 — Sidebar는 트랙 선택 때마다
-  // 리렌더되는데, 이 filter가 라이브러리 전체(수십만)를 돌아 선택 시 버벅임의 주원인이었다.
-  const starredCount = useMemo(
-    () => tracks.filter((t) => t.starred).length,
-    [tracks],
-  );
   // Local 자체를 클릭하면(=최상위 진입점) 폴더/컬렉션/즐겨찾기 선택이 모두 해제된 Home 상태
   const atLocalRoot =
     !selectedFolder && selectedCollection == null && !showStarredOnly;
@@ -391,3 +386,8 @@ export default function Sidebar({
     </aside>
   );
 }
+
+// App.tsx가 넘기는 콜백들을 useStableCallback으로 고정한 뒤에도 memo가 실제로 리렌더를
+// 막으려면 이 최상위 컴포넌트 자체가 memo로 감싸져 있어야 한다 — 안 그러면 부모(App)가
+// 렌더될 때마다 이 함수 자체가 다시 실행된다.
+export default memo(Sidebar);

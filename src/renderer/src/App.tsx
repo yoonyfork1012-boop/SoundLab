@@ -49,6 +49,7 @@ import {
   searchTabLabel,
   shouldSpawnSearchTab,
 } from "./lib/searchIndex";
+import { useStableCallback } from "./lib/useStableCallback";
 
 function norm(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -131,8 +132,22 @@ export default function App(): JSX.Element {
   // 렌더로 넘긴다 — 빠르게 훑어도 React가 중간 계산을 버리고 최신 폴더만 계산한다.
   const deferredFolder = useDeferredValue(selectedFolder);
   const deferredCollection = useDeferredValue(selectedCollection);
-  const deferredSearch = useDeferredValue(search);
-  const deferredSubSearch = useDeferredValue(subSearch);
+  // useDeferredValue만으로는 렌더를 인터럽트 가능하게 만들 뿐 실제 debounce가 아니라서,
+  // 빠르게 타이핑하면 전체 라이브러리 스캔이 키 입력마다 쌓인다. 입력창 자체(search/
+  // subSearch)는 즉시 갱신해 타이핑이 안 밀리게 하되, 필터링에 실제로 쓰이는 값은
+  // 타이핑이 잠깐 멈췄을 때만(150ms) 갱신되도록 한 단계 더 debounce한다.
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 150);
+    return () => clearTimeout(t);
+  }, [search]);
+  const [debouncedSubSearch, setDebouncedSubSearch] = useState(subSearch);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSubSearch(subSearch), 150);
+    return () => clearTimeout(t);
+  }, [subSearch]);
+  const deferredSearch = useDeferredValue(debouncedSearch);
+  const deferredSubSearch = useDeferredValue(debouncedSubSearch);
   // 지연본이 아직 즉시값을 따라잡지 못한 짧은 구간 = "리스트를 불러오는 중". 리스트에 옅은
   // 로딩 연출을 켜는 신호로만 쓴다(텍스트/카운트는 건드리지 않음).
   const listPending =
@@ -235,7 +250,10 @@ export default function App(): JSX.Element {
   }
 
   useEffect(() => {
-    saveJSON(TABS_KEY, tabs);
+    // tabs에는 검색어(search)도 들어 있어 한 글자 칠 때마다 이 effect가 돈다 — 매번 동기
+    // localStorage 쓰기를 하지 않도록 타이핑이 잠깐 멈췄을 때만 저장한다.
+    const t = setTimeout(() => saveJSON(TABS_KEY, tabs), 300);
+    return () => clearTimeout(t);
   }, [tabs]);
   useEffect(() => {
     saveNumber(ACTIVE_TAB_KEY, activeTabId ?? -1);
@@ -287,17 +305,40 @@ export default function App(): JSX.Element {
   // 원인이었다(클릭 반응 저하의 주범). previewedIds는 이 세션에서만 유지되는 휘발성 상태로,
   // 앱을 재시작하면 초기화되어 회색 표시도 함께 사라진다(DB의 lastPlayedAt과는 무관).
   const [previewedIds, setPreviewedIds] = useState<Set<number>>(new Set());
+  // 즐겨찾기(별표)도 같은 이유로 tracks 배열에서 분리한다. starred는 리스트 컬럼에도,
+  // 검색 인덱스에도, 폴더 트리에도 쓰이지 않는 플래그인데, 예전에는 별을 누를 때마다
+  // setTracks로 배열을 새로 만들어 trackKeys/searchBlobs/derivedTrees가 수십만 트랙 규모로
+  // 전부 다시 계산됐다(별표 한 번에 앱이 몇 초씩 멈추던 원인).
+  // previewedIds와 달리 이 값은 DB에 저장되므로, tracks가 로드/스캔으로 교체될 때 서버
+  // 데이터에서 다시 만들어진다(아래 useEffect).
+  const [starredIds, setStarredIds] = useState<Set<number>>(new Set());
+  // 연타 시 같은 렌더 안에서 여러 번 토글돼도 어긋나지 않도록 최신 값을 ref로 들고 있는다.
+  const starredIdsRef = useRef(starredIds);
+  starredIdsRef.current = starredIds;
+  // 이 세션에서 사용자가 누른 별표. tracks 배열은 갱신하지 않으므로, tracks가 통째로
+  // 교체될 때 그 배열의 오래된 starred 값이 방금 누른 별표를 되돌리지 않도록 덮어쓴다.
+  // (DB에는 toggleStar가 즉시 기록하므로 재시작 후에는 서버 값만으로 정확하다.)
+  const starOverridesRef = useRef(new Map<number, boolean>());
+  useEffect(() => {
+    const next = new Set<number>();
+    for (const t of tracks) if (t.starred) next.add(t.id);
+    for (const [id, on] of starOverridesRef.current) {
+      if (on) next.add(id);
+      else next.delete(id);
+    }
+    setStarredIds(next);
+  }, [tracks]);
   const toastTimerRef = useRef<number | undefined>(undefined);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const subSearchRef = useRef<HTMLInputElement>(null);
   const playerRef = useRef<PlayerHandle>(null);
   const rightPanelRef = useRef<HTMLDivElement>(null);
 
-  function showToast(message: string): void {
+  const showToast = useStableCallback((message: string): void => {
     setToast(message);
     window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setToast(null), 2200);
-  }
+  });
   const [view, setView] = useState<"grid" | "list">("grid");
   const [dockMode, setDockModeState] = useState(false);
   const [accent, setAccentState] = useState<string>(loadAccent());
@@ -316,7 +357,7 @@ export default function App(): JSX.Element {
   const [sort, setSort] = useState<{ key: string | null; dir: "asc" | "desc" }>(
     () => loadJSON("soundlib.sort", { key: null, dir: "asc" }),
   );
-  function handleSort(key: string): void {
+  const handleSort = useStableCallback((key: string): void => {
     // Shuffle mode is disabled when the user sorts the list
     if (shuffled) setShuffled(false);
     setSort((prev) => {
@@ -327,7 +368,7 @@ export default function App(): JSX.Element {
       saveJSON("soundlib.sort", next);
       return next;
     });
-  }
+  });
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [watchStatus, setWatchStatus] = useState<WatchStatus | null>(null);
   // 손상/읽기 실패로 건너뛴 파일 목록 — 인덱싱은 중단하지 않고 여기 모아 뒤에 보여준다.
@@ -605,7 +646,7 @@ export default function App(): JSX.Element {
     );
   }, []);
 
-  function handleCreateCollection(): void {
+  const handleCreateCollection = useStableCallback((): void => {
     setNamePrompt({
       title: "New collection name",
       onSubmit: async (name) => {
@@ -613,28 +654,31 @@ export default function App(): JSX.Element {
         setNamePrompt(null);
       },
     });
-  }
+  });
 
-  async function handleDeleteCollection(id: number): Promise<void> {
-    if (!window.api) return;
-    if (!window.confirm("Delete this collection? This does not delete sounds."))
-      return;
-    setCollections(await window.api.deleteCollection(id));
-    // 활성 탭뿐 아니라 이 컬렉션을 가리키던 모든 탭을 비운다
-    setTabs((prev) =>
-      prev.map((t) => (t.collection === id ? { ...t, collection: null } : t)),
-    );
-  }
+  const handleDeleteCollection = useStableCallback(
+    async (id: number): Promise<void> => {
+      if (!window.api) return;
+      if (
+        !window.confirm("Delete this collection? This does not delete sounds.")
+      )
+        return;
+      setCollections(await window.api.deleteCollection(id));
+      // 활성 탭뿐 아니라 이 컬렉션을 가리키던 모든 탭을 비운다
+      setTabs((prev) =>
+        prev.map((t) => (t.collection === id ? { ...t, collection: null } : t)),
+      );
+    },
+  );
 
-  async function handleAddToCollection(
-    collectionId: number,
-    trackId: number,
-  ): Promise<void> {
-    if (!window.api) return;
-    setCollections(
-      await window.api.addTrackToCollection(collectionId, trackId),
-    );
-  }
+  const handleAddToCollection = useStableCallback(
+    async (collectionId: number, trackId: number): Promise<void> => {
+      if (!window.api) return;
+      setCollections(
+        await window.api.addTrackToCollection(collectionId, trackId),
+      );
+    },
+  );
 
   function handleRenameCollection(collection: Collection): void {
     setNamePrompt({
@@ -769,24 +813,26 @@ export default function App(): JSX.Element {
 
   // Local 옆 인덱싱 버튼 — 전체 라이브러리 증분 인덱싱. 새로 추가/변경/이동/삭제된 것만
   // 처리하고 그대로인 파일은 건드리지 않는다. 전체 재인덱싱은 라이브러리 우클릭 메뉴에 있다.
-  async function handleRefreshAllLibraries(): Promise<void> {
-    if (!window.api) return;
-    if (libraries.length === 0) {
-      showToast("인덱싱할 라이브러리가 없습니다");
-      return;
-    }
-    setScanning(true);
-    try {
-      const res = await window.api.refreshAllLibraries();
-      commitServerState(res.libraries, res.tracks);
-      applyScanSummary(res.summary);
-    } catch (err) {
-      showToast(`인덱싱 실패: ${(err as Error)?.message ?? "unknown error"}`);
-    } finally {
-      setScanning(false);
-      setScanProgress(null);
-    }
-  }
+  const handleRefreshAllLibraries = useStableCallback(
+    async (): Promise<void> => {
+      if (!window.api) return;
+      if (libraries.length === 0) {
+        showToast("인덱싱할 라이브러리가 없습니다");
+        return;
+      }
+      setScanning(true);
+      try {
+        const res = await window.api.refreshAllLibraries();
+        commitServerState(res.libraries, res.tracks);
+        applyScanSummary(res.summary);
+      } catch (err) {
+        showToast(`인덱싱 실패: ${(err as Error)?.message ?? "unknown error"}`);
+      } finally {
+        setScanning(false);
+        setScanProgress(null);
+      }
+    },
+  );
 
   // 보조 메뉴 전용 — 인덱스가 실제 파일과 어긋났을 때만 쓰는 복구 수단.
   // 증분 비교를 전부 무시하고 라이브러리의 모든 파일을 처음부터 다시 분석한다.
@@ -845,31 +891,31 @@ export default function App(): JSX.Element {
   }
 
   // ✕ 제거 — 라이브러리 루트면 라이브러리 제거, 하위 폴더면 그 폴더 하위 트랙만 인덱스에서 제거.
-  function handleRemoveNode(node: FolderNode, library: Library): void {
-    if (isLibraryRoot(node, library)) {
-      if (
-        confirm(
-          `"${node.name}" 라이브러리를 제거할까요? (실제 파일은 삭제되지 않습니다)`,
+  const handleRemoveNode = useStableCallback(
+    (node: FolderNode, library: Library): void => {
+      if (isLibraryRoot(node, library)) {
+        if (
+          confirm(
+            `"${node.name}" 라이브러리를 제거할까요? (실제 파일은 삭제되지 않습니다)`,
+          )
         )
-      )
-        void handleRemoveLibrary(library.id);
-    } else {
-      void handleRemoveFolder(node, library);
-    }
-  }
+          void handleRemoveLibrary(library.id);
+      } else {
+        void handleRemoveFolder(node, library);
+      }
+    },
+  );
 
   // 우클릭 — 라이브러리 루트면 라이브러리 메뉴, 하위 폴더면 폴더 메뉴.
-  function handleNodeContextMenu(
-    e: React.MouseEvent,
-    node: FolderNode,
-    library: Library,
-  ): void {
-    if (isLibraryRoot(node, library)) {
-      setLibraryMenu({ x: e.clientX, y: e.clientY, library });
-    } else {
-      setFolderMenu({ x: e.clientX, y: e.clientY, node, library });
-    }
-  }
+  const handleNodeContextMenu = useStableCallback(
+    (e: React.MouseEvent, node: FolderNode, library: Library): void => {
+      if (isLibraryRoot(node, library)) {
+        setLibraryMenu({ x: e.clientX, y: e.clientY, library });
+      } else {
+        setFolderMenu({ x: e.clientX, y: e.clientY, node, library });
+      }
+    },
+  );
 
   // 하위 폴더 제거 — 폴더 하위 트랙을 인덱스에서만 제거(실제 파일 보존). 선택/탭도 정리.
   async function handleRemoveFolder(
@@ -1011,35 +1057,75 @@ export default function App(): JSX.Element {
     return "All Sounds";
   }
 
-  async function handleOpenFolder(folderPath?: string): Promise<void> {
-    if (!window.api) return;
-    // onClick 등에서 이벤트 객체가 그대로 넘어오는 경우가 있어(문자열 경로가 아님),
-    // 그대로 scanLibrary로 보내면 IPC 직렬화가 "An object could not be cloned"로 실패한다.
-    // 문자열 경로가 아니면 무시하고 폴더 선택 다이얼로그를 연다.
-    const folder =
-      typeof folderPath === "string"
-        ? folderPath
-        : await window.api.selectFolder();
-    if (!folder) return;
-    setScanning(true);
-    try {
-      // 폴더 추가 = 누적. 스캔 후 전체를 다시 받아 반영(기존 라이브러리 유지)
-      const res = await window.api.scanLibrary(folder);
-      commitServerState(res.libraries, res.tracks);
-      applyScanSummary(res.summary);
-      // 라이브러리를 추가하면 그 루트를 연 탭을 새로 띄운다(첫 실행 시 유일한 탭 생성 경로)
-      const tab = { ...newTab(), folder };
-      setTabs((prev) => [...prev, tab]);
-      setActiveTabId(tab.id);
-    } catch (err) {
-      showToast(
-        `Failed to scan folder: ${(err as Error)?.message ?? "unknown error"}`,
-      );
-    } finally {
-      setScanning(false);
-      setScanProgress(null);
-    }
-  }
+  const handleOpenFolder = useStableCallback(
+    async (folderPath?: string): Promise<void> => {
+      if (!window.api) return;
+      // onClick 등에서 이벤트 객체가 그대로 넘어오는 경우가 있어(문자열 경로가 아님),
+      // 그대로 scanLibrary로 보내면 IPC 직렬화가 "An object could not be cloned"로 실패한다.
+      // 문자열 경로가 아니면 무시하고 폴더 선택 다이얼로그를 연다.
+      const folder =
+        typeof folderPath === "string"
+          ? folderPath
+          : await window.api.selectFolder();
+      if (!folder) return;
+      setScanning(true);
+      try {
+        // 폴더 추가 = 누적. 스캔 후 전체를 다시 받아 반영(기존 라이브러리 유지)
+        const res = await window.api.scanLibrary(folder);
+        commitServerState(res.libraries, res.tracks);
+        applyScanSummary(res.summary);
+        // 라이브러리를 추가하면 그 루트를 연 탭을 새로 띄운다(첫 실행 시 유일한 탭 생성 경로)
+        const tab = { ...newTab(), folder };
+        setTabs((prev) => [...prev, tab]);
+        setActiveTabId(tab.id);
+      } catch (err) {
+        showToast(
+          `Failed to scan folder: ${(err as Error)?.message ?? "unknown error"}`,
+        );
+      } finally {
+        setScanning(false);
+        setScanProgress(null);
+      }
+    },
+  );
+
+  // Sidebar에 넘기는 인라인 화살표들 — memo(Sidebar)가 얕은 비교로 리렌더를 막으려면
+  // 이 콜백들도 매 렌더마다 새로 만들어지면 안 된다.
+  const handleRefreshLocalClick = useStableCallback((): void => {
+    void handleRefreshAllLibraries();
+  });
+  const handleSelectFolderFromSidebar = useStableCallback((p: string): void => {
+    setSelectedFolder(p);
+    setSelectedCollection(null);
+    setShowStarredOnly(false);
+  });
+  const handleSelectCollectionFromSidebar = useStableCallback(
+    (id: number): void => {
+      setSelectedCollection(id);
+      setSelectedFolder(null);
+      setShowStarredOnly(false);
+    },
+  );
+  const handleToggleStarredView = useStableCallback((): void => {
+    setShowStarredOnly((v) => !v);
+    setSelectedCollection(null);
+  });
+  const handleSelectLocalRoot = useStableCallback((): void => {
+    // Local 클릭 = 최상위 진입점. 모든 선택 해제 + 폴더 그리드 화면으로
+    setSelectedFolder(null);
+    setSelectedCollection(null);
+    setShowStarredOnly(false);
+    setSubSearch("");
+    setView("grid");
+  });
+  const handleCollectionContextMenu = useStableCallback(
+    (e: React.MouseEvent, collection: Collection): void => {
+      setCollectionMenu({ x: e.clientX, y: e.clientY, collection });
+    },
+  );
+  const handleShowScanErrors = useStableCallback((): void => {
+    setScanErrorsOpen(true);
+  });
 
   function hasExternalFileDrag(e: React.DragEvent): boolean {
     return Array.from(e.dataTransfer.types).includes("Files");
@@ -1117,23 +1203,51 @@ export default function App(): JSX.Element {
     setSelectedTrack((prev) => (prev && prev.libraryId === id ? null : prev));
   }
 
-  async function handleUpdateTrackMetadata(
-    trackId: number,
-    patch: TrackMetadataPatch,
-  ): Promise<void> {
-    if (!window.api) return;
-    const updated = await window.api.updateTrackMetadata(trackId, patch);
-    if (!updated) return;
-    setTracks((prev) => prev.map((t) => (t.id === trackId ? updated : t)));
-    setSelectedTrack((prev) => (prev && prev.id === trackId ? updated : prev));
-  }
+  const handleUpdateTrackMetadata = useStableCallback(
+    async (trackId: number, patch: TrackMetadataPatch): Promise<void> => {
+      if (!window.api) return;
+      const updated = await window.api.updateTrackMetadata(trackId, patch);
+      if (!updated) return;
+      setTracks((prev) => prev.map((t) => (t.id === trackId ? updated : t)));
+      setSelectedTrack((prev) =>
+        prev && prev.id === trackId ? updated : prev,
+      );
+    },
+  );
+  const handleUpdateMetadataVoid = useStableCallback(
+    (trackId: number, patch: TrackMetadataPatch): void => {
+      void handleUpdateTrackMetadata(trackId, patch);
+    },
+  );
 
-  // PlayerBar가 loop 구간/마커를 DB에 저장한 뒤 갱신된 Track을 돌려주면 in-memory 상태에도
-  // 반영한다 — 그래야 세션 중 다른 트랙을 거쳐 돌아와도 stale Track이 방금 저장한 값을
-  // 덮어쓰지 않는다.
-  function handleTrackPersisted(track: Track): void {
-    setTracks((prev) => prev.map((t) => (t.id === track.id ? track : t)));
-    setSelectedTrack((prev) => (prev && prev.id === track.id ? track : prev));
+  // 마커는 "재생 전용" 필드다 — 리스트 컬럼에도, 검색 인덱스에도, 폴더 트리에도 쓰이지 않는다.
+  //
+  // 예전에는 이 값이 저장될 때마다 setTracks로 tracks 배열을 통째로 새로 만들었는데, 그러면
+  // tracks에서 파생되는 무거운 인덱스(trackKeys / searchBlobs / derivedTrees)가 수십만 트랙
+  // 규모로 전부 다시 계산됐다.
+  //
+  // 이제는 tracks도 selectedTrack도 건드리지 않고 이 오버레이에만 기록해 둔다. DB에는 이미
+  // 저장됐으므로 재시작 후에는 그대로 살아나고, 세션 중에는 그 트랙을 다시 선택할 때
+  // hydrateTrack이 합쳐주므로 stale 값이 방금 저장한 마커를 덮어쓰지 않는다.
+  const playbackOverridesRef = useRef(
+    new Map<number, Pick<Track, "markers">>(),
+  );
+  const handleTrackPersisted = useStableCallback((track: Track): void => {
+    playbackOverridesRef.current.set(track.id, {
+      markers: track.markers,
+    });
+  });
+  // tracks 배열에 반영하지 않고 따로 들고 있는 값들(A-B 구간/마커, 별표)을 합쳐, 선택된
+  // 트랙 하나에 대해서만 최신 상태의 Track을 만든다.
+  function hydrateTrack(track: Track): Track {
+    const playback = playbackOverridesRef.current.get(track.id);
+    const starred = starOverridesRef.current.get(track.id);
+    if (!playback && starred === undefined) return track;
+    return {
+      ...track,
+      ...playback,
+      ...(starred === undefined ? {} : { starred }),
+    };
   }
 
   async function handleBatchUpdateMetadata(
@@ -1153,28 +1267,35 @@ export default function App(): JSX.Element {
     showToast(`Updated ${updatedTracks.length} sounds`);
   }
 
-  async function handleToggleStar(track: Track): Promise<void> {
-    const starred = window.api
-      ? await window.api.toggleStar(track.id)
-      : !track.starred;
-    setTracks((prev) =>
-      prev.map((t) => (t.id === track.id ? { ...t, starred } : t)),
-    );
+  // 화면은 즉시 바꾸고 DB 기록은 기다리지 않는다. 예전에는 IPC 응답을 await 했는데,
+  // 메인 프로세스가 그 사이 DB(수백 MB)를 디스크에 저장하고 있으면 그만큼 별이 늦게 켜져
+  // 연타할 때 멈춘 것처럼 보였다. 실패해도 되돌릴 만큼 중요한 값이 아니고, 실제 값은
+  // 다음 로드/스캔 때 DB에서 다시 읽어온다.
+  const handleToggleStar = useStableCallback((track: Track): void => {
+    const next = new Set(starredIdsRef.current);
+    const starred = !next.has(track.id);
+    if (starred) next.add(track.id);
+    else next.delete(track.id);
+    // tracks 배열은 건드리지 않는다 — 별표만 담은 Set과 오버레이만 갱신한다.
+    starredIdsRef.current = next;
+    starOverridesRef.current.set(track.id, starred);
+    setStarredIds(next);
     setSelectedTrack((prev) =>
       prev && prev.id === track.id ? { ...prev, starred } : prev,
     );
-  }
+    void window.api?.toggleStar(track.id).catch(() => {});
+  });
 
   // 우클릭 메뉴 "Browse this folder" — 사이드바/리스트를 해당 트랙이 들어있는 폴더로 이동
-  function handleBrowseFolder(track: Track): void {
+  const handleBrowseFolder = useStableCallback((track: Track): void => {
     const dir = norm(track.filePath).split("/").slice(0, -1).join("/");
     setSelectedFolder(dir);
     setSelectedCollection(null);
     setShowStarredOnly(false);
-  }
+  });
 
   // 우클릭 메뉴 / Ctrl+E "Rename" — 실제 파일을 같은 폴더 안에서 리네임
-  function handleRenameTrackFile(track: Track): void {
+  const handleRenameTrackFile = useStableCallback((track: Track): void => {
     const dot = track.filename.lastIndexOf(".");
     const base = dot > 0 ? track.filename.slice(0, dot) : track.filename;
     setNamePrompt({
@@ -1209,33 +1330,66 @@ export default function App(): JSX.Element {
         setNamePrompt(null);
       },
     });
-  }
+  });
 
   // 우클릭 메뉴 / Backspace "Remove" — 실제 IPC 호출은 ResultList가 수행하고,
   // 여기서는 로컬 상태(트랙 목록/선택)만 정리한다
-  function handleRemoveTrackFromLibrary(track: Track): void {
-    setTracks((prev) => prev.filter((t) => t.id !== track.id));
-    setSelectedTrack((prev) => (prev && prev.id === track.id ? null : prev));
-    setSelectedIds((prev) => {
-      if (!prev.has(track.id)) return prev;
-      const next = new Set(prev);
-      next.delete(track.id);
-      return next;
-    });
-    showToast("Removed from library");
-  }
+  const handleRemoveTrackFromLibrary = useStableCallback(
+    (track: Track): void => {
+      setTracks((prev) => prev.filter((t) => t.id !== track.id));
+      setSelectedTrack((prev) => (prev && prev.id === track.id ? null : prev));
+      setSelectedIds((prev) => {
+        if (!prev.has(track.id)) return prev;
+        const next = new Set(prev);
+        next.delete(track.id);
+        return next;
+      });
+      showToast("Removed from library");
+    },
+  );
 
-  async function handleSelectTrack(track: Track): Promise<void> {
-    setSelectedTrack(track);
-    setSelectedIds(new Set([track.id])); // ?�일 ?�택?�로 초기??    // Soundly처럼 미리?�기???�운?�는 ?�색(previewed) 처리 ??tracks 배열은 건드리지 않고
-    // previewedIds만 갱신(visibleTracks 재정렬을 유발하지 않음)
-    setPreviewedIds((prev) =>
-      prev.has(track.id) ? prev : new Set(prev).add(track.id),
-    );
-    // 마지막 재생 시각 기록은 재생과 무관한 부수 작업이다. await 하면 메인 프로세스 왕복이
-    // 트랙 선택 경로에 끼어들어 플레이어의 로드가 그만큼 늦어지므로 기다리지 않는다.
-    if (window.api) void window.api.updateLastPlayed(track.id).catch(() => {});
-  }
+  const handleSelectTrack = useStableCallback(
+    async (track: Track): Promise<void> => {
+      // 이 세션에서 바꾼 A-B 구간/마커/별표를 합쳐 넘긴다 — tracks 배열은 그 값들을 담고
+      // 있지 않다(위 handleTrackPersisted / handleToggleStar 참고).
+      setSelectedTrack(hydrateTrack(track));
+      setSelectedIds(new Set([track.id])); // 단일 선택으로 초기화
+      // Soundly처럼 미리듣기한 사운드는 프리뷰(previewed) 처리 — tracks 배열은 건드리지 않고
+      // previewedIds만 갱신(visibleTracks 재정렬을 유발하지 않음)
+      setPreviewedIds((prev) =>
+        prev.has(track.id) ? prev : new Set(prev).add(track.id),
+      );
+      // 마지막 재생 시각 기록은 재생과 무관한 부수 작업이다. await 하면 메인 프로세스 왕복이
+      // 트랙 선택 경로에 끼어들어 플레이어의 로드가 그만큼 늦어지므로 기다리지 않는다.
+      if (window.api)
+        void window.api.updateLastPlayed(track.id).catch(() => {});
+    },
+  );
+
+  const handleOpenMetadataPanel = useStableCallback((): void => {
+    setShowMeta(true);
+  });
+
+  const handleOpenBatchEdit = useStableCallback((): void => {
+    setBatchEditOpen(true);
+  });
+
+  const handleCreateCollectionWith = useStableCallback(
+    (trackId: number): void => {
+      setNamePrompt({
+        title: "New collection name",
+        onSubmit: async (name) => {
+          if (window.api) {
+            const cols = await window.api.createCollection(name);
+            setCollections(cols);
+            const created = cols[cols.length - 1];
+            if (created) await handleAddToCollection(created.id, trackId);
+          }
+          setNamePrompt(null);
+        },
+      });
+    },
+  );
 
   const activeCollection =
     collections.find((c) => c.id === selectedCollection) ?? null;
@@ -1270,12 +1424,24 @@ export default function App(): JSX.Element {
   // tracks와 동일 인덱스로 정렬돼 있어(같은 배열 map) 전역 검색 시 인덱스로 바로 쓴다.
   // "시작 시 전체 파일 미리 인덱싱"이 이 배열 생성에 해당한다.
   const searchBlobs = useMemo(() => tracks.map(buildSearchBlob), [tracks]);
+  // sub-search(결과 내 재검색)는 폴더/컬렉션으로 이미 걸러진 부분집합(base)에 적용되므로
+  // tracks와 같은 위치 인덱스를 쓸 수 없다 — id로 조회 가능한 맵을 별도로 둬서, 부분집합에도
+  // buildSearchBlob을 다시 계산하지 않고 사전 계산된 blob을 그대로 재사용한다.
+  const blobById = useMemo(() => {
+    const map = new Map<number, string>();
+    tracks.forEach((t, i) => map.set(t.id, searchBlobs[i]));
+    return map;
+  }, [tracks, searchBlobs]);
 
   // 폴더를 선택하면(=selectedFolder 있음) 하위 폴더가 없어도 사운드를 리스트로 보여주고
   // (Soundly 방식), 폴더 카드 그리드는 최상위 진입 화면(아무것도 선택 안 된 상태)에서만 뜬다.
   const isFiltering = Boolean(
     deferredSearch.trim() || showStarredOnly || deferredActiveCollection,
   );
+  // 별표 필터가 꺼져 있으면 별표가 바뀌어도 리스트 내용은 달라지지 않는다. 그런데 starredIds를
+  // 그대로 visibleTracks의 의존성에 두면 별 하나 누를 때마다 수십만 트랙을 다시 거르고
+  // 정렬하게 된다 — 필터가 켜져 있을 때만 의존하도록 null로 눌러둔다.
+  const starFilterIds = showStarredOnly ? starredIds : null;
   const showGrid =
     view === "grid" &&
     !isFiltering &&
@@ -1311,11 +1477,15 @@ export default function App(): JSX.Element {
     } else {
       base = tracks;
     }
-    if (showStarredOnly) base = base.filter((t) => t.starred);
+    if (starFilterIds) base = base.filter((t) => starFilterIds.has(t.id));
     if (deferredSubSearch.trim()) {
-      // subSearch는 결과 부분집합에 적용 — blob 인덱스 정렬이 깨지므로 즉석 계산.
+      // subSearch는 결과 부분집합(base)에 적용되지만, blobById가 트랙 id로 사전 계산된
+      // blob을 찾아주므로 buildSearchBlob을 다시 계산하지 않는다.
       const q = deferredSubSearch.toLowerCase();
-      base = base.filter((t) => trackMatchesQuery(buildSearchBlob(t), q));
+      base = base.filter((t) => {
+        const blob = blobById.get(t.id);
+        return blob !== undefined && trackMatchesQuery(blob, q);
+      });
     }
     // 폴더 카드 그리드를 보고 있을 때는 리스트를 그리지 않는다. 그런데 여기서 정렬까지
     // 해버리면 Local을 누를 때마다 라이브러리 전체(수십만 트랙)를 정렬하느라 클릭이 멈춘다.
@@ -1332,11 +1502,12 @@ export default function App(): JSX.Element {
     tracks,
     trackKeys,
     searchBlobs,
+    blobById,
     deferredFolder,
     deferredActiveCollection,
     deferredSearch,
     deferredSubSearch,
-    showStarredOnly,
+    starFilterIds,
     sort,
     libraries,
     publisherRule,
@@ -1344,14 +1515,16 @@ export default function App(): JSX.Element {
     shuffleSeed,
   ]);
 
-  function selectRelative(delta: number): void {
+  const selectRelative = useStableCallback((delta: number): void => {
     // Shuffle mode still moves through the visible track list
     if (visibleTracks.length === 0) return;
     const idx = visibleTracks.findIndex((t) => t.id === selectedTrack?.id);
     let next = idx === -1 ? 0 : idx + delta;
     next = Math.max(0, Math.min(visibleTracks.length - 1, next));
     void handleSelectTrack(visibleTracks[next]);
-  }
+  });
+  const handlePrevTrack = useStableCallback((): void => selectRelative(-1));
+  const handleNextTrack = useStableCallback((): void => selectRelative(1));
 
   // Shuffle 버튼 ?�릭 = ?��????�니??"지�?리스?��? ???�서�??�시 ?�기"
   function handleShuffleClick(): void {
@@ -1398,8 +1571,9 @@ export default function App(): JSX.Element {
             : [];
       if (ids.length > 0) void removeTracksFromActiveCollection(ids);
     } else if (selectedCollection == null && showStarredOnly) {
-      // 즐겨찾기 보기?�서 Delete = ?�택 ?�랙 즐겨찾기 ?�제
-      if (selectedTrack?.starred) void handleToggleStar(selectedTrack);
+      // 즐겨찾기 보기에서 Delete = 선택 트랙 즐겨찾기 해제
+      if (selectedTrack && starredIds.has(selectedTrack.id))
+        void handleToggleStar(selectedTrack);
     }
   }
   // F2: 활성 컬렉션 → 컬렉션 이름변경; 라이브러리 루트 선택 → 라이브러리(표시명) 변경;
@@ -1751,47 +1925,27 @@ export default function App(): JSX.Element {
         {!dockMode && (
           <Sidebar
             trees={trees}
-            tracks={tracks}
+            starredCount={starredIds.size}
             onOpenFolder={handleOpenFolder}
-            onRefreshLocal={() => void handleRefreshAllLibraries()}
+            onRefreshLocal={handleRefreshLocalClick}
             onRemoveNode={handleRemoveNode}
             selectedFolder={selectedFolder}
-            onSelectFolder={(p) => {
-              setSelectedFolder(p);
-              setSelectedCollection(null);
-              setShowStarredOnly(false);
-            }}
+            onSelectFolder={handleSelectFolderFromSidebar}
             collections={collections}
             selectedCollection={selectedCollection}
-            onSelectCollection={(id) => {
-              setSelectedCollection(id);
-              setSelectedFolder(null);
-              setShowStarredOnly(false);
-            }}
+            onSelectCollection={handleSelectCollectionFromSidebar}
             onCreateCollection={handleCreateCollection}
             onDeleteCollection={handleDeleteCollection}
             showStarredOnly={showStarredOnly}
-            onToggleStarredView={() => {
-              setShowStarredOnly((v) => !v);
-              setSelectedCollection(null);
-            }}
-            onSelectLocalRoot={() => {
-              // Local ?�릭 = 최상??진입?? 모든 ?�택 ?�제 + ?�더 그리???�면?�로
-              setSelectedFolder(null);
-              setSelectedCollection(null);
-              setShowStarredOnly(false);
-              setSubSearch("");
-              setView("grid");
-            }}
-            onCollectionContextMenu={(e, collection) =>
-              setCollectionMenu({ x: e.clientX, y: e.clientY, collection })
-            }
+            onToggleStarredView={handleToggleStarredView}
+            onSelectLocalRoot={handleSelectLocalRoot}
+            onCollectionContextMenu={handleCollectionContextMenu}
             onNodeContextMenu={handleNodeContextMenu}
             scanning={scanning}
             scanProgress={scanProgress}
             watchStatus={watchStatus}
             scanErrorCount={scanErrors.length}
-            onShowScanErrors={() => setScanErrorsOpen(true)}
+            onShowScanErrors={handleShowScanErrors}
           />
         )}
 
@@ -1896,6 +2050,7 @@ export default function App(): JSX.Element {
                     onSort={handleSort}
                     publisherRule={publisherRule}
                     previewedIds={previewedIds}
+                    starredIds={starredIds}
                     reorderable={collectionReorderable}
                     onReorder={
                       activeCollection
@@ -1908,26 +2063,11 @@ export default function App(): JSX.Element {
                     }
                     onBrowseFolder={handleBrowseFolder}
                     onRenameTrack={handleRenameTrackFile}
-                    onOpenMetadataPanel={() => setShowMeta(true)}
+                    onOpenMetadataPanel={handleOpenMetadataPanel}
                     onRemoveTrack={handleRemoveTrackFromLibrary}
                     onNotify={showToast}
-                    onBatchEdit={() => setBatchEditOpen(true)}
-                    onCreateCollectionWith={(trackId) => {
-                      setNamePrompt({
-                        title: "New collection name",
-                        onSubmit: async (name) => {
-                          if (window.api) {
-                            const cols =
-                              await window.api.createCollection(name);
-                            setCollections(cols);
-                            const created = cols[cols.length - 1];
-                            if (created)
-                              await handleAddToCollection(created.id, trackId);
-                          }
-                          setNamePrompt(null);
-                        },
-                      });
-                    }}
+                    onBatchEdit={handleOpenBatchEdit}
+                    onCreateCollectionWith={handleCreateCollectionWith}
                   />
                 )}
               </>
@@ -1946,9 +2086,7 @@ export default function App(): JSX.Element {
                 libraries={libraries}
                 publisherRule={publisherRule}
                 onToggleStar={handleToggleStar}
-                onUpdateMetadata={(trackId, patch) =>
-                  void handleUpdateTrackMetadata(trackId, patch)
-                }
+                onUpdateMetadata={handleUpdateMetadataVoid}
               />
             </div>
             <div className="right-panel__resizer right-panel__resizer--fixed" />
@@ -1973,8 +2111,8 @@ export default function App(): JSX.Element {
           track={selectedTrack}
           accent={accent}
           panelHeight={dockMode ? 92 : playerHeight}
-          onPrev={() => selectRelative(-1)}
-          onNext={() => selectRelative(1)}
+          onPrev={handlePrevTrack}
+          onNext={handleNextTrack}
           queueTracks={visibleTracks}
           dockMode={dockMode}
           onTrackPersisted={handleTrackPersisted}

@@ -20,8 +20,6 @@ export interface Track {
   publisher: string | null;
   isFloat: boolean;
   fileHash: string | null;
-  loopStart: number | null;
-  loopEnd: number | null;
   markers: number[];
 }
 

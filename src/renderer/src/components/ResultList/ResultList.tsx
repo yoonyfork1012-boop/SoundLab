@@ -22,6 +22,9 @@ interface ResultListProps {
   onSort: (key: string) => void;
   publisherRule: PublisherRule;
   previewedIds: Set<number>;
+  // 즐겨찾기는 tracks 배열이 아니라 App의 별표 Set이 최신 상태를 들고 있다
+  // (별표를 누를 때마다 수십만 트랙 배열을 새로 만들지 않기 위함).
+  starredIds: Set<number>;
   reorderable?: boolean;
   onReorder?: (orderedTrackIds: number[]) => void;
   onBrowseFolder?: (track: Track) => void;
@@ -345,6 +348,7 @@ function ResultList({
   onSort,
   publisherRule,
   previewedIds,
+  starredIds,
   reorderable = false,
   onReorder,
   onBrowseFolder,
@@ -884,7 +888,9 @@ function ResultList({
                   setRowMenu(null);
                 }}
               >
-                <span>{rowMenu.track.starred ? "Unflag" : "Flag"}</span>
+                <span>
+                  {starredIds.has(rowMenu.track.id) ? "Unflag" : "Flag"}
+                </span>
                 <span className="colmenu__shortcut">F</span>
               </button>
               <button

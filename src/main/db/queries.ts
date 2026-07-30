@@ -1,3 +1,4 @@
+import type Database from "better-sqlite3";
 import { getDb, persistDb, schedulePersist } from "./index";
 import type {
   Collection,
@@ -8,16 +9,39 @@ import type {
 
 type SqlRow = Record<string, unknown>;
 
-function selectRows(sql: string, params: unknown[] = []): SqlRow[] {
-  const db = getDb();
-  const stmt = db.prepare(sql);
-  stmt.bind(params as never);
-  const rows: SqlRow[] = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject());
+// db 인스턴스별로 prepared statement를 캐싱한다(WeakMap이라 DB가 재생성되면 자동으로
+// 예전 캐시가 버려진다). better-sqlite3는 sql.js와 달리 매 prepare가 WASM 경계를
+// 넘지 않지만, 자주 호출되는 SQL을 재준비하지 않는 게 여전히 더 빠르다.
+const stmtCacheByDb = new WeakMap<
+  Database.Database,
+  Map<string, Database.Statement>
+>();
+
+function prep(sql: string): Database.Statement {
+  const d = getDb();
+  let cache = stmtCacheByDb.get(d);
+  if (!cache) {
+    cache = new Map();
+    stmtCacheByDb.set(d, cache);
   }
-  stmt.free();
-  return rows;
+  let stmt = cache.get(sql);
+  if (!stmt) {
+    stmt = d.prepare(sql);
+    cache.set(sql, stmt);
+  }
+  return stmt;
+}
+
+function selectRows(sql: string, params: unknown[] = []): SqlRow[] {
+  return prep(sql).all(params) as SqlRow[];
+}
+
+function selectRow(sql: string, params: unknown[] = []): SqlRow | undefined {
+  return prep(sql).get(params) as SqlRow | undefined;
+}
+
+function run(sql: string, params: unknown[] = []): Database.RunResult {
+  return prep(sql).run(params);
 }
 
 function rowToTrack(row: SqlRow): Track {
@@ -43,45 +67,42 @@ function rowToTrack(row: SqlRow): Track {
     publisher: (row.publisher as string) ?? null,
     isFloat: row.is_float === 1,
     fileHash: (row.file_hash as string) ?? null,
-    loopStart: (row.loop_start as number) ?? null,
-    loopEnd: (row.loop_end as number) ?? null,
     markers: row.markers ? (JSON.parse(row.markers as string) as number[]) : [],
   };
 }
 
 export function upsertLibrary(rootPath: string, name: string): Library {
-  const db = getDb();
-  const existing = selectRows("SELECT * FROM libraries WHERE root_path = ?", [
+  const existing = selectRow("SELECT * FROM libraries WHERE root_path = ?", [
     rootPath,
   ]);
 
-  if (existing.length > 0) {
-    return rowToLibrary(existing[0]);
+  if (existing) {
+    return rowToLibrary(existing);
   }
 
   const createdAt = Date.now();
-  db.run(
+  const result = run(
     "INSERT INTO libraries (root_path, name, created_at) VALUES (?, ?, ?)",
     [rootPath, name, createdAt],
   );
-  const id = selectRows("SELECT last_insert_rowid() AS id")[0].id as number;
+  const id = result.lastInsertRowid as number;
   persistDb();
 
   return { id, rootPath, name, createdAt, monitor: false, analyzedAt: null };
 }
 
 export function beginScanBatch(): void {
-  getDb().run("BEGIN TRANSACTION");
+  getDb().exec("BEGIN TRANSACTION");
 }
 
 export function endScanBatch(): void {
-  getDb().run("COMMIT");
+  getDb().exec("COMMIT");
   persistDb();
 }
 
 export function rollbackScanBatch(): void {
   try {
-    getDb().run("ROLLBACK");
+    getDb().exec("ROLLBACK");
   } catch {
     /* noop */
   }
@@ -105,7 +126,7 @@ export function upsertTrack(track: {
   isFloat?: boolean;
   fileHash?: string | null;
 }): void {
-  getDb().run(
+  run(
     `INSERT INTO tracks (library_id, file_path, filename, duration_ms, sample_rate, bit_depth, channels, category, subcategory, artwork_path, artwork_source, mtime_ms, file_size, publisher, is_float, file_hash, added_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(file_path) DO UPDATE SET
@@ -149,10 +170,8 @@ export function upsertTrack(track: {
 // 파일 감시 큐 전용 — 트랙 1건 조회(경로 기준). unlink 이벤트 처리 시 rename 후보로 보관하거나
 // 삭제 전 캐시 정리에 필요한 정보(파일 크기/해시/id)를 얻기 위함.
 export function getTrackByPath(filePath: string): Track | null {
-  const rows = selectRows("SELECT * FROM tracks WHERE file_path = ?", [
-    filePath,
-  ]);
-  return rows.length > 0 ? rowToTrack(rows[0]) : null;
+  const row = selectRow("SELECT * FROM tracks WHERE file_path = ?", [filePath]);
+  return row ? rowToTrack(row) : null;
 }
 
 // 같은 라이브러리 안에서 size+hash가 일치하는 트랙을 찾는다 — rename/move 후보 판별용.
@@ -163,11 +182,11 @@ export function findRenameCandidate(
   fileHash: string,
   excludeFilePath: string,
 ): Track | null {
-  const rows = selectRows(
+  const row = selectRow(
     "SELECT * FROM tracks WHERE library_id = ? AND file_size = ? AND file_hash = ? AND file_path != ? LIMIT 1",
     [libraryId, fileSize, fileHash, excludeFilePath],
   );
-  return rows.length > 0 ? rowToTrack(rows[0]) : null;
+  return row ? rowToTrack(row) : null;
 }
 
 // 파일 삭제(unlink) 처리 — 컬렉션 소속 정리 후 트랙 제거. 아트워크 캐시 삭제는 호출부(watcher)에서
@@ -177,9 +196,8 @@ export function findRenameCandidate(
 export function deleteTrackByPath(filePath: string): void {
   const track = getTrackByPath(filePath);
   if (!track) return;
-  const db = getDb();
-  db.run("DELETE FROM collection_tracks WHERE track_id = ?", [track.id]);
-  db.run("DELETE FROM tracks WHERE id = ?", [track.id]);
+  run("DELETE FROM collection_tracks WHERE track_id = ?", [track.id]);
+  run("DELETE FROM tracks WHERE id = ?", [track.id]);
 }
 
 // rename/move로 판별된 트랙의 경로만 갱신 — 콘텐츠(길이/샘플레이트 등 메타데이터)는 동일하므로
@@ -191,7 +209,7 @@ export function updateTrackPathOnly(
   mtimeMs: number | null,
   fileSize: number | null,
 ): void {
-  getDb().run(
+  run(
     "UPDATE tracks SET file_path = ?, filename = ?, mtime_ms = ?, file_size = ? WHERE id = ?",
     [filePath, filename, mtimeMs, fileSize, trackId],
   );
@@ -211,19 +229,25 @@ export interface TrackStatRow {
 export function getTrackStatsByLibrary(
   libraryId: number,
 ): Map<string, TrackStatRow> {
-  const res = getDb().exec(
-    `SELECT file_path, id, mtime_ms, file_size, file_hash
-     FROM tracks WHERE library_id = ${Number(libraryId)}`,
-  );
+  // raw()로 행마다 객체를 만들지 않고 배열 그대로 받는다 — 수십만 행에서 체감되는 차이.
+  const rows = prep(
+    "SELECT file_path, id, mtime_ms, file_size, file_hash FROM tracks WHERE library_id = ?",
+  )
+    .raw()
+    .all(libraryId) as [
+    string,
+    number,
+    number | null,
+    number | null,
+    string | null,
+  ][];
   const map = new Map<string, TrackStatRow>();
-  if (!res.length) return map;
-  // 수십만 행에서 getAsObject는 행마다 객체를 만들어 느리다 — exec의 raw 배열을 그대로 쓴다.
-  for (const [filePath, id, mtimeMs, fileSize, fileHash] of res[0].values) {
-    map.set(filePath as string, {
-      id: id as number,
-      mtimeMs: (mtimeMs as number) ?? null,
-      fileSize: (fileSize as number) ?? null,
-      fileHash: (fileHash as string) ?? null,
+  for (const [filePath, id, mtimeMs, fileSize, fileHash] of rows) {
+    map.set(filePath, {
+      id,
+      mtimeMs: mtimeMs ?? null,
+      fileSize: fileSize ?? null,
+      fileHash: fileHash ?? null,
     });
   }
   return map;
@@ -233,21 +257,12 @@ export function getTrackStatsByLibrary(
 // 없어졌는지 알고 있으므로 여기서 다시 전체 목록을 훑지 않는다.
 export function deleteTracksByIds(trackIds: number[]): number {
   if (trackIds.length === 0) return 0;
-  const db = getDb();
-  const delColl = db.prepare(
-    "DELETE FROM collection_tracks WHERE track_id = ?",
-  );
-  const delTrack = db.prepare("DELETE FROM tracks WHERE id = ?");
+  const delColl = prep("DELETE FROM collection_tracks WHERE track_id = ?");
+  const delTrack = prep("DELETE FROM tracks WHERE id = ?");
   for (const id of trackIds) {
-    delColl.bind([id]);
-    delColl.step();
-    delColl.reset();
-    delTrack.bind([id]);
-    delTrack.step();
-    delTrack.reset();
+    delColl.run(id);
+    delTrack.run(id);
   }
-  delColl.free();
-  delTrack.free();
   return trackIds.length;
 }
 
@@ -257,13 +272,14 @@ export function deleteTracksByIds(trackIds: number[]): number {
 // "직속 파일 목록이 그대로인가"만 판정하는 데 쓰고, 파일 내용 수정은 실시간 감시
 // (watcher)가 잡는다. 둘 다 놓친 경우는 전체 재인덱싱으로 복구한다.
 export function getDirSnapshot(libraryId: number): Map<string, number> {
-  const res = getDb().exec(
-    `SELECT dir_path, mtime_ms FROM scan_dirs WHERE library_id = ${Number(libraryId)}`,
-  );
+  const rows = prep(
+    "SELECT dir_path, mtime_ms FROM scan_dirs WHERE library_id = ?",
+  )
+    .raw()
+    .all(libraryId) as [string, number | null][];
   const map = new Map<string, number>();
-  if (!res.length) return map;
-  for (const [dirPath, mtimeMs] of res[0].values) {
-    if (mtimeMs != null) map.set(dirPath as string, mtimeMs as number);
+  for (const [dirPath, mtimeMs] of rows) {
+    if (mtimeMs != null) map.set(dirPath, mtimeMs);
   }
   return map;
 }
@@ -272,28 +288,25 @@ export function replaceDirSnapshot(
   libraryId: number,
   dirs: Map<string, number>,
 ): void {
-  const db = getDb();
-  db.run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
-  const ins = db.prepare(
+  run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
+  const ins = prep(
     "INSERT OR REPLACE INTO scan_dirs (library_id, dir_path, mtime_ms) VALUES (?, ?, ?)",
   );
   for (const [dirPath, mtimeMs] of dirs) {
-    ins.bind([libraryId, dirPath, mtimeMs]);
-    ins.step();
-    ins.reset();
+    ins.run(libraryId, dirPath, mtimeMs);
   }
-  ins.free();
 }
 
 // 전체 재인덱싱 등, 다음 스캔이 무조건 모든 폴더를 훑게 만들고 싶을 때.
 export function clearDirSnapshot(libraryId: number): void {
-  getDb().run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
+  run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
 }
 
 export function hasTrackFilePath(filePath: string): boolean {
   return (
-    selectRows("SELECT 1 FROM tracks WHERE file_path = ? LIMIT 1", [filePath])
-      .length > 0
+    selectRow("SELECT 1 FROM tracks WHERE file_path = ? LIMIT 1", [
+      filePath,
+    ]) !== undefined
   );
 }
 
@@ -308,22 +321,21 @@ export function getAllTracks(): Track[] {
 
 // 사이드바 폴더 트리 구성에만 필요한 최소 데이터(library_id, file_path)를 라이브러리별로
 // 모아 반환한다. 전체 트랙(모든 컬럼)을 렌더러로 넘기는 것보다 페이로드가 수십 배 작아
-// 시작 시 사이드바를 즉시 그릴 수 있다. getAsObject 대신 exec를 써 대용량에서도 빠르다.
+// 시작 시 사이드바를 즉시 그릴 수 있다. raw()로 받아 대용량에서도 빠르다.
 export function getTrackPathsByLibrary(): Map<number, string[]> {
-  const res = getDb().exec(
+  const rows = prep(
     "SELECT library_id, file_path FROM tracks WHERE library_id IN (SELECT id FROM libraries)",
-  );
+  )
+    .raw()
+    .all() as [number, string][];
   const byLib = new Map<number, string[]>();
-  if (!res.length) return byLib;
-  const rows = res[0].values;
   for (const [libId, filePath] of rows) {
-    const id = libId as number;
-    let arr = byLib.get(id);
+    let arr = byLib.get(libId);
     if (!arr) {
       arr = [];
-      byLib.set(id, arr);
+      byLib.set(libId, arr);
     }
-    arr.push(filePath as string);
+    arr.push(filePath);
   }
   return byLib;
 }
@@ -346,20 +358,17 @@ export function getAllLibraries(): Library[] {
 }
 
 export function renameLibrary(id: number, name: string): void {
-  getDb().run("UPDATE libraries SET name = ? WHERE id = ?", [name, id]);
+  run("UPDATE libraries SET name = ? WHERE id = ?", [name, id]);
   persistDb();
 }
 
 export function setLibraryMonitor(id: number, on: boolean): void {
-  getDb().run("UPDATE libraries SET monitor = ? WHERE id = ?", [
-    on ? 1 : 0,
-    id,
-  ]);
+  run("UPDATE libraries SET monitor = ? WHERE id = ?", [on ? 1 : 0, id]);
   persistDb();
 }
 
 export function markLibraryAnalyzed(id: number, at: number): void {
-  getDb().run("UPDATE libraries SET analyzed_at = ? WHERE id = ?", [at, id]);
+  run("UPDATE libraries SET analyzed_at = ? WHERE id = ?", [at, id]);
   persistDb();
 }
 
@@ -371,16 +380,13 @@ export function computeSimilarityKeys(libraryId: number): number {
     "SELECT id, duration_ms, channels, sample_rate, bit_depth FROM tracks WHERE library_id = ?",
     [libraryId],
   );
-  const db = getDb();
+  const update = prep("UPDATE tracks SET similarity_key = ? WHERE id = ?");
   for (const row of tracks) {
     const durBucket = row.duration_ms
       ? Math.round((row.duration_ms as number) / 50)
       : 0;
     const key = `${durBucket}-${row.channels ?? 0}-${row.sample_rate ?? 0}-${row.bit_depth ?? 0}`;
-    db.run("UPDATE tracks SET similarity_key = ? WHERE id = ?", [
-      key,
-      row.id as number,
-    ]);
+    update.run(key, row.id as number);
   }
   persistDb();
   return tracks.length;
@@ -403,30 +409,29 @@ export function getEmptyLibraryIds(): number[] {
 export function deleteEmptyLibraries(protectedIds: number[] = []): number[] {
   const protectedSet = new Set(protectedIds);
   const ids = getEmptyLibraryIds().filter((id) => !protectedSet.has(id));
-  const db = getDb();
+  const del = prep("DELETE FROM libraries WHERE id = ?");
   for (const id of ids) {
-    db.run("DELETE FROM libraries WHERE id = ?", [id]);
+    del.run(id);
   }
   if (ids.length > 0) persistDb();
   return ids;
 }
 
 export function deleteLibrary(libraryId: number): void {
-  const db = getDb();
-  db.run(
+  run(
     "DELETE FROM collection_tracks WHERE track_id IN (SELECT id FROM tracks WHERE library_id = ?)",
     [libraryId],
   );
-  db.run("DELETE FROM tracks WHERE library_id = ?", [libraryId]);
-  db.run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
-  db.run("DELETE FROM libraries WHERE id = ?", [libraryId]);
+  run("DELETE FROM tracks WHERE library_id = ?", [libraryId]);
+  run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
+  run("DELETE FROM libraries WHERE id = ?", [libraryId]);
   persistDb();
 }
 
 export function toggleStarred(trackId: number): boolean {
-  const rows = selectRows("SELECT starred FROM tracks WHERE id = ?", [trackId]);
-  const next = rows[0]?.starred === 1 ? 0 : 1;
-  getDb().run("UPDATE tracks SET starred = ? WHERE id = ?", [next, trackId]);
+  const row = selectRow("SELECT starred FROM tracks WHERE id = ?", [trackId]);
+  const next = row?.starred === 1 ? 0 : 1;
+  run("UPDATE tracks SET starred = ? WHERE id = ?", [next, trackId]);
   schedulePersist();
   return next === 1;
 }
@@ -435,7 +440,7 @@ export function toggleStarred(trackId: number): boolean {
 // 같은 메인 스레드의 file:getAudioAccess IPC가 밀리고, 그 IPC를 기다리는 플레이어의
 // ws.load() 호출이 늦어져 이전 사운드가 계속 재생된다. 반드시 디바운스 저장을 쓸 것.
 export function updateLastPlayed(trackId: number): void {
-  getDb().run("UPDATE tracks SET last_played_at = ? WHERE id = ?", [
+  run("UPDATE tracks SET last_played_at = ? WHERE id = ?", [
     Date.now(),
     trackId,
   ]);
@@ -445,17 +450,16 @@ export function updateLastPlayed(trackId: number): void {
 // "Remove" (컨텍스트 메뉴) — 실제 파일은 건드리지 않고 라이브러리 인덱스에서만 제거.
 // 다시 스캔하면 그대로 재인덱싱되므로 되돌릴 수 있는 안전한 동작이다.
 export function removeTrack(trackId: number): void {
-  const db = getDb();
   // 이 트랙이 속한 폴더의 스냅샷을 무효화한다 — 안 그러면 폴더 mtime이 그대로라 다음
   // 증분 스캔이 그 폴더를 통째로 건너뛰어, 파일이 디스크에 멀쩡히 있는데도 영영
   // 다시 인덱싱되지 않는다("Remove는 재스캔으로 되돌릴 수 있다"는 약속이 깨진다).
-  const owner = selectRows("SELECT library_id FROM tracks WHERE id = ?", [
+  const owner = selectRow("SELECT library_id FROM tracks WHERE id = ?", [
     trackId,
   ]);
-  db.run("DELETE FROM collection_tracks WHERE track_id = ?", [trackId]);
-  db.run("DELETE FROM tracks WHERE id = ?", [trackId]);
-  if (owner.length > 0 && owner[0].library_id != null) {
-    clearDirSnapshot(owner[0].library_id as number);
+  run("DELETE FROM collection_tracks WHERE track_id = ?", [trackId]);
+  run("DELETE FROM tracks WHERE id = ?", [trackId]);
+  if (owner && owner.library_id != null) {
+    clearDirSnapshot(owner.library_id as number);
   }
   persistDb();
 }
@@ -491,28 +495,20 @@ export function removeTracksUnderFolder(
   const ids = getFolderTrackRows(libraryId, folderPathNorm).map((r) => r.id);
   if (ids.length === 0) return 0;
   const db = getDb();
-  db.run("BEGIN TRANSACTION");
+  db.exec("BEGIN TRANSACTION");
   try {
     // removeTrack과 같은 이유 — 인덱스에서 뺀 폴더가 다음 증분 스캔에서 프루닝되어
     // 영영 돌아오지 않는 일이 없도록 이 라이브러리의 디렉터리 스냅샷을 무효화한다.
-    db.run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
-    const delColl = db.prepare(
-      "DELETE FROM collection_tracks WHERE track_id = ?",
-    );
-    const delTrack = db.prepare("DELETE FROM tracks WHERE id = ?");
+    run("DELETE FROM scan_dirs WHERE library_id = ?", [libraryId]);
+    const delColl = prep("DELETE FROM collection_tracks WHERE track_id = ?");
+    const delTrack = prep("DELETE FROM tracks WHERE id = ?");
     for (const id of ids) {
-      delColl.bind([id]);
-      delColl.step();
-      delColl.reset();
-      delTrack.bind([id]);
-      delTrack.step();
-      delTrack.reset();
+      delColl.run(id);
+      delTrack.run(id);
     }
-    delColl.free();
-    delTrack.free();
-    db.run("COMMIT");
+    db.exec("COMMIT");
   } catch (err) {
-    db.run("ROLLBACK");
+    db.exec("ROLLBACK");
     throw err;
   }
   persistDb();
@@ -527,20 +523,17 @@ export function updateFolderTrackPaths(
   newRealFolder: string,
 ): void {
   const db = getDb();
-  db.run("BEGIN TRANSACTION");
+  db.exec("BEGIN TRANSACTION");
   try {
-    const upd = db.prepare("UPDATE tracks SET file_path = ? WHERE id = ?");
+    const upd = prep("UPDATE tracks SET file_path = ? WHERE id = ?");
     for (const r of rows) {
       const suffix = r.filePath.slice(oldRealFolder.length);
       const newPath = newRealFolder + suffix;
-      upd.bind([newPath, r.id]);
-      upd.step();
-      upd.reset();
+      upd.run(newPath, r.id);
     }
-    upd.free();
-    db.run("COMMIT");
+    db.exec("COMMIT");
   } catch (err) {
-    db.run("ROLLBACK");
+    db.exec("ROLLBACK");
     throw err;
   }
   persistDb();
@@ -574,9 +567,8 @@ function applyTrackMetadata(
   trackId: number,
   patch: TrackMetadataPatch,
 ): Track | null {
-  const current = selectRows("SELECT * FROM tracks WHERE id = ?", [trackId]);
-  if (current.length === 0) return null;
-  const row = current[0];
+  const row = selectRow("SELECT * FROM tracks WHERE id = ?", [trackId]);
+  if (!row) return null;
   const nextCategory =
     patch.category !== undefined
       ? patch.category
@@ -599,7 +591,7 @@ function applyTrackMetadata(
       ? applyTagPatch(currentTags, patch)
       : currentTags;
 
-  getDb().run(
+  run(
     "UPDATE tracks SET category = ?, subcategory = ?, description = ?, tags = ? WHERE id = ?",
     [
       nextCategory,
@@ -609,8 +601,8 @@ function applyTrackMetadata(
       trackId,
     ],
   );
-  const updated = selectRows("SELECT * FROM tracks WHERE id = ?", [trackId]);
-  return updated.length > 0 ? rowToTrack(updated[0]) : null;
+  const updated = selectRow("SELECT * FROM tracks WHERE id = ?", [trackId]);
+  return updated ? rowToTrack(updated) : null;
 }
 
 export function updateTrackMetadata(
@@ -657,23 +649,8 @@ export function findDuplicateGroups(): Track[][] {
 }
 
 export function getTrackById(trackId: number): Track | null {
-  const rows = selectRows("SELECT * FROM tracks WHERE id = ?", [trackId]);
-  return rows.length > 0 ? rowToTrack(rows[0]) : null;
-}
-
-// 웨이브폼에서 드래그한 A-B 구간을 트랙에 저장(자동저장) — null을 넘기면 구간 해제
-export function updateTrackLoopRegion(
-  trackId: number,
-  start: number | null,
-  end: number | null,
-): Track | null {
-  getDb().run("UPDATE tracks SET loop_start = ?, loop_end = ? WHERE id = ?", [
-    start,
-    end,
-    trackId,
-  ]);
-  schedulePersist();
-  return getTrackById(trackId);
+  const row = selectRow("SELECT * FROM tracks WHERE id = ?", [trackId]);
+  return row ? rowToTrack(row) : null;
 }
 
 // 포인트 마커(초 단위) 목록 전체를 교체 저장
@@ -681,7 +658,7 @@ export function updateTrackMarkers(
   trackId: number,
   markers: number[],
 ): Track | null {
-  getDb().run("UPDATE tracks SET markers = ? WHERE id = ?", [
+  run("UPDATE tracks SET markers = ? WHERE id = ?", [
     JSON.stringify(markers),
     trackId,
   ]);
@@ -695,7 +672,7 @@ export function renameTrackFile(
   filePath: string,
   filename: string,
 ): void {
-  getDb().run("UPDATE tracks SET file_path = ?, filename = ? WHERE id = ?", [
+  run("UPDATE tracks SET file_path = ?, filename = ? WHERE id = ?", [
     filePath,
     filename,
     trackId,
@@ -724,7 +701,7 @@ export function getCollections(): Collection[] {
 }
 
 export function createCollection(name: string): void {
-  getDb().run("INSERT INTO collections (name, created_at) VALUES (?, ?)", [
+  run("INSERT INTO collections (name, created_at) VALUES (?, ?)", [
     name,
     Date.now(),
   ]);
@@ -732,19 +709,18 @@ export function createCollection(name: string): void {
 }
 
 export function deleteCollection(id: number): void {
-  const db = getDb();
-  db.run("DELETE FROM collection_tracks WHERE collection_id = ?", [id]);
-  db.run("DELETE FROM collections WHERE id = ?", [id]);
+  run("DELETE FROM collection_tracks WHERE collection_id = ?", [id]);
+  run("DELETE FROM collections WHERE id = ?", [id]);
   persistDb();
 }
 
 export function renameCollection(id: number, name: string): void {
-  getDb().run("UPDATE collections SET name = ? WHERE id = ?", [name, id]);
+  run("UPDATE collections SET name = ? WHERE id = ?", [name, id]);
   persistDb();
 }
 
 export function setCollectionColor(id: number, color: string | null): void {
-  getDb().run("UPDATE collections SET color = ? WHERE id = ?", [color, id]);
+  run("UPDATE collections SET color = ? WHERE id = ?", [color, id]);
   persistDb();
 }
 
@@ -752,12 +728,11 @@ export function addTrackToCollection(
   collectionId: number,
   trackId: number,
 ): void {
-  const db = getDb();
-  const pos = selectRows(
+  const pos = selectRow(
     "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM collection_tracks WHERE collection_id = ?",
     [collectionId],
-  )[0].p as number;
-  db.run(
+  )?.p as number;
+  run(
     "INSERT OR IGNORE INTO collection_tracks (collection_id, track_id, position) VALUES (?, ?, ?)",
     [collectionId, trackId, pos],
   );
@@ -768,16 +743,15 @@ export function addTracksToCollection(
   collectionId: number,
   trackIds: number[],
 ): void {
-  const db = getDb();
-  let pos = selectRows(
+  let pos = selectRow(
     "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM collection_tracks WHERE collection_id = ?",
     [collectionId],
-  )[0].p as number;
+  )?.p as number;
+  const ins = prep(
+    "INSERT OR IGNORE INTO collection_tracks (collection_id, track_id, position) VALUES (?, ?, ?)",
+  );
   for (const trackId of trackIds) {
-    db.run(
-      "INSERT OR IGNORE INTO collection_tracks (collection_id, track_id, position) VALUES (?, ?, ?)",
-      [collectionId, trackId, pos],
-    );
+    ins.run(collectionId, trackId, pos);
     pos++;
   }
   persistDb();
@@ -787,7 +761,7 @@ export function removeTrackFromCollection(
   collectionId: number,
   trackId: number,
 ): void {
-  getDb().run(
+  run(
     "DELETE FROM collection_tracks WHERE collection_id = ? AND track_id = ?",
     [collectionId, trackId],
   );
@@ -799,12 +773,11 @@ export function reorderCollectionTracks(
   collectionId: number,
   orderedTrackIds: number[],
 ): void {
-  const db = getDb();
+  const upd = prep(
+    "UPDATE collection_tracks SET position = ? WHERE collection_id = ? AND track_id = ?",
+  );
   orderedTrackIds.forEach((trackId, position) => {
-    db.run(
-      "UPDATE collection_tracks SET position = ? WHERE collection_id = ? AND track_id = ?",
-      [position, collectionId, trackId],
-    );
+    upd.run(position, collectionId, trackId);
   });
   persistDb();
 }

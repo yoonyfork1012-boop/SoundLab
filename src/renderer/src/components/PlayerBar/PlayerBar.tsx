@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  memo,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -603,10 +604,6 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     start: number;
     end: number;
   } | null>(null);
-  // region-created/update/removed 핸들러가 프로그램적 복원/초기화까지 "사용자가 방금
-  // 구간을 만들었다"로 착각해 DB에 저장하지 않도록 막는 플래그
-  const suppressRegionPersistRef = useRef(false);
-  const regionSaveTimerRef = useRef<number | undefined>(undefined);
   const [markers, setMarkers] = useState<number[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   // wavesurfer.isPlaying()를 매 애니메이션 프레임 직접 호출하면 stop() 후 재생을 다시
@@ -781,31 +778,12 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     }
   }
 
-  // Cubase/Soundminer 로케이터처럼, 웨이브폼에 잡은 A-B 구간을 트랙에 자동저장한다.
-  // 드래그 중 매 프레임 IPC를 쏘지 않도록 디바운스.
-  function scheduleRegionSave(start: number | null, end: number | null): void {
-    const t = trackRef.current;
-    if (!t) return;
-    window.clearTimeout(regionSaveTimerRef.current);
-    regionSaveTimerRef.current = window.setTimeout(() => {
-      void window.api
-        ?.updateTrackLoopRegion(t.id, start, end)
-        .then((updated) => {
-          if (updated) onTrackPersistedRef.current?.(updated);
-        });
-    }, 400);
-  }
-
-  // persist=false는 트랙 전환 시 다음 트랙의 저장된 구간을 복원하기 전 UI만 초기화하는
-  // 내부 호출용 — 이 경우 DB에는 아무 것도 쓰지 않는다(그렇지 않으면 트랙을 바꿀 때마다
-  // 방금 로드된 새 트랙의 구간이 null로 지워지는 버그가 생긴다).
-  function clearRegionSelection(persist = true): void {
-    suppressRegionPersistRef.current = true;
+  // 웨이브폼에 잡은 A-B 구간은 현재 로드된 트랙의 임시 UI 상태로만 다룬다 — DB에
+  // 저장하거나 다시 복원하지 않으므로 다른 트랙으로 넘어가면 기록이 남지 않는다.
+  function clearRegionSelection(): void {
     regionsPluginRef.current?.clearRegions();
     activeRegionRef.current = null;
     setRegionBounds(null);
-    suppressRegionPersistRef.current = false;
-    if (persist) scheduleRegionSave(null, null);
   }
 
   function addMarkerAtCurrentTime(): void {
@@ -886,6 +864,21 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     ws.on("interaction", (newTime: number) => {
       savePlaybackPosition(newTime);
     });
+    // 웨이브폼의 구간 바깥을 클릭하면 잡아둔 A-B 구간을 해제한다(DAW의 선택 해제와 같은 동작).
+    // 예전에는 한 번 드래그한 구간이 계속 남아 있어, 지우려면 Loop 버튼을 찾아 눌러야 했다.
+    //
+    // 드래그로 구간을 만들거나 크기를 조절한 직후에는 wavesurfer의 드래그 헬퍼가 뒤따르는
+    // click을 캡처 단계에서 막아주므로(dist/draggable.js), 방금 만든 구간이 곧바로 지워지는
+    // 일은 없다. 구간 "안"을 클릭한 경우는 위치 이동 의도로 보고 그대로 둔다.
+    ws.on("click", (relativeX: number) => {
+      const bounds = regionBoundsRef.current;
+      if (!bounds) return;
+      const total = ws.getDuration();
+      if (!total) return;
+      const clickedAt = relativeX * total;
+      if (clickedAt >= bounds.start && clickedAt <= bounds.end) return;
+      clearRegionSelection();
+    });
     ws.on("ready", () => setDuration(ws.getDuration()));
     ws.on("finish", () => {
       savePlaybackPosition(ws.getDuration());
@@ -921,20 +914,15 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       activeRegionRef.current = region;
       setRegionBounds({ start: region.start, end: region.end });
       void ensureFullBuffer();
-      if (!suppressRegionPersistRef.current)
-        scheduleRegionSave(region.start, region.end);
     });
     regions.on("region-update", (region) => {
       activeRegionRef.current = region;
       setRegionBounds({ start: region.start, end: region.end });
-      if (!suppressRegionPersistRef.current)
-        scheduleRegionSave(region.start, region.end);
     });
     regions.on("region-removed", (region) => {
       if (activeRegionRef.current?.id === region.id) {
         activeRegionRef.current = null;
         setRegionBounds(null);
-        if (!suppressRegionPersistRef.current) scheduleRegionSave(null, null);
       }
     });
 
@@ -1334,14 +1322,17 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         return buf;
       } catch {
         return null;
-      } finally {
-        // 더 새로운(다른 트랙) 디코드가 이 자리를 덮어썼다면 그건 건드리지 않는다
-        if (fullBufferPromiseRef.current === promise) {
-          fullBufferPromiseRef.current = null;
-          fullBufferPromiseIdRef.current = null;
-        }
       }
     })();
+    // 정리는 IIFE 밖의 .finally 콜백에서 한다 — IIFE 내부 finally에서 promise 자신을 신원
+    // 비교하면 TS가 "초기화 식 안에서 대입 전 참조"로 오판(TS2454)하기 때문. 더 새로운(다른
+    // 트랙) 디코드가 이 자리를 덮어썼다면 건드리지 않는다.
+    void promise.finally(() => {
+      if (fullBufferPromiseRef.current === promise) {
+        fullBufferPromiseRef.current = null;
+        fullBufferPromiseIdRef.current = null;
+      }
+    });
     fullBufferPromiseRef.current = promise;
     fullBufferPromiseIdRef.current = t.id;
     return promise;
@@ -1367,31 +1358,30 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     )
       return processedUrlPromiseRef.current;
     const promise = (async (): Promise<string | null> => {
-      try {
-        const buf = await ensureFullBuffer();
-        if (!buf || trackRef.current?.id !== t.id) return null;
-        let channels: Float32Array[] = [];
-        for (let ch = 0; ch < buf.numberOfChannels; ch++)
-          channels.push(buf.getChannelData(ch));
-        if (reversed) channels = reverseChannels(channels);
-        if (needsPitch) channels = pitchShiftChannels(channels, pitchSemitones);
-        const wavBytes = encodeWavFloat32(channels, buf.sampleRate);
-        const url = URL.createObjectURL(
-          new Blob([new Uint8Array(wavBytes)], { type: "audio/wav" }),
-        );
-        if (processedUrlRef.current)
-          URL.revokeObjectURL(processedUrlRef.current);
-        processedUrlRef.current = url;
-        processedUrlKeyRef.current = key;
-        return url;
-      } finally {
-        // 더 새로운(다른 키) 렌더링이 이 자리를 덮어썼다면 건드리지 않는다
-        if (processedUrlPromiseRef.current === promise) {
-          processedUrlPromiseRef.current = null;
-          processedUrlPromiseKeyRef.current = null;
-        }
-      }
+      const buf = await ensureFullBuffer();
+      if (!buf || trackRef.current?.id !== t.id) return null;
+      let channels: Float32Array[] = [];
+      for (let ch = 0; ch < buf.numberOfChannels; ch++)
+        channels.push(buf.getChannelData(ch));
+      if (reversed) channels = reverseChannels(channels);
+      if (needsPitch) channels = pitchShiftChannels(channels, pitchSemitones);
+      const wavBytes = encodeWavFloat32(channels, buf.sampleRate);
+      const url = URL.createObjectURL(
+        new Blob([new Uint8Array(wavBytes)], { type: "audio/wav" }),
+      );
+      if (processedUrlRef.current) URL.revokeObjectURL(processedUrlRef.current);
+      processedUrlRef.current = url;
+      processedUrlKeyRef.current = key;
+      return url;
     })();
+    // 정리는 IIFE 밖의 .finally 콜백에서 (ensureFullBuffer와 같은 이유 — TS2454 회피).
+    // 더 새로운(다른 키) 렌더링이 이 자리를 덮어썼다면 건드리지 않는다.
+    void promise.finally(() => {
+      if (processedUrlPromiseRef.current === promise) {
+        processedUrlPromiseRef.current = null;
+        processedUrlPromiseKeyRef.current = null;
+      }
+    });
     processedUrlPromiseRef.current = promise;
     processedUrlPromiseKeyRef.current = key;
     return promise;
@@ -1439,7 +1429,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     setDuration(0);
     setLoadError(null);
 
-    clearRegionSelection(false);
+    clearRegionSelection();
     setMarkers(track?.markers ?? []);
     rawBufferRef.current = null;
     rawBufferTrackIdRef.current = null;
@@ -1548,26 +1538,8 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           !fxRef.current.pitchLinked,
         );
 
-        // 이 트랙에 저장된 A-B 구간(loop region)이 있으면 복원 — suppress 플래그로
-        // region-created 핸들러가 이걸 "새로 만든 구간"으로 착각해 다시 저장하지 않게 한다.
-        if (
-          track.loopStart != null &&
-          track.loopEnd != null &&
-          track.loopEnd - track.loopStart >= MIN_REGION_SEC
-        ) {
-          suppressRegionPersistRef.current = true;
-          const region = regionsPluginRef.current?.addRegion({
-            start: track.loopStart,
-            end: track.loopEnd,
-            color: "rgba(255, 255, 255, 0.22)",
-          });
-          if (region) {
-            activeRegionRef.current = region;
-            setRegionBounds({ start: region.start, end: region.end });
-            void ensureFullBuffer();
-          }
-          suppressRegionPersistRef.current = false;
-        }
+        // 구간(loop region)은 트랙에 저장/복원하지 않는다 — 다른 트랙으로 넘어갔다
+        // 돌아와도 이전 드래그 흔적이 남지 않도록 항상 빈 상태로 시작한다.
         // 분석 패널이 첫 재생부터 실시간 레벨을 읽을 수 있도록, 채널 토글을 누르기 전에도
         // Web Audio 라우트(+분석 탭)를 미리 만들어 둔다
         ensureRoute();
@@ -2194,4 +2166,6 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   );
 });
 
-export default PlayerBar;
+// onTrackPersisted/onPrev/onNext는 App.tsx에서 useStableCallback으로 고정돼 오므로, 이
+// 컴포넌트도 memo로 감싸야 재생 위치 갱신과 무관한 App 리렌더에서 여기까지 다시 그리지 않는다.
+export default memo(PlayerBar);

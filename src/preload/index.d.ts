@@ -91,11 +91,6 @@ declare const api: {
     patch: TrackMetadataPatch,
   ) => Promise<Track[]>;
   findDuplicates: () => Promise<Track[][]>;
-  updateTrackLoopRegion: (
-    trackId: number,
-    start: number | null,
-    end: number | null,
-  ) => Promise<Track | null>;
   updateTrackMarkers: (
     trackId: number,
     markers: number[],

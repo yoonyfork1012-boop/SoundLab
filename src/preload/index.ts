@@ -179,13 +179,6 @@ const api = {
   findDuplicates: (): Promise<Track[][]> =>
     ipcRenderer.invoke("library:findDuplicates"),
 
-  updateTrackLoopRegion: (
-    trackId: number,
-    start: number | null,
-    end: number | null,
-  ): Promise<Track | null> =>
-    ipcRenderer.invoke("track:updateLoopRegion", trackId, start, end),
-
   updateTrackMarkers: (
     trackId: number,
     markers: number[],

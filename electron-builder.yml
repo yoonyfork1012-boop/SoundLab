@@ -5,9 +5,13 @@ directories:
 files:
   - out/**
   - package.json
-# sql.js WASM 파일은 asar 안에서 읽으면 문제가 생길 수 있어 압축 해제
+# better-sqlite3 네이티브 바이너리(N-API 프리빌드)는 asar 안에서 로드할 수 없어 압축 해제
 asarUnpack:
-  - node_modules/sql.js/dist/sql-wasm.wasm
+  - node_modules/better-sqlite3/prebuilds/**
+# better-sqlite3 v13은 런타임 ABI에 독립적인 N-API 프리빌드를 동봉하므로 재빌드가 필요 없다.
+# 이걸 끄지 않으면 electron-builder가 node-gyp로 소스 재빌드를 시도해 Visual Studio를 요구하고,
+# 빌드 도구가 없는 환경에서는 패키징 자체가 실패한다.
+npmRebuild: false
 # 단일 PNG(256x256 이상)만 있으면 electron-builder가 빌드 시 ico/icns를 자동 생성
 icon: build/icon.png
 # BrowserWindow 아이콘/스플래시 로고에서 런타임에 읽을 수 있도록 리소스로 함께 배포

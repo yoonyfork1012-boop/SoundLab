@@ -99,8 +99,6 @@ export const mockTracks: Track[] = EXPANDED.map(
     publisher: i % 3 === 0 ? "Acme Sound Co." : null,
     isFloat: BITS[i % BITS.length] === 32,
     fileHash: null,
-    loopStart: null,
-    loopEnd: null,
     markers: [],
   }),
 );

@@ -51,7 +51,6 @@ import {
   updateTrackMetadata,
   batchUpdateTrackMetadata,
   findDuplicateGroups,
-  updateTrackLoopRegion,
   updateTrackMarkers,
 } from "./db/queries";
 import { runExclusive } from "./db/txLock";
@@ -286,14 +285,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle("library:findDuplicates", () => {
     return findDuplicateGroups();
   });
-
-  // 웨이브폼 A-B 구간 자동저장 / 해제
-  ipcMain.handle(
-    "track:updateLoopRegion",
-    (_event, trackId: number, start: number | null, end: number | null) => {
-      return updateTrackLoopRegion(trackId, start, end);
-    },
-  );
 
   // 포인트 마커 저장
   ipcMain.handle(
