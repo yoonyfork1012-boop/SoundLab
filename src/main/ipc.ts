@@ -261,8 +261,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return toggleStarred(trackId);
   });
 
-  ipcMain.handle("track:updateLastPlayed", (_event, trackId: number) => {
-    updateLastPlayed(trackId);
+  // 렌더러가 응답을 기다리지 않는 부수 기록이라 handle이 아니라 on으로 받는다.
+  // 여기서 던진 예외는 렌더러로 전달되지 않으므로 이 자리에서 삼킨다.
+  ipcMain.on("track:updateLastPlayed", (_event, trackId: number) => {
+    try {
+      updateLastPlayed(trackId);
+    } catch (err) {
+      console.error("updateLastPlayed 실패:", (err as Error)?.message);
+    }
   });
 
   // 메타데이터 패널 인라인 편집 — 카테고리/서브카테고리/설명/태그

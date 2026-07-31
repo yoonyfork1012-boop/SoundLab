@@ -9,7 +9,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
-    "pack:win": "electron-vite build && electron-builder --win --config electron-builder.yml",
+    "verify:electron-native": "node scripts/verify-electron-native.cjs",
+    "pack:win": "electron-vite build && npm run verify:electron-native && electron-builder --win --config electron-builder.yml",
     "test": "vitest run",
     "test:watch": "vitest"
   },

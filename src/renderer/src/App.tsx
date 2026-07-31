@@ -1359,10 +1359,9 @@ export default function App(): JSX.Element {
       setPreviewedIds((prev) =>
         prev.has(track.id) ? prev : new Set(prev).add(track.id),
       );
-      // 마지막 재생 시각 기록은 재생과 무관한 부수 작업이다. await 하면 메인 프로세스 왕복이
-      // 트랙 선택 경로에 끼어들어 플레이어의 로드가 그만큼 늦어지므로 기다리지 않는다.
-      if (window.api)
-        void window.api.updateLastPlayed(track.id).catch(() => {});
+      // 마지막 재생 시각 기록은 재생과 무관한 부수 작업이다. 응답이 필요 없으므로
+      // invoke가 아니라 send로 던지고(preload), 선택 경로는 여기서 바로 끝난다.
+      window.api?.updateLastPlayed(track.id);
     },
   );
 

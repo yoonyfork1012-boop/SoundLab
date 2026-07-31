@@ -1,11 +1,14 @@
 import Database from "better-sqlite3";
-import { existsSync, mkdirSync, renameSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
 const SOUNDLIB_DIR = join(homedir(), ".soundlib");
 export const ARTWORK_DIR = join(SOUNDLIB_DIR, "artwork");
 const DB_PATH = join(SOUNDLIB_DIR, "soundlib.db");
+// WAL 모드에서 DB는 세 파일이 한 세트다. 손상 파일을 치울 때 -wal/-shm을 남겨두면
+// 새로 만든 빈 DB에 옛 WAL이 그대로 붙어 다시 손상되거나 아예 열리지 않는다.
+const DB_SIDECARS = [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`];
 
 let db: Database.Database | null = null;
 
@@ -14,25 +17,41 @@ function ensureDirs(): void {
   if (!existsSync(ARTWORK_DIR)) mkdirSync(ARTWORK_DIR, { recursive: true });
 }
 
-export async function initDb(): Promise<void> {
-  if (db) return;
-  ensureDirs();
-
-  // 손상된 DB(예: 비정상 종료/동시 쓰기)로 앱이 아예 안 켜지는 것을 방지 —
-  // 열기 실패 시 손상 파일을 백업으로 옮기고 새 DB로 시작
+// 손상된 DB(예: 비정상 종료/동시 쓰기)로 앱이 아예 안 켜지는 것을 방지 — 열기 실패는
+// 물론이고 "열리기는 하는데 내용이 깨진" 경우까지 잡아야 해서 quick_check까지 본다.
+// quick_check는 integrity_check와 달리 인덱스 정합성을 건너뛰어 대용량 DB에서도 빠르다.
+function openWithRecovery(): Database.Database {
+  let opened: Database.Database | null = null;
   try {
-    db = new Database(DB_PATH);
+    opened = new Database(DB_PATH);
+    const check = opened.pragma("quick_check", { simple: true });
+    if (check !== "ok") throw new Error(`quick_check: ${String(check)}`);
+    return opened;
   } catch (err) {
-    if (existsSync(DB_PATH)) {
+    try {
+      opened?.close();
+    } catch {
+      /* 파일을 옮기기 전 최선의 정리 */
+    }
+    const suffix = `.corrupt-${Date.now()}`;
+    for (const path of DB_SIDECARS) {
+      if (!existsSync(path)) continue;
       try {
-        renameSync(DB_PATH, `${DB_PATH}.corrupt-${Date.now()}`);
+        renameSync(path, `${path}${suffix}`);
       } catch {
         /* noop */
       }
     }
     console.error("손상된 DB 감지 → 새 DB로 시작:", (err as Error)?.message);
-    db = new Database(DB_PATH);
+    return new Database(DB_PATH);
   }
+}
+
+export async function initDb(): Promise<void> {
+  if (db) return;
+  ensureDirs();
+
+  db = openWithRecovery();
 
   // better-sqlite3는 파일 기반 네이티브 SQLite라 sql.js와 달리 각 쓰기가 그 자리에서
   // 바로 디스크(WAL)에 반영된다 — WAL은 리더가 쓰기를 막지 않고, NORMAL 동기화는
@@ -40,6 +59,9 @@ export async function initDb(): Promise<void> {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
+  // 쓰기가 겹쳐 SQLITE_BUSY로 즉시 실패하는 대신 잠깐 기다린다. 앱 안의 쓰기는 txLock으로
+  // 직렬화하지만, 그 바깥(외부 도구, 남아 있던 이전 프로세스)까지 막아주지는 않는다.
+  db.pragma("busy_timeout = 5000");
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS libraries (
@@ -103,6 +125,51 @@ export async function initDb(): Promise<void> {
 
 // CREATE TABLE IF NOT EXISTS는 기존 DB에 새 컬럼을 추가해주지 않으므로,
 // 이미 테이블이 있던 예전 DB에도 새 컬럼이 생기도록 직접 확인 후 ALTER TABLE
+const COLUMN_MIGRATIONS: ReadonlyArray<
+  [table: string, column: string, ddl: string]
+> = [
+  ["collections", "color", "ALTER TABLE collections ADD COLUMN color TEXT"],
+  [
+    "libraries",
+    "monitor",
+    "ALTER TABLE libraries ADD COLUMN monitor INTEGER DEFAULT 0",
+  ],
+  [
+    "libraries",
+    "analyzed_at",
+    "ALTER TABLE libraries ADD COLUMN analyzed_at INTEGER",
+  ],
+  [
+    "tracks",
+    "similarity_key",
+    "ALTER TABLE tracks ADD COLUMN similarity_key TEXT",
+  ],
+  ["tracks", "mtime_ms", "ALTER TABLE tracks ADD COLUMN mtime_ms REAL"],
+  ["tracks", "file_size", "ALTER TABLE tracks ADD COLUMN file_size INTEGER"],
+  ["tracks", "publisher", "ALTER TABLE tracks ADD COLUMN publisher TEXT"],
+  [
+    "tracks",
+    "is_float",
+    "ALTER TABLE tracks ADD COLUMN is_float INTEGER DEFAULT 0",
+  ],
+  ["tracks", "file_hash", "ALTER TABLE tracks ADD COLUMN file_hash TEXT"],
+  ["tracks", "markers", "ALTER TABLE tracks ADD COLUMN markers TEXT"],
+];
+
+// 스키마를 실제로 건드리기 직전에만 한 벌 복사해 둔다. 마이그레이션이 없는 평상시 실행에서는
+// 복사하지 않는다 — 수백 MB짜리 DB를 매번, 혹은 아무 일도 없는 시점에 스냅샷할 이유가 없다.
+function backupBeforeMigration(): void {
+  if (!existsSync(DB_PATH)) return;
+  const dest = `${DB_PATH}.pre-migration-${Date.now()}.bak`;
+  try {
+    flushPersist(); // WAL을 본 파일로 접어 넣어야 복사본만으로 복구가 된다
+    copyFileSync(DB_PATH, dest);
+  } catch (err) {
+    // 백업 실패로 앱이 안 켜지면 더 나쁘다 — 알리고 마이그레이션은 진행한다
+    console.error("마이그레이션 전 백업 실패:", (err as Error)?.message);
+  }
+}
+
 function runMigrations(): void {
   const d = getDb();
 
@@ -113,36 +180,14 @@ function runMigrations(): void {
     return rows.some((row) => row.name === column);
   }
 
-  if (!hasColumn("collections", "color")) {
-    d.exec("ALTER TABLE collections ADD COLUMN color TEXT");
+  const pending = COLUMN_MIGRATIONS.filter(
+    ([table, column]) => !hasColumn(table, column),
+  );
+  if (pending.length > 0) {
+    backupBeforeMigration();
+    for (const [, , ddl] of pending) d.exec(ddl);
   }
-  if (!hasColumn("libraries", "monitor")) {
-    d.exec("ALTER TABLE libraries ADD COLUMN monitor INTEGER DEFAULT 0");
-  }
-  if (!hasColumn("libraries", "analyzed_at")) {
-    d.exec("ALTER TABLE libraries ADD COLUMN analyzed_at INTEGER");
-  }
-  if (!hasColumn("tracks", "similarity_key")) {
-    d.exec("ALTER TABLE tracks ADD COLUMN similarity_key TEXT");
-  }
-  if (!hasColumn("tracks", "mtime_ms")) {
-    d.exec("ALTER TABLE tracks ADD COLUMN mtime_ms REAL");
-  }
-  if (!hasColumn("tracks", "file_size")) {
-    d.exec("ALTER TABLE tracks ADD COLUMN file_size INTEGER");
-  }
-  if (!hasColumn("tracks", "publisher")) {
-    d.exec("ALTER TABLE tracks ADD COLUMN publisher TEXT");
-  }
-  if (!hasColumn("tracks", "is_float")) {
-    d.exec("ALTER TABLE tracks ADD COLUMN is_float INTEGER DEFAULT 0");
-  }
-  if (!hasColumn("tracks", "file_hash")) {
-    d.exec("ALTER TABLE tracks ADD COLUMN file_hash TEXT");
-  }
-  if (!hasColumn("tracks", "markers")) {
-    d.exec("ALTER TABLE tracks ADD COLUMN markers TEXT");
-  }
+
   // 이름변경/이동 후보 탐색(size+hash) 성능을 위한 인덱스 — 대용량 라이브러리에서 매 add 이벤트마다
   // 풀스캔하지 않도록 함
   d.exec(

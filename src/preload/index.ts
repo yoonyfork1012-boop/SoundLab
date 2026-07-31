@@ -161,8 +161,9 @@ const api = {
   toggleStar: (trackId: number): Promise<boolean> =>
     ipcRenderer.invoke("track:toggleStar", trackId),
 
-  updateLastPlayed: (trackId: number): Promise<void> =>
-    ipcRenderer.invoke("track:updateLastPlayed", trackId),
+  // 반환값이 없는 부수 기록이라 응답을 기다릴 이유가 없다 — invoke 대신 send.
+  updateLastPlayed: (trackId: number): void =>
+    ipcRenderer.send("track:updateLastPlayed", trackId),
 
   updateTrackMetadata: (
     trackId: number,

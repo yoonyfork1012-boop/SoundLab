@@ -47,6 +47,20 @@ describe("buildSearchBlob", () => {
     });
     expect(blob.includes("xy")).toBe(false);
   });
+
+  it("태그끼리도 이어져 매칭되지 않게 한다", () => {
+    // tags를 join(" ")으로 합치면 "kick drum"이 되어 경계를 넘는 'ck dr'에 걸린다
+    const blob = buildSearchBlob({
+      filename: "a.wav",
+      category: null,
+      subcategory: null,
+      description: null,
+      tags: ["kick", "drum"],
+    });
+    expect(blob).toContain("kick");
+    expect(blob).toContain("drum");
+    expect(blob.includes("ck dr")).toBe(false);
+  });
 });
 
 describe("trackMatchesQuery", () => {

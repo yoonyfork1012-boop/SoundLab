@@ -81,7 +81,7 @@ declare const api: {
   onTracksChanged: (callback: (changes: TracksChanged) => void) => () => void;
   onWatchStatus: (callback: (status: WatchStatus) => void) => () => void;
   toggleStar: (trackId: number) => Promise<boolean>;
-  updateLastPlayed: (trackId: number) => Promise<void>;
+  updateLastPlayed: (trackId: number) => void;
   updateTrackMetadata: (
     trackId: number,
     patch: TrackMetadataPatch,

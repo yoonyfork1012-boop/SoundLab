@@ -1,14 +1,15 @@
 // 검색은 렌더러 안에서 전량 메모리 필터로 처리된다(519k 트랙). 트랙당 반복 비용을
 // 줄이려고, 검색 대상 필드를 시작 시 한 번만 소문자 문자열로 합쳐 두고(blob) 필터
 // 때는 그 문자열에 대해 includes 1회만 검사한다. 인접 필드가 우연히 이어져 매칭되지
-// 않도록 널 문자(�)를 구분자로 쓴다.
+// 않도록 널 문자를 구분자로 쓴다. 태그도 서로 이어붙지 않게 각각을 원소로 넣는다 —
+// join(" ")으로 합치면 ["kick","drum"]이 "kick drum"이 되어 "ck dr" 같은 질의에 걸린다.
 export interface SearchTabLike {
   folder: string | null;
   collection: number | null;
   search: string;
 }
 
-const SEP = "​";
+const SEP = "\u0000";
 
 export function buildSearchBlob(t: {
   filename: string;
@@ -22,7 +23,7 @@ export function buildSearchBlob(t: {
     t.category ?? "",
     t.subcategory ?? "",
     t.description ?? "",
-    t.tags.join(" "),
+    ...t.tags,
   ]
     .join(SEP)
     .toLowerCase();
