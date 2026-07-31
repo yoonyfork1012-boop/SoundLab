@@ -781,3 +781,36 @@ export function reorderCollectionTracks(
   });
   persistDb();
 }
+
+// 검색 ---------------------------------------------------------------------
+//
+// 렌더러가 51만 트랙 배열을 매번 훑는 대신 FTS5 인덱스에 물어본다. Track 객체가 아니라
+// id만 돌려주는 이유: 렌더러는 이미 전체 트랙을 메모리에 들고 있으므로 id로 찾아 쓰면
+// 되고, 그러면 결과가 8만 건이어도 IPC 페이로드가 숫자 배열 하나뿐이라 상한을 둘 필요가
+// 없다(실측: 79,927건 6.5ms).
+//
+// trigram 토크나이저는 3글자 미만 질의를 인덱스로 처리하지 못한다. 1~2글자는 호출부
+// (렌더러)가 기존 인메모리 스캔으로 처리하므로 여기서는 빈 배열을 돌려준다 —
+// LIKE 전체 스캔으로 대신하면 드문 문자열에서 350ms까지 걸려 더 느리다.
+export const FTS_MIN_QUERY_LENGTH = 3;
+
+/** FTS5 문자열 리터럴로 감싼다. 큰따옴표로 감싸야 질의 전체가 하나의 구문으로 취급되어
+ *  공백·하이픈 같은 문자가 연산자로 해석되지 않는다. 내부 큰따옴표는 겹쳐서 이스케이프. */
+function ftsPhrase(query: string): string {
+  return `"${query.replace(/"/g, '""')}"`;
+}
+
+export function searchTrackIds(query: string): number[] {
+  const q = query.trim().toLowerCase();
+  if (q.length < FTS_MIN_QUERY_LENGTH) return [];
+  try {
+    return prep("SELECT rowid FROM tracks_fts WHERE blob MATCH ?")
+      .pluck()
+      .all(ftsPhrase(q)) as number[];
+  } catch (err) {
+    // 구두점만으로 된 질의처럼 trigram이 토큰을 못 만드는 입력은 FTS5가 예외를 던진다.
+    // 검색 한 번 실패로 앱이 멈출 이유는 없으니 빈 결과로 처리한다.
+    console.error("검색 실패:", (err as Error)?.message);
+    return [];
+  }
+}

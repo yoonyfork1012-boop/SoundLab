@@ -121,6 +121,71 @@ export async function initDb(): Promise<void> {
   `);
 
   runMigrations();
+  ensureSearchIndex();
+}
+
+// 검색 인덱스(FTS5 trigram) ------------------------------------------------
+//
+// 51만 트랙에서 검색어 한 글자마다 렌더러가 전체 배열을 훑던 것을 대체한다. trigram
+// 토크나이저를 쓰는 이유는 기존 동작이 부분문자열 매칭(includes)이기 때문 — 기본
+// unicode61은 토큰 접두어만 찾아서 "ick"으로 "kick"을 못 찾는다.
+//
+// 색인 문자열은 렌더러의 buildSearchBlob과 같은 필드 구성이다(파일명/카테고리/
+// 서브카테고리/설명/태그). tags는 JSON 텍스트로 저장돼 있어 대괄호·따옴표를 공백으로
+// 바꿔 태그끼리 이어붙지 않게 한다.
+// 트리거 본문에서는 컬럼을 new.로 한정해야 하고(그냥 filename이라 쓰면 "no such column"),
+// 최초 채우기의 SELECT에서는 한정자가 없어야 한다 — 접두어를 받아 양쪽을 만든다.
+function ftsBlobExpr(prefix: "" | "new."): string {
+  return `
+  lower(
+    ${prefix}filename || ' ' ||
+    COALESCE(${prefix}category, '') || ' ' ||
+    COALESCE(${prefix}subcategory, '') || ' ' ||
+    COALESCE(${prefix}description, '') || ' ' ||
+    replace(replace(replace(COALESCE(${prefix}tags, ''), '[', ' '), ']', ' '), '"', ' ')
+  )
+`;
+}
+
+function ensureSearchIndex(): void {
+  const d = getDb();
+  const exists = d
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tracks_fts'",
+    )
+    .pluck()
+    .get();
+  if (exists) return;
+
+  // 51만 트랙 기준 최초 구축 약 3.5초, 인덱스 크기 약 117MB(실측). 앱을 켤 때 한 번만
+  // 일어나고, 이후에는 아래 트리거가 증분으로 따라간다.
+  d.exec(
+    `CREATE VIRTUAL TABLE tracks_fts USING fts5(blob, tokenize = 'trigram')`,
+  );
+  d.exec(
+    `INSERT INTO tracks_fts(rowid, blob) SELECT id, ${ftsBlobExpr("")} FROM tracks`,
+  );
+
+  // 쓰기 경로가 스캐너/워처/메타데이터 편집/배치 편집/폴더 리네임으로 넓게 퍼져 있어
+  // 호출부마다 수동으로 갱신하면 반드시 빠뜨린다 — 트리거로 DB에 붙여 둔다.
+  // UPDATE는 색인 대상 컬럼에만 건다: last_played_at은 트랙을 고를 때마다 바뀌는데
+  // 그때까지 색인을 지웠다 다시 넣을 이유가 없다.
+  d.exec(`
+    CREATE TRIGGER tracks_fts_ai AFTER INSERT ON tracks BEGIN
+      INSERT INTO tracks_fts(rowid, blob) VALUES (new.id, ${ftsBlobExpr("new.")});
+    END;
+
+    CREATE TRIGGER tracks_fts_ad AFTER DELETE ON tracks BEGIN
+      DELETE FROM tracks_fts WHERE rowid = old.id;
+    END;
+
+    CREATE TRIGGER tracks_fts_au
+    AFTER UPDATE OF filename, category, subcategory, description, tags ON tracks
+    BEGIN
+      DELETE FROM tracks_fts WHERE rowid = old.id;
+      INSERT INTO tracks_fts(rowid, blob) VALUES (new.id, ${ftsBlobExpr("new.")});
+    END;
+  `);
 }
 
 // CREATE TABLE IF NOT EXISTS는 기존 DB에 새 컬럼을 추가해주지 않으므로,

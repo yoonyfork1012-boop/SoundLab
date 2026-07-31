@@ -31,6 +31,7 @@ import {
   getEmptyLibraryIds,
   toggleStarred,
   updateLastPlayed,
+  searchTrackIds,
   getCollections,
   createCollection,
   deleteCollection,
@@ -259,6 +260,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle("track:toggleStar", (_event, trackId: number) => {
     return toggleStarred(trackId);
+  });
+
+  // 검색: 매칭된 트랙 id만 돌려준다. 렌더러가 전체 트랙을 이미 들고 있어 id로 찾아
+  // 쓰면 되고, 그러면 결과가 수만 건이어도 IPC로 오가는 건 숫자 배열뿐이다.
+  ipcMain.handle("search:query", (_event, query: string) => {
+    return searchTrackIds(query);
   });
 
   // 렌더러가 응답을 기다리지 않는 부수 기록이라 handle이 아니라 on으로 받는다.

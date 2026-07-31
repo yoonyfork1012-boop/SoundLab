@@ -64,6 +64,13 @@ function isPathUnder(path: string, root: string): boolean {
   return p === r || p.startsWith(r + "/");
 }
 
+// 3글자부터 메인 프로세스의 FTS5(trigram) 인덱스를 쓴다. trigram은 3글자 단위로 쪼개
+// 색인하므로 그보다 짧은 질의는 인덱스로 찾을 수 없다 — 그 구간만 렌더러가 직접 훑는다.
+const FTS_MIN_QUERY_LENGTH = 3;
+// 1~2글자 질의는 라이브러리 절반이 걸리는 일이 흔하다. 상한이 없으면 뒤따르는 정렬이
+// 51만 건 규모가 되어 수백 ms로 뛴다(실측: name 163ms, library 905ms).
+const SHORT_QUERY_LIMIT = 2000;
+
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 440;
 const META_MIN = 220;
@@ -1443,14 +1450,16 @@ export default function App(): JSX.Element {
   // tracks와 동일 인덱스로 정렬돼 있어(같은 배열 map) 전역 검색 시 인덱스로 바로 쓴다.
   // "시작 시 전체 파일 미리 인덱싱"이 이 배열 생성에 해당한다.
   const searchBlobs = useMemo(() => tracks.map(buildSearchBlob), [tracks]);
-  // sub-search(결과 내 재검색)는 폴더/컬렉션으로 이미 걸러진 부분집합(base)에 적용되므로
-  // tracks와 같은 위치 인덱스를 쓸 수 없다 — id로 조회 가능한 맵을 별도로 둬서, 부분집합에도
-  // buildSearchBlob을 다시 계산하지 않고 사전 계산된 blob을 그대로 재사용한다.
-  const blobById = useMemo(() => {
-    const map = new Map<number, string>();
-    tracks.forEach((t, i) => map.set(t.id, searchBlobs[i]));
+  // id → tracks 배열 위치. 두 군데서 쓴다.
+  //  1) sub-search는 폴더/컬렉션으로 이미 걸러진 부분집합에 적용되어 위치 인덱스를 쓸 수
+  //     없다 — 이 맵으로 사전 계산된 searchBlobs를 그대로 재사용한다.
+  //  2) 메인 프로세스 검색이 매칭된 id만 돌려주므로, 그 id를 트랙으로 되돌린다.
+  // (예전에는 id→blob 맵이었는데, 위치를 담으면 blob과 트랙 양쪽을 한 맵으로 찾는다.)
+  const indexById = useMemo(() => {
+    const map = new Map<number, number>();
+    tracks.forEach((t, i) => map.set(t.id, i));
     return map;
-  }, [tracks, searchBlobs]);
+  }, [tracks]);
 
   // 폴더를 선택하면(=selectedFolder 있음) 하위 폴더가 없어도 사운드를 리스트로 보여주고
   // (Soundly 방식), 폴더 카드 그리드는 최상위 진입 화면(아무것도 선택 안 된 상태)에서만 뜬다.
@@ -1470,6 +1479,34 @@ export default function App(): JSX.Element {
   // 위 구간에서 직전 결과를 돌려주기 위한 캐시. 렌더 중 대입은 이 파일의 starredIdsRef와
   // 같은 방식이다.
   const lastVisibleRef = useRef<Track[]>([]);
+
+  // 3글자 이상 검색은 메인 프로세스의 FTS5 인덱스에 물어본다(실측 1~7ms). 렌더러가
+  // 51만 건을 훑던 62~82ms짜리 스캔이 UI 스레드에서 통째로 빠진다. 응답은 트랙 id
+  // 배열이라 결과가 8만 건이어도 IPC 페이로드가 가볍다.
+  const [ftsHits, setFtsHits] = useState<{
+    query: string;
+    ids: number[];
+  } | null>(null);
+  const ftsSeqRef = useRef(0);
+  useEffect(() => {
+    const q = deferredSearch.trim();
+    if (q.length < FTS_MIN_QUERY_LENGTH || !window.api) {
+      setFtsHits(null);
+      return;
+    }
+    // 응답이 요청 순서대로 오지 않을 수 있다 — 마지막 요청의 결과만 채택한다.
+    const seq = ++ftsSeqRef.current;
+    void window.api
+      .searchTrackIds(q)
+      .then((ids) => {
+        if (seq !== ftsSeqRef.current) return;
+        setFtsHits({ query: q, ids });
+      })
+      .catch(() => {
+        if (seq !== ftsSeqRef.current) return;
+        setFtsHits({ query: q, ids: [] });
+      });
+  }, [deferredSearch]);
   const showGrid =
     view === "grid" &&
     !isFiltering &&
@@ -1489,11 +1526,26 @@ export default function App(): JSX.Element {
     const querying = deferredSearch.trim() !== "";
     let base: Track[];
     if (querying) {
-      // 전역 검색: tracks와 searchBlobs가 같은 인덱스이므로 blob을 바로 쓴다.
-      const q = deferredSearch.toLowerCase();
+      const q = deferredSearch.trim().toLowerCase();
       base = [];
-      for (let i = 0; i < tracks.length; i++) {
-        if (trackMatchesQuery(searchBlobs[i], q)) base.push(tracks[i]);
+      if (q.length >= FTS_MIN_QUERY_LENGTH) {
+        // 메인 프로세스 FTS5 결과를 트랙으로 되돌린다. 아직 응답이 안 왔거나 지난
+        // 질의의 결과면 직전 리스트를 유지한다 — 여기서 인메모리 스캔으로 대신하면
+        // 걷어내려던 51만 건 훑기가 그대로 돌아온다.
+        if (!ftsHits || ftsHits.query !== q) return lastVisibleRef.current;
+        for (const id of ftsHits.ids) {
+          const i = indexById.get(id);
+          if (i !== undefined) base.push(tracks[i]);
+        }
+      } else {
+        // 1~2글자는 trigram 인덱스가 잡지 못한다(3글자 단위로 쪼개 색인하므로).
+        // 기존 인메모리 스캔으로 처리하되, 이 길이의 질의는 라이브러리 절반이 걸리는
+        // 일이 흔해 상한을 둔다 — 상한이 없으면 뒤따르는 정렬이 수백 ms로 뛴다.
+        for (let i = 0; i < tracks.length; i++) {
+          if (!trackMatchesQuery(searchBlobs[i], q)) continue;
+          base.push(tracks[i]);
+          if (base.length >= SHORT_QUERY_LIMIT) break;
+        }
       }
     } else if (deferredActiveCollection) {
       const byId = new Map(tracks.map((t) => [t.id, t]));
@@ -1512,12 +1564,12 @@ export default function App(): JSX.Element {
     }
     if (starFilterIds) base = base.filter((t) => starFilterIds.has(t.id));
     if (deferredSubSearch.trim()) {
-      // subSearch는 결과 부분집합(base)에 적용되지만, blobById가 트랙 id로 사전 계산된
-      // blob을 찾아주므로 buildSearchBlob을 다시 계산하지 않는다.
+      // subSearch는 결과 부분집합(base)에 적용되지만, indexById로 사전 계산된 blob의
+      // 위치를 찾을 수 있어 buildSearchBlob을 다시 계산하지 않는다.
       const q = deferredSubSearch.toLowerCase();
       base = base.filter((t) => {
-        const blob = blobById.get(t.id);
-        return blob !== undefined && trackMatchesQuery(blob, q);
+        const i = indexById.get(t.id);
+        return i !== undefined && trackMatchesQuery(searchBlobs[i], q);
       });
     }
     // 폴더 카드 그리드를 보고 있을 때는 리스트를 그리지 않는다. 그런데 여기서 정렬까지
@@ -1538,7 +1590,8 @@ export default function App(): JSX.Element {
     tracks,
     trackKeys,
     searchBlobs,
-    blobById,
+    indexById,
+    ftsHits,
     deferredFolder,
     deferredActiveCollection,
     deferredSearch,

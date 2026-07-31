@@ -162,6 +162,10 @@ const api = {
   toggleStar: (trackId: number): Promise<boolean> =>
     ipcRenderer.invoke("track:toggleStar", trackId),
 
+  // 매칭된 트랙 id만 받는다 — 렌더러가 전체 트랙을 들고 있어 id로 찾아 쓴다.
+  searchTrackIds: (query: string): Promise<number[]> =>
+    ipcRenderer.invoke("search:query", query),
+
   // 반환값이 없는 부수 기록이라 응답을 기다릴 이유가 없다 — invoke 대신 send.
   updateLastPlayed: (trackId: number): void =>
     ipcRenderer.send("track:updateLastPlayed", trackId),
