@@ -1461,6 +1461,15 @@ export default function App(): JSX.Element {
   // 그대로 visibleTracks의 의존성에 두면 별 하나 누를 때마다 수십만 트랙을 다시 거르고
   // 정렬하게 된다 — 필터가 켜져 있을 때만 의존하도록 null로 눌러둔다.
   const starFilterIds = showStarredOnly ? starredIds : null;
+  // visibleTracks는 activeTab 객체가 아니라 "탭이 있는지"만 알면 된다. 객체를 의존성에
+  // 두면 검색어 한 글자마다 memo가 무효화된다(검색어가 탭 객체 안에 있으므로).
+  const hasActiveTab = activeTab !== null;
+  // 검색어를 새로 치기 시작해 지연본이 아직 빈 문자열인 구간. 이때 계산하는 결과는
+  // 150ms 뒤 실제 검색 결과로 교체되므로 그대로 버려진다.
+  const searchSettling = search.trim() !== "" && deferredSearch.trim() === "";
+  // 위 구간에서 직전 결과를 돌려주기 위한 캐시. 렌더 중 대입은 이 파일의 starredIdsRef와
+  // 같은 방식이다.
+  const lastVisibleRef = useRef<Track[]>([]);
   const showGrid =
     view === "grid" &&
     !isFiltering &&
@@ -1470,7 +1479,12 @@ export default function App(): JSX.Element {
   const visibleTracks = useMemo(() => {
     // 탭이 없는 빈 워크스페이스에서는 아무 트랙도 없다. 렌더뿐 아니라 여기서 막아야
     // 재생 큐(next/prev)와 전체 선택(Ctrl+A)도 전체 라이브러리를 훑지 않는다.
-    if (!activeTab) return [];
+    if (!hasActiveTab) return [];
+    // 검색어를 막 치기 시작해 지연본이 아직 따라오지 못한 150ms 구간. 여기서 계산해봐야
+    // "검색 이전 범위"를 수십만 건 정렬하는 것뿐이고 곧바로 버려진다 — 특히 검색 탭이
+    // 새로 생기면서 폴더 범위가 풀려 base가 라이브러리 전체가 되므로 가장 비싼 계산이
+    // 매 키 입력마다 일어난다. 직전 결과를 그대로 유지해 깜빡임 없이 넘긴다.
+    if (searchSettling) return lastVisibleRef.current;
     // 검색 탭(검색어 있음)은 폴더/컬렉션 범위를 무시하고 전체 라이브러리에서 검색한다.
     const querying = deferredSearch.trim() !== "";
     let base: Track[];
@@ -1516,7 +1530,10 @@ export default function App(): JSX.Element {
       : sortTracks(base, sort.key, sort.dir, { libraries, publisherRule });
     return base;
   }, [
-    activeTab,
+    // activeTab 객체 자체를 의존성에 두면 안 된다 — 검색어가 탭 안에 살아서 한 글자마다
+    // {...t}로 새 객체가 되고, 그러면 아래 deferred 값들의 debounce가 통째로 무력해진다.
+    hasActiveTab,
+    searchSettling,
     showGrid,
     tracks,
     trackKeys,
@@ -1533,6 +1550,7 @@ export default function App(): JSX.Element {
     shuffled,
     shuffleSeed,
   ]);
+  lastVisibleRef.current = visibleTracks;
 
   const selectRelative = useStableCallback((delta: number): void => {
     // Shuffle mode still moves through the visible track list
@@ -1558,11 +1576,13 @@ export default function App(): JSX.Element {
     return libraries[0] ?? null;
   }, [currentLibrary, selectedTrack, libraries]);
 
-  function selectAllVisible(): void {
+  // 일반 함수로 두면 매 렌더마다 새로 만들어져, 이걸 쓰는 keydown effect가 visibleTracks를
+  // 의존성에 달아야 하고 그러면 리스트가 바뀔 때마다 리스너를 remove/add 하게 된다.
+  const selectAllVisible = useStableCallback((): void => {
     if (visibleTracks.length === 0) return;
     setSelectedIds(new Set(visibleTracks.map((t) => t.id)));
     showToast(`${visibleTracks.length.toLocaleString()} selected`);
-  }
+  });
 
   async function removeTracksFromActiveCollection(
     ids: number[],
@@ -1714,16 +1734,12 @@ export default function App(): JSX.Element {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    visibleTracks,
+    // 핸들러 본문이 실제로 읽는 값만 남긴다. 특히 visibleTracks를 두면 리스트가 바뀔
+    // 때마다(=검색 한 글자마다) window 리스너를 remove/add 하게 된다 — 이제 리스트를
+    // 읽는 selectAllVisible/selectRelative가 useStableCallback이라 최신 값을 알아서 본다.
     selectedTrack,
-    activeCollection,
-    selectedCollection,
-    showStarredOnly,
-    currentLibrary,
     shortcutLibrary,
     selectedFolder,
-    selectedIds,
-    collections,
   ]);
 
   // 브레?�크?? ?�이브러리명 + ?�택 ?�더 ?�그먼트 (Home = 루트 그리??

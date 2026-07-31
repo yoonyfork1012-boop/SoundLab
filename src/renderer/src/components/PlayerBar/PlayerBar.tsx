@@ -1657,12 +1657,20 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     prevTrackIdRef.current = nextId;
   }, [track?.id]);
 
+  // 큐 배열 자체를 effect 의존성에 두면 안 된다 — queueTracks는 App의 visibleTracks라
+  // 검색어 한 글자마다 새 배열이 되고, 그때마다 수십만 원소를 findIndex로 훑은 뒤
+  // 프리로드 IPC까지 나간다. 재생 중인 트랙이 그대로면 이웃을 다시 계산할 이유가 없으므로
+  // 큐는 ref로만 읽고, effect는 트랙이 실제로 바뀔 때만 돈다.
+  const queueTracksRef = useRef(queueTracks);
+  queueTracksRef.current = queueTracks;
+
   useEffect(() => {
-    if (!track || !window.api || queueTracks.length === 0) return;
-    const idx = queueTracks.findIndex((t) => t.id === track.id);
+    const queue = queueTracksRef.current;
+    if (!track || !window.api || queue.length === 0) return;
+    const idx = queue.findIndex((t) => t.id === track.id);
     if (idx < 0) return;
     let cancelled = false;
-    const nearby = queueTracks
+    const nearby = queue
       .slice(Math.max(0, idx - PRELOAD_RADIUS), idx + PRELOAD_RADIUS + 1)
       .filter((t) => t.id !== track.id);
     for (const item of nearby) {
@@ -1682,7 +1690,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     return () => {
       cancelled = true;
     };
-  }, [track?.id, queueTracks]);
+  }, [track?.id]);
 
   const stereoTrack = (track?.channels ?? 2) >= 2;
 
