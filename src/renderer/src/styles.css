@@ -296,6 +296,8 @@ button {
   border-bottom: 1px solid var(--border);
 }
 .topbar__search-wrap {
+  /* 자동완성 드롭다운의 기준 상자. .topbar에 overflow 제한이 없어 absolute로 충분하다. */
+  position: relative;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -3188,4 +3190,35 @@ button {
 }
 .update-banner__close:hover {
   color: var(--text);
+}
+
+/* 검색 자동완성 — 라이브러리에서 뽑은 연관 키워드. 팝업 스타일은 .colmenu 계열을 따른다. */
+.search-suggest {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 450;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+  animation: toast-in 0.12s var(--ease);
+}
+.search-suggest__item {
+  text-align: left;
+  padding: 7px 11px;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.search-suggest__item--on {
+  background: var(--accent);
+  color: var(--on-accent);
 }

@@ -84,6 +84,7 @@ declare const api: {
   toggleStar: (trackId: number) => Promise<boolean>;
   updateLastPlayed: (trackId: number) => void;
   searchTrackIds: (query: string) => Promise<number[]>;
+  suggestSearchTerms: (prefix: string) => Promise<string[]>;
   updateTrackMetadata: (
     trackId: number,
     patch: TrackMetadataPatch,

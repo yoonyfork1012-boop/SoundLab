@@ -32,6 +32,7 @@ import {
   toggleStarred,
   updateLastPlayed,
   searchTrackIds,
+  suggestTerms,
   getCollections,
   createCollection,
   deleteCollection,
@@ -266,6 +267,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 쓰면 되고, 그러면 결과가 수만 건이어도 IPC로 오가는 건 숫자 배열뿐이다.
   ipcMain.handle("search:query", (_event, query: string) => {
     return searchTrackIds(query);
+  });
+
+  // 자동완성: 접두어로 시작하는, 이 라이브러리에서 많이 쓰이는 단어들
+  ipcMain.handle("search:suggest", (_event, prefix: string) => {
+    return suggestTerms(prefix);
   });
 
   // 렌더러가 응답을 기다리지 않는 부수 기록이라 handle이 아니라 on으로 받는다.

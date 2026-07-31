@@ -6,6 +6,8 @@ import type {
   Track,
   TrackMetadataPatch,
 } from "../../shared/types";
+import { SUPPORTED_EXTENSIONS } from "../../shared/audioFiles";
+import { UNCATEGORIZED } from "../../shared/soundTaxonomy";
 
 type SqlRow = Record<string, unknown>;
 
@@ -811,6 +813,58 @@ export function searchTrackIds(query: string): number[] {
     // 구두점만으로 된 질의처럼 trigram이 토큰을 못 만드는 입력은 FTS5가 예외를 던진다.
     // 검색 한 번 실패로 앱이 멈출 이유는 없으니 빈 결과로 처리한다.
     console.error("검색 실패:", (err as Error)?.message);
+    return [];
+  }
+}
+
+// 검색 자동완성 ------------------------------------------------------------
+//
+// tracks_vocab(fts5vocab)이 사전 인덱스의 단어 목록을 (term, cnt)로 내준다. 접두어로
+// 좁혀 빈도순 상위 몇 개를 돌려주면 그게 곧 "이 라이브러리에서 많이 쓰는 키워드"다.
+// 제안된 단어는 실제로 색인된 단어라 반드시 검색 결과가 있다.
+
+export const SUGGEST_LIMIT = 10;
+// 한두 글자짜리 단어는 제안해봐야 고를 이유가 없다.
+const MIN_TERM_LENGTH = 3;
+// 등장 횟수 하한은 두지 않는다. 빈도순 정렬만으로 충분하고(흔한 단어가 위로 올라오므로
+// 일회성 잡음은 후보가 많으면 알아서 밀린다), 하한을 두면 트랙이 적은 라이브러리에서는
+// 모든 단어가 1회라 제안이 통째로 비어버린다.
+
+// 제안에서 빼는 단어. 확장자를 안 빼면 "w"의 1순위가 wav(45만 건)라 목록이 통째로
+// 쓸모없어진다. 확장자 목록은 스캐너와 같은 것을 써야 새 포맷이 늘 때 같이 따라간다.
+const EXCLUDED_TERMS = new Set([
+  ...Array.from(SUPPORTED_EXTENSIONS, (ext) => ext.replace(/^\./, "")),
+  UNCATEGORIZED.toLowerCase(),
+]);
+
+/** 접두어 범위의 상한. "wa" → "wb". LIKE는 인덱스를 못 타는 경우가 있어 범위로 찾는다. */
+function prefixUpperBound(prefix: string): string {
+  const last = prefix.charCodeAt(prefix.length - 1);
+  return prefix.slice(0, -1) + String.fromCharCode(last + 1);
+}
+
+export function suggestTerms(prefix: string, limit = SUGGEST_LIMIT): string[] {
+  // 소문자로 색인돼 있으므로 질의도 소문자. 단어 문자가 아닌 건 접두어가 될 수 없다.
+  const p = prefix.trim().toLowerCase();
+  if (!p || !/^[\p{L}\p{N}]/u.test(p)) return [];
+  try {
+    // 제외 대상이 상위에 끼어 자리를 잡아먹으므로 넉넉히 받아 걸러낸 뒤 자른다.
+    const rows = prep(
+      `SELECT term FROM tracks_vocab
+       WHERE term >= ? AND term < ? AND length(term) >= ?
+       ORDER BY cnt DESC LIMIT ?`,
+    )
+      .pluck()
+      .all(
+        p,
+        prefixUpperBound(p),
+        MIN_TERM_LENGTH,
+        limit + EXCLUDED_TERMS.size,
+      ) as string[];
+    return rows.filter((t) => !EXCLUDED_TERMS.has(t)).slice(0, limit);
+  } catch (err) {
+    // 제안이 안 뜨는 건 아쉬울 뿐이고, 검색 자체를 막을 이유는 없다.
+    console.error("자동완성 실패:", (err as Error)?.message);
     return [];
   }
 }

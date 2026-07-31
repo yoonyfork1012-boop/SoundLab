@@ -135,7 +135,7 @@ export async function initDb(): Promise<void> {
 // 바꿔 태그끼리 이어붙지 않게 한다.
 // 트리거 본문에서는 컬럼을 new.로 한정해야 하고(그냥 filename이라 쓰면 "no such column"),
 // 최초 채우기의 SELECT에서는 한정자가 없어야 한다 — 접두어를 받아 양쪽을 만든다.
-function ftsBlobExpr(prefix: "" | "new."): string {
+function ftsBlobExpr(prefix: "" | "new." | "old."): string {
   return `
   lower(
     ${prefix}filename || ' ' ||
@@ -147,36 +147,70 @@ function ftsBlobExpr(prefix: "" | "new."): string {
 `;
 }
 
+function tableExists(name: string): boolean {
+  return !!getDb()
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .pluck()
+    .get(name);
+}
+
 function ensureSearchIndex(): void {
   const d = getDb();
-  const exists = d
-    .prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tracks_fts'",
-    )
-    .pluck()
-    .get();
-  if (exists) return;
 
-  // 51만 트랙 기준 최초 구축 약 3.5초, 인덱스 크기 약 117MB(실측). 앱을 켤 때 한 번만
-  // 일어나고, 이후에는 아래 트리거가 증분으로 따라간다.
-  d.exec(
-    `CREATE VIRTUAL TABLE tracks_fts USING fts5(blob, tokenize = 'trigram')`,
-  );
-  d.exec(
-    `INSERT INTO tracks_fts(rowid, blob) SELECT id, ${ftsBlobExpr("")} FROM tracks`,
-  );
+  // (1) 검색 인덱스 — 51만 트랙 기준 최초 구축 3.5초, 117MB(실측).
+  if (!tableExists("tracks_fts")) {
+    d.exec(
+      `CREATE VIRTUAL TABLE tracks_fts USING fts5(blob, tokenize = 'trigram')`,
+    );
+    d.exec(
+      `INSERT INTO tracks_fts(rowid, blob) SELECT id, ${ftsBlobExpr("")} FROM tracks`,
+    );
+  }
 
-  // 쓰기 경로가 스캐너/워처/메타데이터 편집/배치 편집/폴더 리네임으로 넓게 퍼져 있어
-  // 호출부마다 수동으로 갱신하면 반드시 빠뜨린다 — 트리거로 DB에 붙여 둔다.
-  // UPDATE는 색인 대상 컬럼에만 건다: last_played_at은 트랙을 고를 때마다 바뀌는데
-  // 그때까지 색인을 지웠다 다시 넣을 이유가 없다.
+  // (2) 자동완성 사전 — 같은 blob을 unicode61로 한 번 더 색인한다. trigram은 3글자
+  // 단위로 쪼개 색인해서 "w로 시작하는 단어" 같은 접두어 질의를 할 수 없기 때문이다.
+  // content=''(contentless)라 원문을 저장하지 않아 19MB로 끝난다(실측, 구축 1초).
+  // 단어 목록은 fts5vocab이 (term, cnt)로 그대로 내주므로 집계 코드가 필요 없다.
+  if (!tableExists("tracks_terms")) {
+    d.exec(
+      `CREATE VIRTUAL TABLE tracks_terms USING fts5(blob, tokenize = 'unicode61', content = '')`,
+    );
+    d.exec(
+      `INSERT INTO tracks_terms(rowid, blob) SELECT id, ${ftsBlobExpr("")} FROM tracks`,
+    );
+    d.exec(
+      `CREATE VIRTUAL TABLE tracks_vocab USING fts5vocab(tracks_terms, 'row')`,
+    );
+  }
+
+  // (3) 동기화 트리거. 쓰기 경로가 스캐너/워처/메타데이터 편집/배치 편집/폴더 리네임으로
+  // 넓게 퍼져 있어 호출부마다 손으로 갱신하면 반드시 빠뜨린다 — DB에 붙여 둔다.
+  //
+  // 두 인덱스를 한 트리거에서 함께 갱신한다. 따로 두면 색인 대상 컬럼 목록이 두 곳으로
+  // 갈라져 언젠가 어긋난다. UPDATE는 그 컬럼들에만 건다 — last_played_at은 트랙을 고를
+  // 때마다 바뀌는데 그때까지 색인을 지웠다 넣을 이유가 없다.
+  //
+  // 정의가 바뀌어도 기존 사용자에게 반영되도록 매번 다시 만든다(트리거 생성은 즉시 끝난다).
+  // 조건부로 두면 인덱스가 이미 있는 DB는 낡은 트리거를 그대로 쓰게 된다.
+  //
+  // contentless FTS5는 일반 DELETE를 쓸 수 없고, 지울 때 넣었던 값을 그대로 다시 줘야
+  // 한다 — 그래서 old. 로 blob을 다시 만들어 'delete' 명령에 넘긴다.
+  const termsDelete = `INSERT INTO tracks_terms(tracks_terms, rowid, blob) VALUES ('delete', old.id, ${ftsBlobExpr("old.")})`;
+  const termsInsert = `INSERT INTO tracks_terms(rowid, blob) VALUES (new.id, ${ftsBlobExpr("new.")})`;
+
   d.exec(`
+    DROP TRIGGER IF EXISTS tracks_fts_ai;
+    DROP TRIGGER IF EXISTS tracks_fts_ad;
+    DROP TRIGGER IF EXISTS tracks_fts_au;
+
     CREATE TRIGGER tracks_fts_ai AFTER INSERT ON tracks BEGIN
       INSERT INTO tracks_fts(rowid, blob) VALUES (new.id, ${ftsBlobExpr("new.")});
+      ${termsInsert};
     END;
 
     CREATE TRIGGER tracks_fts_ad AFTER DELETE ON tracks BEGIN
       DELETE FROM tracks_fts WHERE rowid = old.id;
+      ${termsDelete};
     END;
 
     CREATE TRIGGER tracks_fts_au
@@ -184,6 +218,8 @@ function ensureSearchIndex(): void {
     BEGIN
       DELETE FROM tracks_fts WHERE rowid = old.id;
       INSERT INTO tracks_fts(rowid, blob) VALUES (new.id, ${ftsBlobExpr("new.")});
+      ${termsDelete};
+      ${termsInsert};
     END;
   `);
 }

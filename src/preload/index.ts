@@ -166,6 +166,10 @@ const api = {
   searchTrackIds: (query: string): Promise<number[]> =>
     ipcRenderer.invoke("search:query", query),
 
+  // 검색 자동완성 후보(라이브러리에서 뽑은 단어, 빈도순)
+  suggestSearchTerms: (prefix: string): Promise<string[]> =>
+    ipcRenderer.invoke("search:suggest", prefix),
+
   // 반환값이 없는 부수 기록이라 응답을 기다릴 이유가 없다 — invoke 대신 send.
   updateLastPlayed: (trackId: number): void =>
     ipcRenderer.send("track:updateLastPlayed", trackId),

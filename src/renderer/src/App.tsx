@@ -67,9 +67,6 @@ function isPathUnder(path: string, root: string): boolean {
 // 3글자부터 메인 프로세스의 FTS5(trigram) 인덱스를 쓴다. trigram은 3글자 단위로 쪼개
 // 색인하므로 그보다 짧은 질의는 인덱스로 찾을 수 없다 — 그 구간만 렌더러가 직접 훑는다.
 const FTS_MIN_QUERY_LENGTH = 3;
-// 1~2글자 질의는 라이브러리 절반이 걸리는 일이 흔하다. 상한이 없으면 뒤따르는 정렬이
-// 51만 건 규모가 되어 수백 ms로 뛴다(실측: name 163ms, library 905ms).
-const SHORT_QUERY_LIMIT = 2000;
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 440;
@@ -1507,6 +1504,86 @@ export default function App(): JSX.Element {
         setFtsHits({ query: q, ids: [] });
       });
   }, [deferredSearch]);
+  // 검색 자동완성 -------------------------------------------------------
+  // 라이브러리에 실제로 들어 있는 단어를 빈도순으로 제안한다. 제안 요청은 지연본이 아니라
+  // 즉시값(search)에 짧은 debounce만 건다 — deferredSearch(150ms)를 쓰면 제안이 리스트보다
+  // 늦게 떠서 반응이 굼떠 보인다.
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestIndex, setSuggestIndex] = useState(-1);
+  const suggestSeqRef = useRef(0);
+  const suggestBoxRef = useRef<HTMLDivElement | null>(null);
+  // 제안은 마지막 단어를 완성한다. "metal imp"를 치면 imp로 후보를 찾고, 고르면 그 토큰만
+  // 바뀌어 "metal impact"가 된다. 단어 하나짜리 입력도 같은 코드로 처리된다.
+  const searchPrefix = search.slice(search.lastIndexOf(" ") + 1);
+
+  useEffect(() => {
+    if (!suggestOpen || !searchPrefix || !window.api) {
+      setSuggestions([]);
+      return;
+    }
+    const seq = ++suggestSeqRef.current;
+    const timer = setTimeout(() => {
+      void window.api
+        ?.suggestSearchTerms(searchPrefix)
+        .then((terms) => {
+          if (seq !== suggestSeqRef.current) return;
+          setSuggestions(terms);
+          setSuggestIndex(-1);
+        })
+        .catch(() => {
+          if (seq !== suggestSeqRef.current) return;
+          setSuggestions([]);
+        });
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [searchPrefix, suggestOpen]);
+
+  // 바깥 클릭으로 닫기 (ContextMenu와 같은 방식)
+  useEffect(() => {
+    if (!suggestOpen) return;
+    function onDoc(e: MouseEvent): void {
+      if (!suggestBoxRef.current?.contains(e.target as Node)) {
+        setSuggestOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [suggestOpen]);
+
+  const applySuggestion = useStableCallback((term: string): void => {
+    const head = search.slice(0, search.lastIndexOf(" ") + 1);
+    setSuggestOpen(false);
+    setSuggestIndex(-1);
+    // handleSearchChange 하나로 탭 생성/갱신·debounce·검색 요청이 전부 따라온다.
+    handleSearchChange(head + term);
+    searchInputRef.current?.focus();
+  });
+
+  function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
+    const open = suggestOpen && suggestions.length > 0;
+    if (e.key === "Escape") {
+      if (!open) return;
+      // 전역 keydown이 Escape에서 재생을 멈추고 입력창을 blur까지 시킨다 — 드롭다운이
+      // 열려 있을 때는 여기서 삼켜서 목록만 닫는다.
+      e.preventDefault();
+      e.stopPropagation();
+      setSuggestOpen(false);
+      return;
+    }
+    if (!open) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault(); // 캐럿이 끝으로 튀는 기본 동작 방지
+      setSuggestIndex((i) => (i + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSuggestIndex((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+    } else if (e.key === "Enter" && suggestIndex >= 0) {
+      e.preventDefault();
+      applySuggestion(suggestions[suggestIndex]);
+    }
+  }
+
   const showGrid =
     view === "grid" &&
     !isFiltering &&
@@ -1538,14 +1615,10 @@ export default function App(): JSX.Element {
           if (i !== undefined) base.push(tracks[i]);
         }
       } else {
-        // 1~2글자는 trigram 인덱스가 잡지 못한다(3글자 단위로 쪼개 색인하므로).
-        // 기존 인메모리 스캔으로 처리하되, 이 길이의 질의는 라이브러리 절반이 걸리는
-        // 일이 흔해 상한을 둔다 — 상한이 없으면 뒤따르는 정렬이 수백 ms로 뛴다.
-        for (let i = 0; i < tracks.length; i++) {
-          if (!trackMatchesQuery(searchBlobs[i], q)) continue;
-          base.push(tracks[i]);
-          if (base.length >= SHORT_QUERY_LIMIT) break;
-        }
+        // 1~2글자는 trigram 인덱스가 잡지 못한다(3글자 단위로 쪼개 색인하므로). 예전에는
+        // 이 구간을 렌더러가 51만 건 훑어 2000개까지 보여줬는데, 이제 그 자리에 자동완성이
+        // 뜬다 — 후보를 고르거나 세 글자를 채우는 단계로 보고 리스트는 직전 상태를 둔다.
+        return lastVisibleRef.current;
       }
     } else if (deferredActiveCollection) {
       const byId = new Map(tracks.map((t) => [t.id, t]));
@@ -1858,8 +1931,34 @@ export default function App(): JSX.Element {
               className="topbar__search"
               placeholder="Search sounds"
               value={search}
-              onChange={(e) => handleSearchChange(e.target.value)}
+              onChange={(e) => {
+                setSuggestOpen(true);
+                handleSearchChange(e.target.value);
+              }}
+              onFocus={() => setSuggestOpen(true)}
+              onKeyDown={onSearchKeyDown}
             />
+            {suggestOpen && suggestions.length > 0 && (
+              <div className="search-suggest" ref={suggestBoxRef}>
+                {suggestions.map((term, i) => (
+                  <button
+                    key={term}
+                    type="button"
+                    className={`search-suggest__item${
+                      i === suggestIndex ? " search-suggest__item--on" : ""
+                    }`}
+                    // mousedown이 입력창 blur보다 먼저 와야 클릭이 먹는다
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applySuggestion(term);
+                    }}
+                    onMouseEnter={() => setSuggestIndex(i)}
+                  >
+                    {term}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* 탭 = 브라우징 위치. 각 탭은 그 탭에서 선택한 라이브러리(또는 컬렉션) 이름을 단다 */}

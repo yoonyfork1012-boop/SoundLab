@@ -128,6 +128,8 @@ describe("검색 인덱스 (FTS5 trigram)", () => {
       DROP TRIGGER tracks_fts_ad;
       DROP TRIGGER tracks_fts_au;
       DROP TABLE tracks_fts;
+      DROP TABLE tracks_vocab;
+      DROP TABLE tracks_terms;
     `);
     db.closeDb();
 
@@ -141,5 +143,78 @@ describe("검색 인덱스 (FTS5 trigram)", () => {
       filename: "AfterRebuild.wav",
     });
     expect(q.searchTrackIds("afterrebuild")).toContain(fresh);
+    // 자동완성 사전도 같이 재구축돼야 한다
+    expect(q.suggestTerms("legacyorph")).toContain("legacyorphan");
+    expect(q.suggestTerms("afterrebui")).toContain("afterrebuild");
+  });
+});
+
+// 자동완성은 trigram이 아니라 unicode61 사전(tracks_terms + fts5vocab)을 쓴다.
+// 인덱스가 둘로 나뉘어 있으므로 동기화가 어긋나기 쉬운 지점이고, 특히 contentless
+// FTS5의 삭제 구문은 일반 DELETE와 달라 여기서 틀리면 조용히 색인이 남는다.
+describe("검색 자동완성 (fts5vocab 사전)", () => {
+  /** 같은 단어를 n번 넣어 빈도를 만든다 */
+  function seed(word: string, times: number, tag = ""): void {
+    for (let i = 0; i < times; i++) {
+      addTrack({
+        filePath: `/lib/seed-${tag}${word}-${i}.wav`,
+        filename: `${word}_${i}.wav`,
+      });
+    }
+  }
+
+  beforeAll(() => {
+    seed("whoosh", 5);
+    seed("wood", 3);
+    seed("water", 2);
+    seed("wx", 4); // 3글자 미만 — 제안에 뜨면 안 된다
+    seed("wonce", 1); // 1회짜리 — 빈도순이라 흔한 단어들 뒤로 밀려야 한다
+  });
+
+  it("접두어로 좁혀 빈도순으로 준다", () => {
+    const out = q.suggestTerms("w");
+    expect(out.slice(0, 3)).toEqual(["whoosh", "wood", "water"]);
+  });
+
+  it("확장자는 제안하지 않는다", () => {
+    // 파일명이 전부 .wav라 wav는 압도적 1위지만 골라선 안 되는 단어다
+    expect(q.suggestTerms("w")).not.toContain("wav");
+    expect(q.suggestTerms("mp")).not.toContain("mp3");
+  });
+
+  it("3글자 미만 단어는 빼고 준다", () => {
+    expect(q.suggestTerms("w")).not.toContain("wx");
+  });
+
+  it("드문 단어는 흔한 단어 뒤로 밀린다 (버리지는 않는다)", () => {
+    const out = q.suggestTerms("w");
+    // 트랙이 적은 라이브러리에서는 1회짜리가 전부이므로 빈도 하한을 두지 않는다.
+    // 대신 순서로 눌린다 — whoosh(5회)가 wonce(1회)보다 앞이어야 한다.
+    expect(out.indexOf("whoosh")).toBeLessThan(out.indexOf("wonce"));
+  });
+
+  it("개수 상한을 지킨다", () => {
+    for (let i = 0; i < 20; i++) seed(`limitword${i}`, 2, "L");
+    expect(q.suggestTerms("limitword").length).toBeLessThanOrEqual(10);
+  });
+
+  it("접두어가 단어 문자가 아니면 빈 배열", () => {
+    expect(q.suggestTerms("")).toEqual([]);
+    expect(q.suggestTerms("  ")).toEqual([]);
+    expect(q.suggestTerms('"')).toEqual([]);
+    expect(q.suggestTerms("-")).toEqual([]);
+  });
+
+  it("트랙을 지우면 사전에서도 빠진다 (contentless 삭제 구문 검증)", () => {
+    addTrack({ filePath: "/lib/vanish.wav", filename: "Vanishing.wav" });
+    expect(q.suggestTerms("vanish")).toContain("vanishing");
+    q.deleteTrackByPath("/lib/vanish.wav");
+    expect(q.suggestTerms("vanish")).not.toContain("vanishing");
+  });
+
+  it("메타데이터를 고치면 사전이 따라온다", () => {
+    const id = addTrack({ filePath: "/lib/meta.wav", filename: "meta.wav" });
+    q.updateTrackMetadata(id, { tags: ["cinematic", "cinematic"] });
+    expect(q.suggestTerms("cinema")).toContain("cinematic");
   });
 });
