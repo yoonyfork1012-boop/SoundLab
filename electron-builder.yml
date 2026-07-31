@@ -2,6 +2,16 @@ appId: com.soundlib.app
 productName: SoundLib
 directories:
   output: release
+# 자동 업데이트(electron-updater)가 새 버전을 찾아보는 곳. 빌드 시 latest.yml이 함께
+# 만들어지고, 이 파일이 릴리스에 같이 올라가 있어야 설치본이 업데이트를 인지한다.
+# 저장소가 public이라 토큰 없이 조회된다 — private으로 되돌리면 앱에 토큰을 넣어야 한다.
+publish:
+  - provider: github
+    owner: yoonyfork1012-boop
+    repo: SoundLab
+    # 기본값(draft)이면 릴리스가 초안으로 올라가고, 초안은 electron-updater가 보지 못한다.
+    # 올리는 즉시 업데이트가 배포되길 원하므로 정식 릴리스로 만든다.
+    releaseType: release
 files:
   - out/**
   - package.json

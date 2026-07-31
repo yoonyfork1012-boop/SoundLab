@@ -12,6 +12,7 @@ import NamePromptModal from "./components/NamePromptModal/NamePromptModal";
 import ContextMenu from "./components/ContextMenu/ContextMenu";
 import ColorPickerPopover from "./components/ColorPickerPopover/ColorPickerPopover";
 import Toast from "./components/Toast/Toast";
+import UpdateBanner from "./components/UpdateBanner/UpdateBanner";
 import ShortcutsModal from "./components/ShortcutsModal/ShortcutsModal";
 import PublisherSettingsModal from "./components/PublisherSettingsModal/PublisherSettingsModal";
 import BatchEditModal from "./components/BatchEditModal/BatchEditModal";
@@ -2375,6 +2376,7 @@ export default function App(): JSX.Element {
       )}
 
       {toast && <Toast message={toast} />}
+      <UpdateBanner />
     </div>
   );
 }

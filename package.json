@@ -1,6 +1,6 @@
 {
   "name": "soundlib",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "SoundLib — 개인용 로컬 사운드 라이브러리 데스크탑 앱",
   "main": "./out/main/index.js",
   "author": "SoundLib",
@@ -10,12 +10,14 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "verify:electron-native": "node scripts/verify-electron-native.cjs",
-    "pack:win": "electron-vite build && npm run verify:electron-native && electron-builder --win --config electron-builder.yml",
+    "pack:win": "electron-vite build && npm run verify:electron-native && electron-builder --win --config electron-builder.yml --publish never",
+    "release:win": "electron-vite build && npm run verify:electron-native && electron-builder --win --config electron-builder.yml --publish always",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.2",
+    "electron-updater": "^6.8.9",
     "music-metadata": "^10.6.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

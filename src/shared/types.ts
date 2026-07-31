@@ -108,3 +108,13 @@ export interface WatchStatus {
   count?: number;
   message?: string;
 }
+
+// 자동 업데이트 진행 상태 — 메인(electron-updater)이 만들고 렌더러가 배너로 보여준다.
+// 'none'은 "확인했고 최신"과 "아직 확인 전"을 겸한다(구분해서 보여줄 게 없다).
+export type UpdateState =
+  | { status: "checking" }
+  | { status: "available"; version: string }
+  | { status: "none" }
+  | { status: "downloading"; percent: number }
+  | { status: "ready"; version: string }
+  | { status: "error"; message: string };

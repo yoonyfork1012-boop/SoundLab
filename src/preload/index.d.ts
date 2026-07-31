@@ -6,6 +6,7 @@ import type {
   Track,
   TrackMetadataPatch,
   TracksChanged,
+  UpdateState,
   WatchStatus,
 } from "../shared/types";
 import type { LibraryTree } from "../shared/folderTree";
@@ -148,6 +149,10 @@ declare const api: {
   windowIsMaximized: () => Promise<boolean>;
   onWindowMaximized: (callback: (maximized: boolean) => void) => () => void;
   setDockMode: (on: boolean) => Promise<void>;
+  getUpdateState: () => Promise<UpdateState>;
+  checkForUpdate: () => Promise<UpdateState>;
+  installUpdate: () => void;
+  onUpdateState: (callback: (state: UpdateState) => void) => () => void;
 };
 export type SoundLibApi = typeof api;
 declare global {

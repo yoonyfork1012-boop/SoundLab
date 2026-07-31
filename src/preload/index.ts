@@ -7,6 +7,7 @@ import type {
   Track,
   TrackMetadataPatch,
   TracksChanged,
+  UpdateState,
   WatchStatus,
 } from "../shared/types";
 import type { LibraryTree } from "../shared/folderTree";
@@ -286,6 +287,21 @@ const api = {
   // Dock Mode: 창을 화면 하단의 얇은 트랜스포트 바로 축소/복원
   setDockMode: (on: boolean): Promise<void> =>
     ipcRenderer.invoke("window:setDockMode", on),
+
+  // 자동 업데이트
+  getUpdateState: (): Promise<UpdateState> =>
+    ipcRenderer.invoke("update:getState"),
+  checkForUpdate: (): Promise<UpdateState> =>
+    ipcRenderer.invoke("update:check"),
+  installUpdate: (): void => ipcRenderer.send("update:install"),
+  onUpdateState: (callback: (state: UpdateState) => void): (() => void) => {
+    const listener = (
+      _e: Electron.IpcRendererEvent,
+      state: UpdateState,
+    ): void => callback(state);
+    ipcRenderer.on("update:state", listener);
+    return () => ipcRenderer.removeListener("update:state", listener);
+  },
 };
 
 contextBridge.exposeInMainWorld("api", api);
