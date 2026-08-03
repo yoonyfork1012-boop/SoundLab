@@ -880,6 +880,39 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       clearRegionSelection();
     });
     ws.on("ready", () => setDuration(ws.getDuration()));
+
+    // 재생 실패를 드러내는 계측 ------------------------------------------
+    // ws.load()는 피크와 duration을 함께 받으면 미디어를 검증하지 않고 즉시 성공한다.
+    // 그래서 디코딩 불가 파일은 "소리도 안 나고 에러도 안 뜨는" 상태가 된다. 실제 실패는
+    // 아래 두 경로로만 관측된다.
+    ws.on("error", (err: Error) => {
+      console.error("wavesurfer error:", err);
+      setLoadError(err?.message ?? "재생 오류");
+    });
+
+    const media = ws.getMediaElement();
+    if (media) {
+      media.addEventListener("error", () => {
+        // MediaError.code: 1 ABORTED / 2 NETWORK / 3 DECODE / 4 SRC_NOT_SUPPORTED
+        const e = media.error;
+        const detail = e
+          ? `code=${e.code} ${e.message ?? ""}`.trim()
+          : "unknown";
+        console.error("media error:", detail, {
+          src: media.currentSrc,
+          track: trackRef.current?.filename,
+          sampleRate: trackRef.current?.sampleRate,
+          bitDepth: trackRef.current?.bitDepth,
+          isFloat: trackRef.current?.isFloat,
+          outputRate: routeRef.current?.ctx.sampleRate,
+        });
+        setLoadError(
+          e?.code === 4
+            ? "이 오디오 형식을 재생할 수 없습니다"
+            : `재생 오류 (${detail})`,
+        );
+      });
+    }
     ws.on("finish", () => {
       savePlaybackPosition(ws.getDuration());
       const bounds = regionBoundsRef.current;
@@ -1288,7 +1321,21 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         duration: buf.duration,
         numCh: buf.numberOfChannels,
       };
-    } catch {
+    } catch (err) {
+      // 여기가 조용하면 "파형이 안 그려지는데 이유를 알 수 없는" 상태가 된다. 재생 실패와
+      // 같은 원인(디코더가 파일을 못 엶)인지 구분하는 데 이 로그가 필요하다.
+      console.error(
+        "waveform decode failed:",
+        (err as Error)?.name,
+        (err as Error)?.message,
+        {
+          track: trackRef.current?.filename,
+          sampleRate: trackRef.current?.sampleRate,
+          bitDepth: trackRef.current?.bitDepth,
+          isFloat: trackRef.current?.isFloat,
+          decodeRate: decodeCtxRef.current?.sampleRate,
+        },
+      );
       return null;
     }
   }
@@ -1557,7 +1604,21 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         // 시작해야 resolve 되므로, 이걸 await 하면 뒤따르는 작업이 그만큼 묶인다. 다음 트랙이
         // 곧바로 로드되면 이 play()는 AbortError로 거부되는데, 정상 흐름이므로 조용히 무시한다.
         if (playbackOptionsRef.current.autoPlayOnSelect) {
-          void startPlayback().catch(() => {});
+          void startPlayback().catch((err: Error) => {
+            // AbortError는 위 주석대로 정상 흐름이다. 그 외(NotSupportedError 등)는
+            // 실제 재생 실패이므로 삼키지 않는다 — 지금까지 무음의 주범이었다.
+            if (
+              /abort/i.test(err?.name ?? "") ||
+              /abort/i.test(err?.message ?? "")
+            )
+              return;
+            console.error("playback failed:", err?.name, err?.message, {
+              track: trackRef.current?.filename,
+              sampleRate: trackRef.current?.sampleRate,
+              isFloat: trackRef.current?.isFloat,
+            });
+            setLoadError(err?.message || "재생을 시작할 수 없습니다");
+          });
         }
 
         // 캐시가 없으면 실제 웨이브폼을 그리기 위해 파일 전체를 읽고 디코딩해야 한다. 이 작업을

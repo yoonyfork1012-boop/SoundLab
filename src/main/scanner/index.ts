@@ -1,8 +1,14 @@
-import { readdir, stat } from "fs/promises";
+import { readdir, readFile, stat, open, type FileHandle } from "fs/promises";
 import { createReadStream } from "fs";
 import { createHash } from "crypto";
 import { join, dirname } from "path";
-import { isIndexableAudioFile, isSkippedDir } from "../../shared/audioFiles";
+import {
+  isIndexableAudioFile,
+  isPlayableContainer,
+  isSkippedDir,
+  sniffAudioContainer,
+  type AudioContainerKind,
+} from "../../shared/audioFiles";
 import {
   beginScanBatch,
   clearDirSnapshot,
@@ -221,6 +227,36 @@ function isFloatCodec(codec?: string): boolean {
   return !!codec && /float|fl32|fl64/i.test(codec);
 }
 
+/**
+ * 파일 앞 12바이트만 읽어 컨테이너를 판별한다. 메타데이터가 비어 있을 때만 부르므로
+ * 정상 파일에는 이 비용이 붙지 않는다.
+ */
+async function sniffContainer(
+  filePath: string,
+  fileSize?: number,
+): Promise<AudioContainerKind> {
+  let handle: FileHandle | null = null;
+  try {
+    handle = await open(filePath, "r");
+    const head = new Uint8Array(12);
+    const { bytesRead } = await handle.read(head, 0, 12, 0);
+    return sniffAudioContainer(head.subarray(0, bytesRead), fileSize);
+  } catch {
+    // 읽을 수 없으면 판별을 포기한다 — 색인을 막지는 않는다(기존 동작 유지)
+    return "unknown";
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+/** music-metadata가 아무것도 못 알아냈는가 — 예외를 던지지 않고 빈 결과를 주는 경우가 있다 */
+function isEmptyFormat(format: {
+  sampleRate?: number;
+  duration?: number;
+}): boolean {
+  return !format.sampleRate && !format.duration;
+}
+
 async function parseAndUpsert(
   filePath: string,
   libraryId: number,
@@ -228,18 +264,39 @@ async function parseAndUpsert(
   dirCoverCache: Map<string, string | null>,
   fileStat: { mtimeMs: number; size: number } | null,
   onError?: (filePath: string, message: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   const filename = filePath.split(/[\\/]/).pop() ?? filePath;
   const folderPath = relativeFolderPath(filePath, rootPath);
   // 스캔 시에는 폴더 커버만 저장(빠름). 임베디드 아트워크는 선택 시 우선 적용됨.
   const cover = folderCoverFor(filePath, dirCoverCache);
   const fileHash = await computeFileHash(filePath);
-  const { parseFile } = await getMusicMetadata();
+  const { parseFile, parseBuffer } = await getMusicMetadata();
   try {
-    const meta = await parseFile(filePath, {
+    let meta = await parseFile(filePath, {
       skipCovers: true,
       duration: true,
     });
+    // music-metadata는 확장자를 힌트로 쓰기 때문에, 내용이 다른 컨테이너면 예외를 던지지
+    // 않고 조용히 빈 결과를 돌려준다. 그때만 헤더를 들여다본다.
+    if (isEmptyFormat(meta.format)) {
+      const kind = await sniffContainer(filePath, fileStat?.size);
+      if (!isPlayableContainer(kind)) {
+        // 오디오가 아니다 — macOS AppleDouble 껍데기(4KB)나 0바이트 파일.
+        // 이름이 "._foo.wav"면 isIgnoredFilename이 걸렀겠지만, 복사 과정에서
+        // "__foo.wav"로 바뀐 것들은 내용을 봐야만 알 수 있다.
+        return false;
+      }
+      if (kind === "aiff") {
+        // 내용은 AIFF인데 이름이 .wav인 파일. 컨테이너를 알려주면 정상 파싱된다.
+        meta = await parseBuffer(await readFile(filePath), {
+          mimeType: "audio/aiff",
+        });
+      }
+      if (isEmptyFormat(meta.format)) {
+        // 여전히 못 읽었다 — 목록에는 남기되 사용자에게 보고되도록 오류로 올린다.
+        onError?.(filePath, `오디오 메타데이터를 읽을 수 없음 (헤더: ${kind})`);
+      }
+    }
     const genre = meta.common?.genre?.[0];
     const { category, subcategory } = resolveCategory(
       filename,
@@ -266,7 +323,12 @@ async function parseAndUpsert(
       isFloat: isFloatCodec(meta.format.codec),
       fileHash,
     });
+    return true;
   } catch (err) {
+    // 파싱이 빈 결과가 아니라 예외로 끝나는 경우도 있다(예: 0바이트 파일). 여기서도
+    // 오디오인지 먼저 보고, 아니면 목록에 넣지 않는다.
+    if (!isPlayableContainer(await sniffContainer(filePath, fileStat?.size)))
+      return false;
     // 손상되었거나 읽을 수 없는 파일 하나 때문에 전체 인덱싱이 멈추면 안 된다.
     // 파일명 기반으로라도 등록해 목록에는 남기고, 오류는 요약에 모아 사용자에게 보고한다.
     onError?.(filePath, (err as Error)?.message ?? "unknown error");
@@ -287,6 +349,7 @@ async function parseAndUpsert(
       fileSize: fileStat?.size ?? null,
       fileHash,
     });
+    return true;
   }
 }
 
@@ -487,7 +550,7 @@ export async function scanLibrary(
       for (let i = 0; i < work.length; i++) {
         const { filePath, fileStat, kind } = work[i];
         try {
-          await parseAndUpsert(
+          const indexed = await parseAndUpsert(
             filePath,
             library.id,
             rootPath,
@@ -495,7 +558,10 @@ export async function scanLibrary(
             fileStat,
             onError,
           );
-          if (kind === "add") summary.added++;
+          // 오디오가 아니라고 판별돼 색인하지 않은 파일(AppleDouble 껍데기, 0바이트)은
+          // 추가/변경이 아니라 건너뛴 것으로 센다.
+          if (!indexed) summary.skipped++;
+          else if (kind === "add") summary.added++;
           else summary.updated++;
         } catch (err) {
           // 파일 한 개의 처리 실패로 전체 스캔(트랜잭션)이 롤백돼 이미 스캔된 다른 파일까지
@@ -557,7 +623,16 @@ export async function indexSingleFile(
     return null;
   }
   const dirCoverCache = new Map<string, string | null>();
-  await parseAndUpsert(filePath, libraryId, rootPath, dirCoverCache, fileStat);
+  // 오디오가 아니면(AppleDouble 껍데기, 0바이트) 색인하지 않는다 — 감시 경로도
+  // 스캔과 같은 기준을 써야 "감시가 넣은 걸 스캔이 지우는" 진동이 생기지 않는다.
+  const indexed = await parseAndUpsert(
+    filePath,
+    libraryId,
+    rootPath,
+    dirCoverCache,
+    fileStat,
+  );
+  if (!indexed) return null;
   return getTrackByPath(filePath);
 }
 

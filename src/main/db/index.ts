@@ -1,7 +1,12 @@
 import Database from "better-sqlite3";
 import { copyFileSync, existsSync, mkdirSync, renameSync } from "fs";
+import { open, type FileHandle } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
+import {
+  isPlayableContainer,
+  sniffAudioContainer,
+} from "../../shared/audioFiles";
 
 const SOUNDLIB_DIR = join(homedir(), ".soundlib");
 export const ARTWORK_DIR = join(SOUNDLIB_DIR, "artwork");
@@ -122,6 +127,63 @@ export async function initDb(): Promise<void> {
 
   runMigrations();
   ensureSearchIndex();
+  await purgeNonAudioTracks();
+}
+
+// 오디오가 아닌 트랙 정리 (1회성) -------------------------------------------
+//
+// macOS에서 복사된 라이브러리에는 파일마다 AppleDouble 사이드카(4KB 껍데기)가 딸려 오고,
+// 그게 .wav 확장자를 달고 트랙으로 색인돼 있다. 클릭해도 소리가 날 수 없다.
+//
+// 스캐너는 "디스크에서 사라진 파일"만 인덱스에서 지우는데(scanner/index.ts) 이 껍데기들은
+// 디스크에 멀쩡히 있으므로 재스캔해도 영원히 남는다. 그래서 여기서 한 번 걷어낸다.
+//
+// 전 트랙을 훑지 않는다 — 메타데이터가 비어 있는 행만 후보다. 정상 파일은 sample_rate가
+// 채워져 있으므로 이 검사에 걸리지 않는다.
+async function purgeNonAudioTracks(): Promise<void> {
+  const d = getDb();
+  const candidates = d
+    .prepare(
+      "SELECT id, file_path, file_size FROM tracks WHERE sample_rate IS NULL",
+    )
+    .all() as { id: number; file_path: string; file_size: number | null }[];
+  if (candidates.length === 0) return;
+
+  const doomed: number[] = [];
+  for (const row of candidates) {
+    let handle: FileHandle | null = null;
+    try {
+      handle = await open(row.file_path, "r");
+      const head = new Uint8Array(12);
+      const { bytesRead } = await handle.read(head, 0, 12, 0);
+      const kind = sniffAudioContainer(
+        head.subarray(0, bytesRead),
+        row.file_size ?? undefined,
+      );
+      // AIFF는 지우지 않는다 — 확장자만 .wav일 뿐 진짜 오디오이고, 스캐너가 고쳐지면
+      // 다음 스캔에서 메타데이터가 채워진다.
+      if (!isPlayableContainer(kind)) doomed.push(row.id);
+    } catch {
+      // 못 읽는 파일은 건드리지 않는다 — 드라이브가 잠깐 빠졌을 수도 있다.
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  }
+  if (doomed.length === 0) return;
+
+  // 수천 행을 지우는 작업이라 되돌릴 수단을 남긴다.
+  backupBeforeMigration();
+  const del = d.prepare("DELETE FROM tracks WHERE id = ?");
+  const delMembership = d.prepare(
+    "DELETE FROM collection_tracks WHERE track_id = ?",
+  );
+  d.transaction(() => {
+    for (const id of doomed) {
+      delMembership.run(id);
+      del.run(id);
+    }
+  })();
+  console.log(`오디오가 아닌 트랙 ${doomed.length}건을 인덱스에서 제거했다.`);
 }
 
 // 검색 인덱스(FTS5 trigram) ------------------------------------------------

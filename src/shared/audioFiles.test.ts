@@ -4,6 +4,8 @@ import {
   isIgnoredFilename,
   isIndexableAudioFile,
   isSkippedDir,
+  sniffAudioContainer,
+  isPlayableContainer,
 } from "./audioFiles";
 
 describe("basenameOf", () => {
@@ -63,5 +65,50 @@ describe("isSkippedDir", () => {
     expect(isSkippedDir("System Volume Information")).toBe(true);
     expect(isSkippedDir(".git")).toBe(true);
     expect(isSkippedDir("Boom Library")).toBe(false);
+  });
+});
+
+describe("sniffAudioContainer", () => {
+  /** 12바이트 헤더를 만든다: magic(4) + size(4) + form(4) */
+  function head(magic: string, form: string): Uint8Array {
+    const b = new Uint8Array(12);
+    for (let i = 0; i < 4; i++) b[i] = magic.charCodeAt(i);
+    for (let i = 0; i < 4; i++) b[8 + i] = form.charCodeAt(i);
+    return b;
+  }
+
+  it("RIFF/WAVE를 riff로 본다", () => {
+    expect(sniffAudioContainer(head("RIFF", "WAVE"))).toBe("riff");
+  });
+
+  it("FORM/AIFF와 FORM/AIFC를 aiff로 본다", () => {
+    // 확장자가 .wav여도 내용이 AIFF인 파일이 실제로 있다
+    expect(sniffAudioContainer(head("FORM", "AIFF"))).toBe("aiff");
+    expect(sniffAudioContainer(head("FORM", "AIFC"))).toBe("aiff");
+  });
+
+  it("AppleDouble 매직을 알아본다 — 이름이 무엇이든 오디오가 아니다", () => {
+    const b = new Uint8Array(12);
+    b.set([0x00, 0x05, 0x16, 0x07]);
+    b.set([0x4d, 0x61, 0x63, 0x20], 8); // "Mac "
+    expect(sniffAudioContainer(b)).toBe("appledouble");
+    expect(isPlayableContainer("appledouble")).toBe(false);
+  });
+
+  it("0바이트 파일을 empty로 본다", () => {
+    expect(sniffAudioContainer(new Uint8Array(0))).toBe("empty");
+    expect(sniffAudioContainer(head("RIFF", "WAVE"), 0)).toBe("empty");
+    expect(isPlayableContainer("empty")).toBe(false);
+  });
+
+  it("헤더가 12바이트에 못 미치면 unknown", () => {
+    expect(sniffAudioContainer(new Uint8Array([1, 2, 3]))).toBe("unknown");
+  });
+
+  it("모르는 헤더는 unknown이지만 색인은 막지 않는다", () => {
+    // mp3/flac 등은 여기서 riff/aiff가 아니다 — 판별 실패로 버리면 안 된다
+    expect(sniffAudioContainer(head("ID3\u0000", "xxxx"))).toBe("unknown");
+    expect(isPlayableContainer("unknown")).toBe(true);
+    expect(isPlayableContainer("riff")).toBe(true);
   });
 });

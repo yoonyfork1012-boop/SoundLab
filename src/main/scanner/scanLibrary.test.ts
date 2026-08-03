@@ -152,3 +152,83 @@ describe("scanLibrary 증분 인덱싱", () => {
     expect(summary.added + summary.updated).toBe(3);
   });
 });
+
+// macOS에서 복사된 라이브러리에는 파일마다 AppleDouble 사이드카가 딸려 온다. 이게 .wav
+// 확장자를 달고 오디오로 색인되면 클릭해도 소리가 나지 않는다. 이름이 "._foo.wav"면
+// isIgnoredFilename이 거르지만, 복사 과정에서 "__foo.wav"로 바뀐 것들은 내용을 봐야만 안다.
+describe("오디오가 아닌 파일 걸러내기", () => {
+  let junkRoot: string;
+
+  /** AppleDouble 껍데기 — 매직 0x00051607 + "Mac ", 실제로도 4096바이트가 흔하다 */
+  function appleDoubleBytes(): Buffer {
+    const buf = Buffer.alloc(4096);
+    buf.writeUInt32BE(0x00051607, 0);
+    buf.write("Mac ", 8, "ascii");
+    return buf;
+  }
+
+  /** 내용은 AIFF인데 이름은 .wav인 파일 (SoundMorph 일부 제품이 이렇다) */
+  function aiffBytes(frames: number): Buffer {
+    const dataSize = frames * 2 + 8;
+    const buf = Buffer.alloc(12 + 8 + 18 + 8 + dataSize);
+    let o = 0;
+    buf.write("FORM", o, "ascii");
+    buf.writeUInt32BE(buf.length - 8, (o += 4));
+    buf.write("AIFF", (o += 4), "ascii");
+    buf.write("COMM", (o += 4), "ascii");
+    buf.writeUInt32BE(18, (o += 4));
+    buf.writeUInt16BE(1, (o += 4)); // 채널
+    buf.writeUInt32BE(frames, (o += 2)); // 프레임 수
+    buf.writeUInt16BE(16, (o += 4)); // 비트
+    // 80비트 확장 부동소수점으로 표현한 44100Hz
+    buf.writeUInt16BE(0x400e, (o += 2));
+    buf.writeUInt32BE(0xac440000, (o += 2));
+    buf.writeUInt32BE(0, (o += 4));
+    buf.write("SSND", (o += 4), "ascii");
+    buf.writeUInt32BE(dataSize, (o += 4));
+    return buf;
+  }
+
+  beforeAll(async () => {
+    junkRoot = mkdtempSync(join(tmpdir(), "soundlib-test-junk-"));
+    writeFileSync(join(junkRoot, "real.wav"), wavBytes(500));
+    // 이름으로는 구분 안 되는 껍데기 — 여기가 핵심
+    writeFileSync(join(junkRoot, "__ghost.wav"), appleDoubleBytes());
+    writeFileSync(join(junkRoot, "empty.wav"), Buffer.alloc(0));
+    writeFileSync(join(junkRoot, "actually_aiff.wav"), aiffBytes(4410));
+    await scanner.scanLibrary(junkRoot);
+  });
+
+  function indexed(): string[] {
+    return db
+      .getDb()
+      .prepare(
+        "SELECT filename FROM tracks WHERE file_path LIKE ? ORDER BY filename",
+      )
+      .pluck()
+      .all(`${junkRoot}%`) as string[];
+  }
+
+  it("AppleDouble 껍데기를 색인하지 않는다 (이름이 ._ 가 아니어도)", () => {
+    expect(indexed()).not.toContain("__ghost.wav");
+  });
+
+  it("0바이트 파일을 색인하지 않는다", () => {
+    expect(indexed()).not.toContain("empty.wav");
+  });
+
+  it("정상 WAV는 그대로 색인한다", () => {
+    expect(indexed()).toContain("real.wav");
+  });
+
+  it(".wav 이름의 AIFF도 색인하고 메타데이터를 채운다", () => {
+    expect(indexed()).toContain("actually_aiff.wav");
+    const row = db
+      .getDb()
+      .prepare("SELECT sample_rate, channels FROM tracks WHERE filename = ?")
+      .get("actually_aiff.wav") as { sample_rate: number; channels: number };
+    // 확장자대로 WAV로 다루면 여기가 통째로 null이 된다
+    expect(row.sample_rate).toBe(44100);
+    expect(row.channels).toBe(1);
+  });
+});
