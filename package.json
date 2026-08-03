@@ -16,6 +16,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "better-sqlite3": "^13.0.2",
     "electron-updater": "^6.8.9",
     "music-metadata": "^10.6.4",
@@ -23,6 +24,7 @@
     "react-dom": "^18.3.1",
     "react-virtualized-auto-sizer": "^1.0.24",
     "react-window": "^1.8.10",
+    "sqlite-vec": "^0.1.9",
     "wavesurfer.js": "^7.8.11"
   },
   "devDependencies": {

@@ -8,6 +8,7 @@ import type {
 } from "../../shared/types";
 import { SUPPORTED_EXTENSIONS } from "../../shared/audioFiles";
 import { UNCATEGORIZED } from "../../shared/soundTaxonomy";
+import { translateKoreanQuery } from "../../shared/koreanTerms";
 
 type SqlRow = Record<string, unknown>;
 
@@ -803,12 +804,24 @@ function ftsPhrase(query: string): string {
 }
 
 export function searchTrackIds(query: string): number[] {
-  const q = query.trim().toLowerCase();
+  // 라이브러리는 전부 영어라 한국어 질의는 먼저 영어 용어로 옮긴다.
+  const translated = translateKoreanQuery(query);
+  const q = translated.trim().toLowerCase();
   if (q.length < FTS_MIN_QUERY_LENGTH) return [];
   try {
+    // 번역된 여러 낱말은 파일명에 붙어 있지 않다("long metal scrape"가 통째로 들어 있는
+    // 파일은 없다). 그래서 낱말이 여러 개면 구문이 아니라 AND로 찾는다. 사용자가 직접
+    // 친 영어 질의는 지금처럼 구문 그대로 둔다 — 기존 동작을 바꾸지 않기 위해서다.
+    const words = q
+      .split(/\s+/)
+      .filter((w) => w.length >= FTS_MIN_QUERY_LENGTH);
+    const match =
+      translated !== query && words.length > 1
+        ? words.map(ftsPhrase).join(" AND ")
+        : ftsPhrase(q);
     return prep("SELECT rowid FROM tracks_fts WHERE blob MATCH ?")
       .pluck()
-      .all(ftsPhrase(q)) as number[];
+      .all(match) as number[];
   } catch (err) {
     // 구두점만으로 된 질의처럼 trigram이 토큰을 못 만드는 입력은 FTS5가 예외를 던진다.
     // 검색 한 번 실패로 앱이 멈출 이유는 없으니 빈 결과로 처리한다.
@@ -844,8 +857,11 @@ function prefixUpperBound(prefix: string): string {
 }
 
 export function suggestTerms(prefix: string, limit = SUGGEST_LIMIT): string[] {
+  // 사전은 영어 단어만 담고 있으므로 한국어 입력은 먼저 옮긴다. 낱말이 덜 완성된
+  // 한국어("발자"처럼)는 사전에 안 걸려 제안이 안 나오는데, 그건 어쩔 수 없다.
+  const translated = translateKoreanQuery(prefix);
   // 소문자로 색인돼 있으므로 질의도 소문자. 단어 문자가 아닌 건 접두어가 될 수 없다.
-  const p = prefix.trim().toLowerCase();
+  const p = translated.trim().toLowerCase().split(/\s+/)[0] ?? "";
   if (!p || !/^[\p{L}\p{N}]/u.test(p)) return [];
   try {
     // 제외 대상이 상위에 끼어 자리를 잡아먹으므로 넉넉히 받아 걸러낸 뒤 자른다.
