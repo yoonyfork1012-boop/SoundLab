@@ -7,6 +7,7 @@ import {
   isPlayableContainer,
   sniffAudioContainer,
 } from "../../shared/audioFiles";
+import { EMBED_DIM } from "../embedder";
 
 const SOUNDLIB_DIR = join(homedir(), ".soundlib");
 export const ARTWORK_DIR = join(SOUNDLIB_DIR, "artwork");
@@ -16,6 +17,12 @@ const DB_PATH = join(SOUNDLIB_DIR, "soundlib.db");
 const DB_SIDECARS = [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`];
 
 let db: Database.Database | null = null;
+// sqlite-vec가 실제로 로드됐는가 — 실패해도 앱은 켜지고 키워드 검색은 그대로 동작한다.
+let vecAvailable = false;
+
+export function isVectorSearchAvailable(): boolean {
+  return vecAvailable && !!db;
+}
 
 function ensureDirs(): void {
   if (!existsSync(SOUNDLIB_DIR)) mkdirSync(SOUNDLIB_DIR, { recursive: true });
@@ -67,6 +74,20 @@ export async function initDb(): Promise<void> {
   // 쓰기가 겹쳐 SQLITE_BUSY로 즉시 실패하는 대신 잠깐 기다린다. 앱 안의 쓰기는 txLock으로
   // 직렬화하지만, 그 바깥(외부 도구, 남아 있던 이전 프로세스)까지 막아주지는 않는다.
   db.pragma("busy_timeout = 5000");
+
+  // 의미 검색용 벡터 확장. 로드에 실패해도 앱은 켜져야 한다 — 키워드 검색은 그대로
+  // 동작하고 의미 검색만 빠진다.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sqliteVec = require("sqlite-vec") as { load(db: unknown): void };
+    sqliteVec.load(db);
+    vecAvailable = true;
+  } catch (err) {
+    console.error(
+      "sqlite-vec 로드 실패 — 의미 검색이 비활성화된다:",
+      (err as Error)?.message,
+    );
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS libraries (
@@ -245,7 +266,15 @@ function ensureSearchIndex(): void {
     );
   }
 
-  // (3) 동기화 트리거. 쓰기 경로가 스캐너/워처/메타데이터 편집/배치 편집/폴더 리네임으로
+  // (3) 의미 검색용 벡터 테이블. int8 양자화라 505,332 x 384차원이 약 185MB다
+  // (float32면 740MB로 DB보다 커진다). 채우기는 앱이 뜬 뒤 백그라운드로 한다.
+  if (vecAvailable && !tableExists("tracks_vec")) {
+    d.exec(
+      `CREATE VIRTUAL TABLE tracks_vec USING vec0(embedding int8[${EMBED_DIM}])`,
+    );
+  }
+
+  // (4) 동기화 트리거. 쓰기 경로가 스캐너/워처/메타데이터 편집/배치 편집/폴더 리네임으로
   // 넓게 퍼져 있어 호출부마다 손으로 갱신하면 반드시 빠뜨린다 — DB에 붙여 둔다.
   //
   // 두 인덱스를 한 트리거에서 함께 갱신한다. 따로 두면 색인 대상 컬럼 목록이 두 곳으로
@@ -259,6 +288,11 @@ function ensureSearchIndex(): void {
   // 한다 — 그래서 old. 로 blob을 다시 만들어 'delete' 명령에 넘긴다.
   const termsDelete = `INSERT INTO tracks_terms(tracks_terms, rowid, blob) VALUES ('delete', old.id, ${ftsBlobExpr("old.")})`;
   const termsInsert = `INSERT INTO tracks_terms(rowid, blob) VALUES (new.id, ${ftsBlobExpr("new.")})`;
+  // 임베딩은 SQL로 계산할 수 없다. 트랙이 지워지거나 색인 대상이 바뀌면 벡터 행만
+  // 지워두고, 백그라운드 작업이 "벡터가 없는 트랙"을 찾아 다시 채운다.
+  const vecDelete = vecAvailable
+    ? "DELETE FROM tracks_vec WHERE rowid = old.id;"
+    : "";
 
   d.exec(`
     DROP TRIGGER IF EXISTS tracks_fts_ai;
@@ -273,6 +307,7 @@ function ensureSearchIndex(): void {
     CREATE TRIGGER tracks_fts_ad AFTER DELETE ON tracks BEGIN
       DELETE FROM tracks_fts WHERE rowid = old.id;
       ${termsDelete};
+      ${vecDelete}
     END;
 
     CREATE TRIGGER tracks_fts_au
@@ -282,6 +317,7 @@ function ensureSearchIndex(): void {
       INSERT INTO tracks_fts(rowid, blob) VALUES (new.id, ${ftsBlobExpr("new.")});
       ${termsDelete};
       ${termsInsert};
+      ${vecDelete}
     END;
   `);
 }

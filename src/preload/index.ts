@@ -170,6 +170,10 @@ const api = {
   suggestSearchTerms: (prefix: string): Promise<string[]> =>
     ipcRenderer.invoke("search:suggest", prefix),
 
+  // 뜻이 가까운 트랙 id (거리순). 키워드 검색 결과 뒤에 붙여 쓴다.
+  semanticSearchIds: (query: string, limit: number): Promise<number[]> =>
+    ipcRenderer.invoke("search:semantic", query, limit),
+
   // 반환값이 없는 부수 기록이라 응답을 기다릴 이유가 없다 — invoke 대신 send.
   updateLastPlayed: (trackId: number): void =>
     ipcRenderer.send("track:updateLastPlayed", trackId),

@@ -85,6 +85,7 @@ declare const api: {
   updateLastPlayed: (trackId: number) => void;
   searchTrackIds: (query: string) => Promise<number[]>;
   suggestSearchTerms: (prefix: string) => Promise<string[]>;
+  semanticSearchIds: (query: string, limit: number) => Promise<number[]>;
   updateTrackMetadata: (
     trackId: number,
     patch: TrackMetadataPatch,

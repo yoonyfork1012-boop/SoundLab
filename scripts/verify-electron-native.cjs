@@ -11,8 +11,14 @@ const probe = `
   db.exec("CREATE TABLE probe (value TEXT)");
   db.prepare("INSERT INTO probe VALUES (?)").run("ok");
   const value = db.prepare("SELECT value FROM probe").pluck().get();
-  db.close();
   if (value !== "ok") process.exit(2);
+
+  // 의미 검색용 벡터 확장도 같은 런타임에서 로드돼야 한다 — 이것도 네이티브라
+  // better-sqlite3와 똑같이 N-API 불일치로 조용히 깨질 수 있다.
+  require("sqlite-vec").load(db);
+  const vecOk = db.prepare("select vec_version()").pluck().get();
+  db.close();
+  if (!vecOk) process.exit(3);
 `;
 
 const result = spawnSync(electronPath, ["-e", probe], {

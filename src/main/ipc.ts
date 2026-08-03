@@ -32,6 +32,7 @@ import {
   toggleStarred,
   updateLastPlayed,
   searchTrackIds,
+  semanticSearchIds,
   suggestTerms,
   getCollections,
   createCollection,
@@ -56,6 +57,7 @@ import {
   updateTrackMarkers,
 } from "./db/queries";
 import { runExclusive } from "./db/txLock";
+import { embedQuery } from "./embedder";
 import type {
   Library,
   ScanProgress,
@@ -273,6 +275,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle("search:suggest", (_event, prefix: string) => {
     return suggestTerms(prefix);
   });
+
+  // 의미 검색: 뜻이 가까운 트랙 id를 거리순으로. 키워드 검색을 대체하지 않고 보완한다.
+  ipcMain.handle(
+    "search:semantic",
+    async (_event, query: string, limit: number) => {
+      try {
+        return semanticSearchIds(await embedQuery(query), limit);
+      } catch (err) {
+        console.error("의미 검색 실패:", (err as Error)?.message);
+        return [];
+      }
+    },
+  );
 
   // 렌더러가 응답을 기다리지 않는 부수 기록이라 handle이 아니라 on으로 받는다.
   // 여기서 던진 예외는 렌더러로 전달되지 않으므로 이 자리에서 삼킨다.

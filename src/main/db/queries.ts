@@ -1,5 +1,10 @@
 import type Database from "better-sqlite3";
-import { getDb, persistDb, schedulePersist } from "./index";
+import {
+  getDb,
+  isVectorSearchAvailable,
+  persistDb,
+  schedulePersist,
+} from "./index";
 import type {
   Collection,
   Library,
@@ -881,6 +886,29 @@ export function suggestTerms(prefix: string, limit = SUGGEST_LIMIT): string[] {
   } catch (err) {
     // 제안이 안 뜨는 건 아쉬울 뿐이고, 검색 자체를 막을 이유는 없다.
     console.error("자동완성 실패:", (err as Error)?.message);
+    return [];
+  }
+}
+
+// 의미 검색 --------------------------------------------------------------
+//
+// 키워드 검색은 라이브러리에 있는 정확한 단어를 알아야 찾을 수 있다. 이건 뜻이 가까운
+// 것을 찾는다 — "long metallic scrape"로 METLMvmt_Spinning Object Ring On Metal이
+// 나오는 식이다. 임베딩은 embedder.ts가 만들고 여기서는 조회만 한다.
+export function semanticSearchIds(queryVec: Buffer, limit: number): number[] {
+  if (!isVectorSearchAvailable()) return [];
+  try {
+    return prep(
+      `SELECT rowid FROM tracks_vec
+       WHERE embedding MATCH vec_int8(?) AND k = ?
+       ORDER BY distance`,
+    )
+      .pluck()
+      .all(queryVec, limit)
+      .map(Number);
+  } catch (err) {
+    // 벡터 테이블이 아직 안 채워졌거나 확장이 없으면 조용히 비운다 — 키워드 검색은 동작한다.
+    console.error("의미 검색 실패:", (err as Error)?.message);
     return [];
   }
 }

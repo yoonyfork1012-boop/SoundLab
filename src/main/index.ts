@@ -7,6 +7,7 @@ import { closeDb, flushPersist, initDb } from "./db";
 import { getAllLibraries } from "./db/queries";
 import { startWatching, stopAllWatching } from "./watcher";
 import { registerUpdaterIpc, setupAutoUpdater } from "./updater";
+import { backfillEmbeddings } from "./embedder";
 
 // 클릭→IPC 파일읽기→디코딩 사이 비동기 대기로 사용자 제스처가 만료되어
 // Chromium 자동재생 정책이 재생을 막는 문제 해결
@@ -264,6 +265,22 @@ if (!gotLock) {
       setTimeout(() => {
         if (!mainWindow.isDestroyed()) void runStartupReconcile(mainWindow);
       }, 1500);
+
+      // 의미 검색용 임베딩을 백그라운드로 채운다. 스캔 따라잡기가 먼저 끝나도록 더
+      // 늦게 시작하고, 중단돼도 다음 실행이 남은 것부터 이어서 한다.
+      setTimeout(() => {
+        if (mainWindow.isDestroyed()) return;
+        void backfillEmbeddings(
+          (p) => {
+            if (!mainWindow.isDestroyed())
+              mainWindow.webContents.send("embed:progress", p);
+          },
+          () => mainWindow.isDestroyed(),
+        ).catch((err) => {
+          // 임베딩이 실패해도 키워드 검색은 그대로 동작한다 — 앱을 막지 않는다.
+          console.error("임베딩 생성 실패:", (err as Error)?.message);
+        });
+      }, 20000);
     });
 
     // 안전장치: 렌더러가 어떤 이유로든 준비 신호를 못 보내는 경우(예외 등) 무한정

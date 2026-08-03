@@ -67,6 +67,9 @@ function isPathUnder(path: string, root: string): boolean {
 // 3글자부터 메인 프로세스의 FTS5(trigram) 인덱스를 쓴다. trigram은 3글자 단위로 쪼개
 // 색인하므로 그보다 짧은 질의는 인덱스로 찾을 수 없다 — 그 구간만 렌더러가 직접 훑는다.
 const FTS_MIN_QUERY_LENGTH = 3;
+// 의미 검색은 "가까운 것 N개"라 상한이 필수다. 키워드 결과 뒤에 덧붙는 보조 결과이므로
+// 너무 많으면 정확 매칭이 묻힌다.
+const SEMANTIC_LIMIT = 300;
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 440;
@@ -1493,11 +1496,18 @@ export default function App(): JSX.Element {
     }
     // 응답이 요청 순서대로 오지 않을 수 있다 — 마지막 요청의 결과만 채택한다.
     const seq = ++ftsSeqRef.current;
-    void window.api
-      .searchTrackIds(q)
-      .then((ids) => {
+    const api = window.api;
+    // 정확 매칭(키워드)을 먼저 놓고, 거기 없는 의미 매칭을 뒤에 붙인다. 의미 검색이
+    // 아직 준비되지 않았거나(임베딩 생성 중) 실패해도 키워드 결과는 그대로 나온다.
+    void Promise.all([
+      api.searchTrackIds(q),
+      api.semanticSearchIds(q, SEMANTIC_LIMIT).catch(() => [] as number[]),
+    ])
+      .then(([exact, semantic]) => {
         if (seq !== ftsSeqRef.current) return;
-        setFtsHits({ query: q, ids });
+        const seen = new Set(exact);
+        const merged = exact.concat(semantic.filter((id) => !seen.has(id)));
+        setFtsHits({ query: q, ids: merged });
       })
       .catch(() => {
         if (seq !== ftsSeqRef.current) return;
