@@ -1,6 +1,6 @@
 {
   "name": "soundlib",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "SoundLib — 개인용 로컬 사운드 라이브러리 데스크탑 앱",
   "main": "./out/main/index.js",
   "author": "SoundLib",
