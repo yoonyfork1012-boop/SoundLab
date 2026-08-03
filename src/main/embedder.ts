@@ -1,3 +1,5 @@
+import { app } from "electron";
+import { join } from "path";
 import { getDb } from "./db";
 import { translateKoreanQuery } from "../shared/koreanTerms";
 
@@ -12,8 +14,18 @@ import { translateKoreanQuery } from "../shared/koreanTerms";
 //
 // 모델은 multilingual-e5-small(int8, 384차원). e5 계열은 문서에 "passage: ",
 // 질의에 "query: " 접두어를 요구한다 — 빼면 검색 품질이 눈에 띄게 떨어진다.
-const MODEL_ID = "Xenova/multilingual-e5-small";
+const MODEL_ID = "multilingual-e5-small";
 export const EMBED_DIM = 384;
+
+// 모델은 앱에 동봉한다. 런타임에 HuggingFace에서 받아오면 첫 검색이 네트워크에 묶이고,
+// 무엇보다 이 앱은 오프라인 전용이 원칙이다(CLAUDE.md: 클라우드 기능 금지).
+// 패키징 전에는 프로젝트의 build/models, 패키징 후에는 extraResources로 복사된
+// resources/models를 본다 — 아이콘(ICON_PATH)과 같은 방식이다.
+function modelRoot(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, "models")
+    : join(__dirname, "../../build/models");
+}
 
 // 배치가 클수록 처리량이 좋지만 메모리도 는다. 실측 130건/초는 이 크기 기준이다.
 const BATCH = 64;
@@ -32,7 +44,11 @@ let extractorPromise: Promise<Extractor> | null = null;
 function getExtractor(): Promise<Extractor> {
   if (!extractorPromise) {
     extractorPromise = (async () => {
-      const { pipeline } = await import("@huggingface/transformers");
+      const { pipeline, env } = await import("@huggingface/transformers");
+      // 동봉한 모델만 쓴다 — 네트워크로 나가지 않게 못을 박는다.
+      env.allowRemoteModels = false;
+      env.allowLocalModels = true;
+      env.localModelPath = modelRoot();
       return (await pipeline("feature-extraction", MODEL_ID, {
         dtype: "q8",
       })) as unknown as Extractor;

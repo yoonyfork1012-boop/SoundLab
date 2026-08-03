@@ -18,6 +18,9 @@ files:
 # better-sqlite3 네이티브 바이너리(N-API 프리빌드)는 asar 안에서 로드할 수 없어 압축 해제
 asarUnpack:
   - node_modules/better-sqlite3/prebuilds/**
+  # onnxruntime(의미 검색)과 sqlite-vec도 네이티브 바이너리라 asar 안에서 로드할 수 없다
+  - node_modules/onnxruntime-node/bin/**
+  - node_modules/sqlite-vec-*/**
 # better-sqlite3 v13은 런타임 ABI에 독립적인 N-API 프리빌드를 동봉하므로 재빌드가 필요 없다.
 # 이걸 끄지 않으면 electron-builder가 node-gyp로 소스 재빌드를 시도해 Visual Studio를 요구하고,
 # 빌드 도구가 없는 환경에서는 패키징 자체가 실패한다.
@@ -28,6 +31,10 @@ icon: build/icon.png
 extraResources:
   - from: build/icon.png
     to: icon.png
+  # 의미 검색용 임베딩 모델(약 130MB). 동봉하지 않으면 첫 검색이 네트워크에 묶이는데
+  # 이 앱은 오프라인 전용이다.
+  - from: build/models
+    to: models
 win:
   icon: build/icon.png
   target:

@@ -10,10 +10,11 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "verify:electron-native": "node scripts/verify-electron-native.cjs",
-    "pack:win": "electron-vite build && npm run verify:electron-native && electron-builder --win --config electron-builder.yml --publish never",
-    "release:win": "electron-vite build && npm run verify:electron-native && electron-builder --win --config electron-builder.yml --publish always",
+    "pack:win": "npm run fetch:model && electron-vite build && npm run verify:electron-native && electron-builder --win --config electron-builder.yml --publish never",
+    "release:win": "npm run fetch:model && electron-vite build && npm run verify:electron-native && electron-builder --win --config electron-builder.yml --publish always",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "fetch:model": "node scripts/fetch-model.cjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

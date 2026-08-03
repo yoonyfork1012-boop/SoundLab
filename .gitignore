@@ -6,3 +6,5 @@ release*
 *.log
 *.tsbuildinfo
 .DS_Store
+# 의미 검색 모델(약 130MB) — 저장소에 넣지 않고 scripts/fetch-model로 받는다
+build/models
