@@ -20,6 +20,12 @@ import { audioCacheKey, type AudioAccess } from "../../lib/audioCacheKey";
 import { decodeAiffToWav, isAiffPath } from "../../lib/aiffDecoder";
 import { pitchShiftChannels } from "../../lib/pitchShift";
 import { loadBool, saveBool } from "../../lib/uiState";
+import {
+  DEFAULT_VOLUME,
+  MAX_VOLUME,
+  mediaVolumeOf,
+  boostOf,
+} from "../../lib/volume";
 
 const MIN_REGION_SEC = 0.05;
 const PLAYBACK_OPTIONS_KEY = "soundlib.playbackOptions";
@@ -111,6 +117,32 @@ function saveFxOptions(options: FxOptions): void {
   } catch {
     /* noop */
   }
+}
+
+// 웨이브폼용 디코딩을 포기하는 크기. 재생 자체는 file:// URL 스트리밍이라 크기와 무관하게
+// 되지만, 피크 계산은 파일을 통째로 읽어야 한다 — 메인이 readFile로 다 올리고(1), IPC가
+// 렌더러로 복사하고(2), decodeAudioData가 float32 AudioBuffer로 펼친다(3~4배). 200MB
+// 파일이면 이 한 번에 1GB 가까이 오간다. 이 라이브러리에는 100MB 초과가 3,415건, 최대
+// 2,039MB짜리가 있어 상한이 없으면 그런 트랙을 누르는 순간 앱이 통째로 멈춘다.
+//
+// ponytail: 큰 파일은 웨이브폼이 평평하게 남는다. 제대로 하려면 메인에서 파일을 스트리밍하며
+// 버킷별 min/max만 뽑아야 한다(WAV처럼 비압축이면 디코딩 없이 가능하고 IPC 전송도 사라진다).
+// 큰 파일의 파형이 실제로 필요해지면 그때 올린다.
+const MAX_DECODE_BYTES = 200 * 1024 * 1024;
+
+function isTooBigToDecode(fileSize: number | null | undefined): boolean {
+  return typeof fileSize === "number" && fileSize > MAX_DECODE_BYTES;
+}
+
+/** 재생 실패 메시지에 붙이는 포맷 요약 — 어떤 파일이 왜 안 되는지 화면에서 바로 보이게. */
+function formatSummary(t: Track | null | undefined): string {
+  if (!t) return "트랙 정보 없음";
+  const bits = t.isFloat
+    ? `${t.bitDepth ?? 32}bit float`
+    : `${t.bitDepth ?? "?"}bit`;
+  const rate = t.sampleRate ? `${(t.sampleRate / 1000).toFixed(1)}kHz` : "?kHz";
+  const ext = t.filename.slice(t.filename.lastIndexOf(".") + 1).toLowerCase();
+  return `${t.filename} (${ext}, ${rate}, ${bits}, ${t.channels ?? "?"}ch)`;
 }
 
 // 디코딩(WaveSurfer/Web Audio) 목적으로 파일 바이트를 읽는 단일 지점 — AIFF는 브라우저가
@@ -616,7 +648,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   // 오디오 로드 실패 사유를 사용자에게 보여준다 — 예전에는 console.warn으로만 삼켜져
   // "클릭해도 소리도, 아무 표시도 없는" 상태였다. 성공/트랙 변경 시 초기화된다.
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [volume, setVolume] = useState(0.85);
+  const [volume, setVolume] = useState(DEFAULT_VOLUME);
   // 뮤트는 볼륨 값을 건드리지 않는다 — 해제하면 원래 크기로 돌아와야 한다
   const [muted, setMuted] = useState(false);
   const effectiveVolume = muted ? 0 : volume;
@@ -990,8 +1022,12 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   }, [accent]);
 
   useEffect(() => {
-    wavesurferRef.current?.setVolume(effectiveVolume);
-  }, [effectiveVolume]);
+    wavesurferRef.current?.setVolume(mediaVolumeOf(effectiveVolume));
+    // 100%를 넘는 몫은 게인이 낸다. 아직 트랙을 안 열어 그래프가 없으면 로드 시
+    // applyRoute가 같은 값을 반영하므로 여기서는 넘어간다.
+    const r = routeRef.current;
+    if (r) setChannelGains(r, ch1, ch2);
+  }, [effectiveVolume, ch1, ch2]);
 
   // Speed는 브라우저 네이티브 playbackRate로 실제 재생에 반영된다. pitchLinked가 켜지면
   // preservePitch=false를 줘서 속도 변화에 피치가 테이프처럼 자연스럽게 따라가게 한다.
@@ -1254,10 +1290,10 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       /* noop */
     }
 
+    setChannelGains(r, nCh1, nCh2);
+
     const isMonoFile = (trackRef.current?.channels ?? 2) < 2;
     if (isMonoFile) {
-      r.g0.gain.value = nCh1 ? 1 : 0;
-      r.g1.gain.value = 0;
       if (nCh1) {
         r.g0.connect(r.merger, 0, 0);
         r.g0.connect(r.merger, 0, 1);
@@ -1265,10 +1301,18 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
       return;
     }
 
-    r.g0.gain.value = nCh1 ? 1 : 0;
-    r.g1.gain.value = nCh2 ? 1 : 0;
     if (nCh1) r.g0.connect(r.merger, 0, 0);
     if (nCh2) r.g1.connect(r.merger, 0, 1);
+  }
+
+  // 게인 값만 정한다(연결은 건드리지 않는다). 채널 on/off와 100% 초과 증폭이 같은 게인
+  // 노드를 공유하므로 한 곳에서 곱해야 서로 덮어쓰지 않는다 — 볼륨 슬라이더를 움직일 때
+  // 연결까지 다시 만들면 드래그 중 뚝뚝 끊긴다.
+  function setChannelGains(r: Route, nCh1: boolean, nCh2: boolean): void {
+    const boost = boostOf(effectiveVolumeRef.current);
+    const isMonoFile = (trackRef.current?.channels ?? 2) < 2;
+    r.g0.gain.value = (nCh1 ? 1 : 0) * boost;
+    r.g1.gain.value = isMonoFile ? 0 : (nCh2 ? 1 : 0) * boost;
   }
 
   function applyChannels(
@@ -1578,7 +1622,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         // 이제부터 이 트랙이 실제로 물려 있다 — 재생 위치 저장 대상도 이 트랙이다
         playingTrackIdRef.current = track.id;
 
-        ws.setVolume(effectiveVolumeRef.current);
+        ws.setVolume(mediaVolumeOf(effectiveVolumeRef.current));
         // ws.load()가 재생 속도를 기본값으로 되돌리므로, 트랙마다 저장된 Speed 설정을 다시 건다
         ws.setPlaybackRate(
           fxRef.current.speedPct / 100,
@@ -1617,7 +1661,11 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
               sampleRate: trackRef.current?.sampleRate,
               isFloat: trackRef.current?.isFloat,
             });
-            setLoadError(err?.message || "재생을 시작할 수 없습니다");
+            // 어떤 파일이 왜 안 되는지가 메시지에 있어야 한다. "no supported source"만
+            // 띄우면 포맷 문제인지 경로 문제인지 알 수 없어 매번 DevTools를 열어야 했다.
+            setLoadError(
+              `${err?.message || "재생을 시작할 수 없습니다"} — ${formatSummary(trackRef.current)}`,
+            );
           });
         }
 
@@ -1625,7 +1673,7 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
         // 클릭마다 즉시 띄우면 리스트를 빠르게 훑을 때 전체 파일 읽기/디코딩이 동시에 쌓여
         // 렌더러와 IPC가 포화되고, 정작 방금 클릭한 트랙의 로드가 뒤로 밀린다. 선택이 잠잠해질
         // 때까지 기다렸다가 전역 체인에 붙여 항상 하나씩만 실행한다.
-        if (!cached) {
+        if (!cached && !isTooBigToDecode(track.fileSize)) {
           const runDecode = async (): Promise<void> => {
             if (cancelled || token !== loadTokenRef.current) return;
             try {
@@ -2080,9 +2128,10 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
           className="player__slider"
           type="range"
           min={0}
-          max={1}
+          max={MAX_VOLUME}
           step={0.01}
           value={volume}
+          title={`볼륨 ${Math.round(volume * 100)}% (최대 ${Math.round(MAX_VOLUME * 100)}%)`}
           // 슬라이더를 움직이면 뮤트를 푼다 — 소리가 안 나는 채로 값만 바뀌면 고장으로 보인다
           onChange={(e) => {
             setVolume(parseFloat(e.target.value));
