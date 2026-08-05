@@ -1417,6 +1417,41 @@ export default function App(): JSX.Element {
     },
   );
 
+  // 폴더를 컬렉션으로 등록한다. 폴더를 옮기거나 링크하는 게 아니라, 지금 그 폴더 아래
+  // 있는 사운드들로 컬렉션을 하나 만든다 — 이후 폴더에 파일이 늘어도 따라오지 않는다.
+  // (따라오게 하려면 "스마트 컬렉션"이 필요한데 그건 별개 기능이다.)
+  const handleRegisterFolderAsCollection = useStableCallback(
+    (node: FolderNode): void => {
+      const matching = tracksUnder(tracks, node.path);
+      if (matching.length === 0) {
+        showToast("No sounds found in this folder");
+        return;
+      }
+      setNamePrompt({
+        title: "New collection name",
+        defaultValue: node.name,
+        confirmLabel: "Create",
+        onSubmit: async (name) => {
+          setNamePrompt(null);
+          if (!window.api) return;
+          const cols = await window.api.createCollection(name);
+          const created = cols[cols.length - 1];
+          if (!created) {
+            setCollections(cols);
+            return;
+          }
+          setCollections(
+            await window.api.addTracksToCollection(
+              created.id,
+              matching.map((t) => t.id),
+            ),
+          );
+          showToast(`Created "${name}" with ${matching.length} sounds`);
+        },
+      });
+    },
+  );
+
   const activeCollection =
     collections.find((c) => c.id === selectedCollection) ?? null;
   // 리스트/그리드 본문은 지연본 기준으로 그려 하이라이트만 앞서고 본문은 함께 뒤따르게 한다.
@@ -2467,6 +2502,12 @@ export default function App(): JSX.Element {
                 searchInputRef.current?.focus();
               },
             },
+            {
+              key: "as-collection",
+              label: "Register as collection",
+              onClick: () => handleRegisterFolderAsCollection(folderMenu.node),
+            },
+            { key: "sep0", separator: true },
             {
               key: "explorer",
               label: "Show in Explorer",
