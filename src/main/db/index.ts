@@ -147,7 +147,11 @@ export async function initDb(): Promise<void> {
   `);
 
   runMigrations();
+  dropStaleSearchIndex();
+  const indexStart = Date.now();
   ensureSearchIndex();
+  const indexMs = Date.now() - indexStart;
+  if (indexMs > 500) console.log(`검색 인덱스 준비 ${indexMs}ms`);
   await purgeNonAudioTracks();
 }
 
@@ -218,6 +222,12 @@ async function purgeNonAudioTracks(): Promise<void> {
 // 바꿔 태그끼리 이어붙지 않게 한다.
 // 트리거 본문에서는 컬럼을 new.로 한정해야 하고(그냥 filename이라 쓰면 "no such column"),
 // 최초 채우기의 SELECT에서는 한정자가 없어야 한다 — 접두어를 받아 양쪽을 만든다.
+//
+// 폴더 경로는 넣지 않는다. 한 번 넣어보고 실측한 뒤 되돌린 것이라 이유를 남긴다 —
+// trigram 색인은 넣은 글자 수에 그대로 비례해 커지는데, 폴더 경로는 그 폴더 안 파일
+// 수천 개에 똑같은 문자열이 통째로 중복 저장된다. 51만 트랙 기준 DB 479MB → 607MB(+128MB)에
+// 첫 부팅 인덱스 재구축이 14초였다. 폴더명으로 찾는 값어치보다 비싸다는 판단.
+// 다시 넣게 된다면 고유 폴더만 따로 색인하고 조인하는 쪽으로 — 중복이 사라져 몇 MB로 끝난다.
 function ftsBlobExpr(prefix: "" | "new." | "old."): string {
   return `
   lower(
@@ -228,6 +238,31 @@ function ftsBlobExpr(prefix: "" | "new." | "old."): string {
     replace(replace(replace(COALESCE(${prefix}tags, ''), '[', ' '), ']', ' '), '"', ' ')
   )
 `;
+}
+
+// 위 색인 문자열 정의가 바뀌면 이미 만들어진 인덱스는 낡은 채로 남는다. ensureSearchIndex는
+// "테이블이 없으면 만든다"라서 기존 사용자에게는 영영 반영되지 않는다 — 버전을 올려 두면
+// 다음 부팅에 딱 한 번 다시 만든다. 재구축하는 동안 창은 아직 뜨지 않았고 메인 프로세스는
+// 막혀 있으므로, 걸린 시간을 남겨 다음에 느려지면 바로 알아볼 수 있게 한다.
+//   2 — 폴더 경로 추가
+//   3 — 경로에서 파일명 부분 제거(색인 중복이라 DB만 부풀렸다)
+//   4 — 폴더 경로 제거(위 주석 참조). v1과 같은 내용이지만 v2·v3을 거친 DB를 되돌려야 한다
+const SEARCH_INDEX_VERSION = 4;
+
+function dropStaleSearchIndex(): void {
+  const d = getDb();
+  const version = d.pragma("user_version", { simple: true }) as number;
+  if (version >= SEARCH_INDEX_VERSION) return;
+  console.log(
+    `검색 인덱스를 다시 만든다 (v${version} → v${SEARCH_INDEX_VERSION})…`,
+  );
+  // tracks_vec은 건드리지 않는다 — 지우면 임베딩 51만 건을 다시 계산해야 한다.
+  d.exec(`
+    DROP TABLE IF EXISTS tracks_vocab;
+    DROP TABLE IF EXISTS tracks_terms;
+    DROP TABLE IF EXISTS tracks_fts;
+  `);
+  d.pragma(`user_version = ${SEARCH_INDEX_VERSION}`);
 }
 
 function tableExists(name: string): boolean {

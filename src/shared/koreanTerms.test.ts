@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hasKorean, translateKoreanQuery } from "./koreanTerms";
+import { hasKorean, synonymsOf, translateKoreanQuery } from "./koreanTerms";
 
 describe("hasKorean", () => {
   it("한글이 섞여 있으면 참", () => {
@@ -69,5 +69,22 @@ describe("translateKoreanQuery", () => {
       "break",
       "glass",
     ]);
+  });
+});
+
+describe("synonymsOf", () => {
+  it("같은 무리의 단어를 자기 자신과 함께 돌려준다", () => {
+    expect(synonymsOf("car")).toContain("vehicle");
+    expect(synonymsOf("car")).toContain("car");
+    // 양방향이어야 한다 — 어느 쪽을 쳐도 같은 무리가 나온다
+    expect(synonymsOf("vehicle")).toContain("car");
+  });
+
+  it("표에 없는 단어는 자기 자신만", () => {
+    expect(synonymsOf("zzzunknown")).toEqual(["zzzunknown"]);
+  });
+
+  it("대소문자를 가리지 않는다", () => {
+    expect(synonymsOf("Metal")).toContain("steel");
   });
 });

@@ -218,3 +218,96 @@ export function translateKoreanQuery(query: string): string {
   const translated = out.join(" ").replace(/\s+/g, " ").trim();
   return translated || query;
 }
+
+// 영어 동의어 ---------------------------------------------------------------
+//
+// 팩마다 같은 것을 다른 이름으로 부른다 — 어떤 라이브러리는 Car, 어떤 라이브러리는
+// Vehicle이다. 사용자가 어느 쪽을 치든 나오게 검색 시 OR로 펼친다. 표에 없는
+// 먼 관계("가죽 스치는" ↔ leather rustle)는 임베딩 의미 검색이 맡으므로 여기는
+// "다른 이름일 뿐인 것"만 담는다.
+//
+// 한 단어는 한 무리에만 넣는다(두 곳에 넣으면 뒤에 온 무리가 이긴다).
+const SYNONYM_GROUPS: string[][] = [
+  // 탈것·기계
+  ["car", "vehicle", "automobile"],
+  ["engine", "motor", "motorized"],
+  ["airplane", "aircraft", "plane", "jet"],
+  ["helicopter", "chopper", "rotor"],
+  ["train", "railway", "locomotive"],
+  ["horn", "honk"],
+  ["machine", "machinery", "mechanical", "mechanism"],
+
+  // 무기·전투
+  ["gun", "firearm", "pistol", "rifle", "weapon"],
+  ["gunshot", "gunfire", "shoot", "shot"],
+  ["explosion", "explode", "blast", "detonation"],
+  ["knife", "blade", "sword"],
+
+  // 충격·파괴
+  ["impact", "hit", "crash", "bang", "thump"],
+  ["break", "smash", "shatter", "destroy"],
+  ["drop", "fall", "thud"],
+  ["scrape", "scratch", "rub", "grind"],
+  ["squeak", "creak", "squeal"],
+  ["slide", "sliding", "slip"],
+
+  // 재질
+  ["metal", "metallic", "steel", "iron"],
+  ["wood", "wooden", "timber"],
+  ["glass", "crystal"],
+  ["cloth", "fabric", "textile", "leather"],
+  ["paper", "cardboard"],
+  ["rock", "stone", "gravel"],
+
+  // 문·조작
+  ["door", "gate", "hatch"],
+  ["open", "opening"],
+  ["close", "closing", "shut"],
+  ["lock", "latch", "bolt"],
+  ["knock", "rap"],
+  ["switch", "toggle", "lever"],
+
+  // 사람
+  ["footstep", "footsteps", "step", "steps", "walk"],
+  ["run", "running", "sprint", "jog"],
+  ["voice", "vocal", "speech"],
+  ["scream", "shout", "yell"],
+  ["laugh", "laughter", "giggle"],
+  ["crowd", "audience", "people"],
+  ["breath", "breathing", "breathe"],
+
+  // 자연·생물
+  ["water", "liquid", "splash"],
+  ["rain", "storm", "downpour"],
+  ["wind", "breeze", "gust"],
+  ["fire", "flame", "burn", "burning"],
+  ["wave", "ocean", "sea", "surf"],
+  ["monster", "creature", "beast", "animal"],
+  ["dog", "canine", "bark"],
+  ["cat", "feline", "meow"],
+  ["bird", "birds", "chirp"],
+
+  // 게임·UI·연출
+  ["whoosh", "swoosh", "swish", "swipe"],
+  ["click", "tap", "button"],
+  ["notification", "alert", "ping"],
+  ["alarm", "siren", "buzzer"],
+  ["bell", "chime", "ding"],
+  ["magic", "spell", "fantasy"],
+  ["coin", "money", "cash"],
+  ["electric", "electricity", "electrical", "spark"],
+  ["computer", "digital", "tech"],
+  ["typing", "keyboard", "keystroke"],
+  ["ambience", "ambient", "atmosphere", "atmos"],
+  ["music", "musical", "melody"],
+];
+
+const SYNONYM_INDEX = new Map<string, string[]>();
+for (const group of SYNONYM_GROUPS) {
+  for (const word of group) SYNONYM_INDEX.set(word, group);
+}
+
+/** 같은 무리의 단어들(자기 자신 포함). 표에 없으면 자기 자신만. */
+export function synonymsOf(word: string): string[] {
+  return SYNONYM_INDEX.get(word.toLowerCase()) ?? [word];
+}

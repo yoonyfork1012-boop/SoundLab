@@ -107,6 +107,94 @@ describe("검색 인덱스 (FTS5 trigram)", () => {
     expect(q.searchTrackIds("   ")).toEqual([]);
   });
 
+  it("여러 낱말은 붙어 있지 않아도 찾는다 (구문이 아니라 AND)", () => {
+    const id = addTrack({
+      filePath: "/lib/g.wav",
+      filename: "Door_Metal_Heavy.wav",
+    });
+    expect(q.searchTrackIds("metal door")).toContain(id);
+    // 순서를 바꿔도 같다 — 구문 매칭이었다면 둘 중 하나만 걸렸다
+    expect(q.searchTrackIds("door metal")).toContain(id);
+  });
+
+  it("동의어로도 찾는다", () => {
+    const id = addTrack({
+      filePath: "/lib/h.wav",
+      filename: "VehicleEngineIdle.wav",
+    });
+    expect(q.searchTrackIds("car")).toContain(id);
+  });
+
+  // 폴더 이름 검색 — 팩 이름은 폴더에만 있고 파일명에는 없는 경우가 많다.
+  // 실제로 걸렸던 건: "Boom Library - Casual UI" 아래 파일들이 casual도 ui도 담고
+  // 있지 않아 "casual ui"로 찾을 수 없었다. FTS 색인이 아니라 scan_dirs를 훑어 찾는다.
+  describe("폴더 이름으로 찾기", () => {
+    beforeAll(() => {
+      addTrack({
+        filePath: "/lib/Boom Library - Casual UI/CLOTHImpt_Backpack_CUCK.wav",
+        filename: "CLOTHImpt_Backpack_CUCK.wav",
+      });
+      addTrack({
+        filePath: "/lib/Big Room Sound - Footsteps/Walk_Wood_Casual_Shoes.wav",
+        filename: "Walk_Wood_Casual_Shoes.wav",
+      });
+      // 폴더 목록은 스캐너가 채운다 — 테스트에서는 같은 API로 직접 넣는다.
+      q.replaceDirSnapshot(
+        1,
+        new Map([
+          ["/lib/Boom Library - Casual UI", 1],
+          ["/lib/Big Room Sound - Footsteps", 1],
+        ]),
+      );
+    });
+
+    it("파일명에 없는 팩 이름을 폴더에서 찾는다", () => {
+      const id = q.getTrackByPath(
+        "/lib/Boom Library - Casual UI/CLOTHImpt_Backpack_CUCK.wav",
+      )!.id;
+      // 파일명에는 casual도 ui도 없다 — 폴더로만 찾을 수 있다
+      expect(q.searchTrackIds("casual ui")).toContain(id);
+    });
+
+    it("낱말을 다 만족한 폴더가 일부만 맞은 파일명보다 앞에 온다", () => {
+      const boom = q.getTrackByPath(
+        "/lib/Boom Library - Casual UI/CLOTHImpt_Backpack_CUCK.wav",
+      )!.id;
+      const shoes = q.getTrackByPath(
+        "/lib/Big Room Sound - Footsteps/Walk_Wood_Casual_Shoes.wav",
+      )!.id;
+      const ids = q.searchTrackIds("casual ui");
+      // Walk_Wood_Casual_Shoes는 파일명에 casual이 있지만 ui가 어디에도 없다.
+      // casual+ui를 모두 만족하는 Boom 쪽이 위여야 한다.
+      expect(ids).toContain(boom);
+      const shoesAt = ids.indexOf(shoes);
+      if (shoesAt !== -1) expect(ids.indexOf(boom)).toBeLessThan(shoesAt);
+    });
+  });
+
+  it("파일명에 든 것이 태그로만 걸린 것보다 앞에 온다 (관련도 정렬)", () => {
+    const byTag = addTrack({
+      filePath: "/lib/rank-a.wav",
+      filename: "other.wav",
+      tags: ["rankscrape"],
+    });
+    const byName = addTrack({
+      filePath: "/lib/rank-b.wav",
+      filename: "RankScrape.wav",
+    });
+    const ids = q.searchTrackIds("rankscrape");
+    expect(ids.indexOf(byName)).toBeLessThan(ids.indexOf(byTag));
+  });
+
+  it("AND가 0건이면 OR로 넓힌다", () => {
+    const id = addTrack({
+      filePath: "/lib/i.wav",
+      filename: "OnlyFallbackWord.wav",
+    });
+    // 'zzzmissing'은 어디에도 없다 — AND면 0건, OR면 이 트랙이 나온다
+    expect(q.searchTrackIds("onlyfallbackword zzzmissing")).toContain(id);
+  });
+
   it("큰따옴표가 섞인 질의를 이스케이프한다", () => {
     const id = addTrack({ filePath: "/lib/f.wav", filename: 'say "hi".wav' });
     expect(q.searchTrackIds('"hi"')).toContain(id);

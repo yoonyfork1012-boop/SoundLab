@@ -13,7 +13,7 @@ import type {
 } from "../../shared/types";
 import { SUPPORTED_EXTENSIONS } from "../../shared/audioFiles";
 import { UNCATEGORIZED } from "../../shared/soundTaxonomy";
-import { translateKoreanQuery } from "../../shared/koreanTerms";
+import { synonymsOf, translateKoreanQuery } from "../../shared/koreanTerms";
 
 type SqlRow = Record<string, unknown>;
 
@@ -808,25 +808,171 @@ function ftsPhrase(query: string): string {
   return `"${query.replace(/"/g, '""')}"`;
 }
 
+/** 한 낱말을 동의어까지 펼친 MATCH 조각. `(car OR vehicle OR automobile)` */
+function expandWord(word: string): string {
+  // trigram은 3글자 미만을 색인하지 못하므로 그런 동의어는 넣어봐야 안 걸린다.
+  const alts = synonymsOf(word).filter((w) => w.length >= FTS_MIN_QUERY_LENGTH);
+  if (alts.length < 2) return ftsPhrase(word);
+  return `(${alts.map(ftsPhrase).join(" OR ")})`;
+}
+
+/**
+ * MATCH로 걸린 트랙을 관련도 순으로 돌려준다.
+ *
+ * 티어는 세 단계다 — 질의 원문이 파일명에 통째로 있는 것, 낱말이 파일명에 모두 있는 것,
+ * 폴더·카테고리·태그로만 걸린 것. 동의어로 확장돼 들어온 결과는 원문 낱말이 아니므로
+ * 자연히 맨 아래 티어로 내려간다. 같은 티어 안에서는 짧은 파일명이 앞이다 —
+ * "Door.wav"가 "Door Wooden Old Creaky Long Take 3.wav"보다 질의에 가깝다는 뜻.
+ *
+ * 비용은 걸린 건수에 비례한다(505,675 트랙 실측, 정렬 없는 기존 쿼리 → 랭킹 쿼리):
+ * "door" 12,692건 2→12ms, "car" 17,041건 1→19ms, "metal" 36,907건 6→43ms.
+ *
+ * ponytail: 라이브러리의 대부분이 걸리는 질의는 느리다 — "wav" 444,120건이 27→310ms다.
+ * 그런 질의는 결과가 곧 라이브러리 전체라 애초에 쓸모가 없어 그대로 둔다. 실사용에서
+ * 걸리적거리면 건수 상한을 두고 상위 N건만 랭킹한 뒤 나머지를 뒤에 붙이는 방식으로 올린다.
+ */
+// 관련도 티어. 낮을수록 위. 폴더 매칭 결과와 섞어 정렬해야 하므로 값을 이름으로 고정한다.
+const TIER_NAME_PHRASE = 0; // 파일명에 질의가 통째로
+const TIER_NAME_ALL = 1; // 파일명에 낱말이 전부
+const TIER_PATH_ALL = 2; // 경로(폴더)에 낱말이 전부 — 팩 이름으로 걸린 것
+const TIER_PARTIAL = 3; // 나머지(긴 낱말만 걸림)
+
+interface RankedHit {
+  id: number;
+  tier: number;
+}
+
+function rankedMatch(
+  match: string,
+  phrase: string,
+  terms: string[],
+): RankedHit[] {
+  // 짧은 낱말("ui")도 여기서는 쓴다. trigram 색인은 3글자 미만을 못 찾지만 instr는 찾는다 —
+  // MATCH로 후보를 좁힌 뒤의 순위 계산이라 색인 제약을 받지 않는다.
+  const allIn = (col: string): string =>
+    terms.length
+      ? terms.map(() => `instr(lower(t.${col}), ?) > 0`).join(" AND ")
+      : "0";
+  return prep(
+    `SELECT t.id AS id,
+            CASE WHEN instr(lower(t.filename), ?) > 0 THEN ${TIER_NAME_PHRASE}
+                 WHEN ${allIn("filename")} THEN ${TIER_NAME_ALL}
+                 WHEN ${allIn("file_path")} THEN ${TIER_PATH_ALL}
+                 ELSE ${TIER_PARTIAL} END AS tier
+     FROM tracks_fts f JOIN tracks t ON t.id = f.rowid
+     WHERE f.blob MATCH ?
+     ORDER BY tier, length(t.filename)`,
+  ).all(phrase, ...terms, ...terms, match) as RankedHit[];
+}
+
+// 폴더 이름으로도 찾는다 ----------------------------------------------------
+//
+// 팩 이름은 폴더에만 있는 경우가 많다. "Boom Library - Casual UI" 아래 파일들은
+// CLOTHImpt_IMPACT-Backpack_B00M_CUCK.wav 처럼 팩 이름을 전혀 담고 있지 않아서,
+// 파일명만 색인하면 "casual ui"로 1,903개 중 200개밖에 못 찾는다(실측).
+//
+// 그렇다고 폴더 경로를 파일마다 FTS에 넣으면 같은 문자열이 폴더당 평균 45번 중복 저장돼
+// 색인 텍스트가 55MB 늘고 DB가 479MB → 607MB가 된다(실측, 한 번 해보고 되돌렸다).
+// 고유 폴더는 11,130개뿐이라 중복만 걷어내면 텍스트가 1.1MB로 49배 줄어든다.
+//
+// 그래서 새 색인을 만들지 않고, 증분 스캔이 이미 들고 있는 scan_dirs(14,343행,
+// 트랙이 있는 폴더를 빠짐없이 담는다 — 누락 0개 확인)를 LIKE로 훑는다. 실측 5ms다.
+// 거기서 나온 폴더 아래 트랙은 file_path의 UNIQUE 인덱스를 접두어 범위로 타서 1ms에 모은다.
+// 저장 공간 추가 0, 인덱스 재구축 0.
+
+// LIKE라서 trigram(3글자)과 달리 2글자 낱말도 쓸 수 있다 — "casual ui"의 "ui"가 그렇다.
+const FOLDER_WORD_MIN_LENGTH = 2;
+// 흔한 낱말 하나가 폴더 수천 개에 걸리면 그 아래 트랙을 전부 끌어와 결과가 무의미해진다.
+// 그런 질의는 폴더 신호 자체가 변별력이 없다는 뜻이라 그냥 접는다.
+const MAX_MATCHED_FOLDERS = 400;
+
+function folderMatchIds(terms: string[]): number[] {
+  if (terms.length === 0) return [];
+  const where = terms.map(() => "lower(dir_path) LIKE ?").join(" AND ");
+  const dirs = prep(
+    `SELECT dir_path FROM scan_dirs WHERE ${where} LIMIT ${MAX_MATCHED_FOLDERS + 1}`,
+  )
+    .pluck()
+    .all(...terms.map((w) => `%${w}%`)) as string[];
+  if (dirs.length === 0 || dirs.length > MAX_MATCHED_FOLDERS) return [];
+
+  const under = prep(
+    "SELECT id FROM tracks WHERE file_path >= ? AND file_path < ?",
+  );
+  const ids: number[] = [];
+  const seen = new Set<number>();
+  for (const dir of dirs) {
+    // 구분자는 저장된 경로에서 그대로 가져온다 — 플랫폼을 가정하지 않는다.
+    const sep = dir.includes("\\") ? "\\" : "/";
+    const base = dir.endsWith(sep) ? dir : dir + sep;
+    // 접두어 범위 = [base, base + 유니코드 최댓값). LIKE와 달리 인덱스를 탄다.
+    for (const id of under.pluck().all(base, base + "￿") as number[]) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * 키워드 결과와 폴더 결과를 티어로 섞는다.
+ *
+ * 그냥 뒤에 이어붙이면 안 된다 — "casual ui"에서 파일명에 casual만 든
+ * BRS_Feet_Walk_Wood_Casual_Shoes_1.wav가, 폴더가 casual과 ui를 모두 만족하는
+ * Boom Library - Casual UI 트랙보다 위로 올라온다. 낱말을 더 많이 만족한 쪽이 위다.
+ *
+ * 폴더 결과는 정의상 낱말을 전부 만족한다(LIKE를 AND로 걸어 뽑았다) — TIER_PATH_ALL.
+ */
+function mergeHits(hits: RankedHit[], folderIds: number[]): number[] {
+  const tierById = new Map<number, number>();
+  for (const h of hits) tierById.set(h.id, h.tier);
+  const merged: RankedHit[] = hits.slice();
+  for (const id of folderIds) {
+    const known = tierById.get(id);
+    if (known === undefined) {
+      tierById.set(id, TIER_PATH_ALL);
+      merged.push({ id, tier: TIER_PATH_ALL });
+    }
+    // 키워드 쪽에서 이미 더 높은 티어를 받았으면 그대로 둔다(파일명 매칭이 더 강하다).
+  }
+  // Array.sort는 안정 정렬이라 같은 티어 안에서는 원래 순서(이름 길이순/폴더순)가 남는다.
+  merged.sort((a, b) => a.tier - b.tier);
+  return merged.map((h) => h.id);
+}
+
 export function searchTrackIds(query: string): number[] {
   // 라이브러리는 전부 영어라 한국어 질의는 먼저 영어 용어로 옮긴다.
-  const translated = translateKoreanQuery(query);
-  const q = translated.trim().toLowerCase();
+  const q = translateKoreanQuery(query).trim().toLowerCase();
   if (q.length < FTS_MIN_QUERY_LENGTH) return [];
   try {
-    // 번역된 여러 낱말은 파일명에 붙어 있지 않다("long metal scrape"가 통째로 들어 있는
-    // 파일은 없다). 그래서 낱말이 여러 개면 구문이 아니라 AND로 찾는다. 사용자가 직접
-    // 친 영어 질의는 지금처럼 구문 그대로 둔다 — 기존 동작을 바꾸지 않기 위해서다.
-    const words = q
-      .split(/\s+/)
-      .filter((w) => w.length >= FTS_MIN_QUERY_LENGTH);
-    const match =
-      translated !== query && words.length > 1
-        ? words.map(ftsPhrase).join(" AND ")
-        : ftsPhrase(q);
-    return prep("SELECT rowid FROM tracks_fts WHERE blob MATCH ?")
-      .pluck()
-      .all(match) as number[];
+    // 여러 낱말은 파일명에 붙어 있지 않다 — "metal door"가 통째로 든 파일은 없고
+    // Door_Metal_Heavy.wav가 있다. 그래서 구문이 아니라 낱말별 AND로 찾는다.
+    const all = q.split(/\s+/).filter(Boolean);
+    // FTS(trigram)에 넣을 낱말은 3글자 이상만. 순위 계산과 폴더 매칭은 instr/LIKE라
+    // 2글자도 쓸 수 있다 — "casual ui"의 "ui"를 여기서 버리면 순위가 통째로 틀어진다.
+    const words = all.filter((w) => w.length >= FTS_MIN_QUERY_LENGTH);
+    const rankTerms = all.filter((w) => w.length >= FOLDER_WORD_MIN_LENGTH);
+    const folderIds = folderMatchIds(rankTerms);
+    if (words.length < 2) {
+      // 낱말이 하나거나(또는 전부 짧아 다 버려졌거나) — 질의를 그대로 쓴다.
+      const one = words.length === 1 ? expandWord(words[0]) : ftsPhrase(q);
+      return mergeHits(rankedMatch(one, q, rankTerms), folderIds);
+    }
+    const hits = rankedMatch(words.map(expandWord).join(" AND "), q, rankTerms);
+    if (hits.length > 0 || folderIds.length > 0)
+      return mergeHits(hits, folderIds);
+    // 낱말을 전부 만족하는 게 하나도 없으면 한 번만 OR로 넓힌다. 오타가 섞였거나
+    // 질의가 너무 구체적일 때 빈 화면 대신 근처라도 보여주기 위해서다.
+    //
+    // ponytail: 편집거리 기반 오타 교정(foostep → footstep)은 없다. 부분문자열은
+    // trigram이, 뜻이 가까운 것은 병렬로 도는 임베딩 검색이 이미 잡는다. 정식 해법인
+    // spellfix1 확장은 번들에 없어 빌드·패키징까지 손대야 하므로 필요해지면 그때 올린다.
+    return mergeHits(
+      rankedMatch(words.map(expandWord).join(" OR "), q, rankTerms),
+      [],
+    );
   } catch (err) {
     // 구두점만으로 된 질의처럼 trigram이 토큰을 못 만드는 입력은 FTS5가 예외를 던진다.
     // 검색 한 번 실패로 앱이 멈출 이유는 없으니 빈 결과로 처리한다.
