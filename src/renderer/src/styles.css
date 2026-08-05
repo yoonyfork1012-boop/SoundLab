@@ -1244,10 +1244,12 @@ button {
 /* 좌표 기반 hover 박스 (???�크�?중에??커서 추적) */
 .list-hoverbox {
   position: absolute;
+  top: 0;
   left: 0;
   right: 0;
   background: var(--surface-hover);
   pointer-events: none;
+  will-change: transform;
 }
 .list-row--selected {
   background: var(--accent-dim);

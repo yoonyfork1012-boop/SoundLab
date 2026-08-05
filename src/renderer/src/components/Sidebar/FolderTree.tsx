@@ -69,9 +69,10 @@ const FolderTree = memo(function FolderTree({
         <span
           className={`ftree__toggle${hasChildren ? " ftree__toggle--clickable" : ""}`}
           onClick={(e) => {
-            // 화살표를 클릭해도 폴더가 선택되어 리스트에 표시되도록 함(펼침/접힘은 별도로 함께 처리)
+            // 화살표는 트리만 펼친다. 선택은 행 본문 클릭이 담당한다 — 예전에는 화살표도
+            // 선택을 했는데, 그러면 트리를 펼치기만 해도 그 폴더 아래 트랙(라이브러리
+            // 루트면 46만 건)을 스캔·정렬해서 클릭 한 번에 570ms씩 멈췄다(실측).
             e.stopPropagation();
-            onSelectFolder(node.path);
             if (hasChildren) onToggleExpand(node.path, !expanded);
           }}
         >

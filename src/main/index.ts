@@ -268,8 +268,16 @@ if (!gotLock) {
 
       // 의미 검색용 임베딩을 백그라운드로 채운다. 스캔 따라잡기가 먼저 끝나도록 더
       // 늦게 시작하고, 중단돼도 다음 실행이 남은 것부터 이어서 한다.
+      //
+      // SOUNDLIB_SKIP_EMBED=1 로 끌 수 있다. 느려짐이 이 백필 탓인지 가려낼 때 쓴다 —
+      // 껐다고 검색이 죽지는 않는다(키워드 검색은 무관, 의미 검색은 이미 채워진 범위에서
+      // 계속 동작한다). 끄면 새로 추가된 트랙만 의미 검색에서 빠진다.
       setTimeout(() => {
         if (mainWindow.isDestroyed()) return;
+        if (process.env.SOUNDLIB_SKIP_EMBED === "1") {
+          console.log("SOUNDLIB_SKIP_EMBED=1 — 임베딩 백필을 건너뛴다");
+          return;
+        }
         void backfillEmbeddings(
           (p) => {
             if (!mainWindow.isDestroyed())

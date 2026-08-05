@@ -94,4 +94,46 @@ describe("의미 검색 (sqlite-vec)", () => {
     // 방금 넣은 트랙은 벡터가 없으므로 대기 목록에 잡혀야 한다
     expect(emb.pendingEmbedCount()).toBeGreaterThan(0);
   });
+
+  // NOT IN을 LEFT JOIN으로 바꿨다(배치마다 35ms → 1ms). 같은 행을 고르는지 확인한다 —
+  // 여기가 어긋나면 이미 임베딩된 트랙을 다시 돌리거나(무한 루프) 영영 건너뛴다.
+  it("LEFT JOIN이 NOT IN과 같은 트랙을 고른다", () => {
+    const d = db.getDb();
+    const before = emb.pendingEmbedCount();
+    const track = q.getTrackByPath("/lib/no-embedding-yet.wav")!;
+    d.prepare(
+      "INSERT INTO tracks_vec(rowid, embedding) VALUES (?, vec_int8(?))",
+    ).run(BigInt(track.id), emb.quantize(unitVector(emb.EMBED_DIM, 3)));
+    // 벡터를 넣었으니 정확히 하나 줄어야 한다
+    expect(emb.pendingEmbedCount()).toBe(before - 1);
+
+    const notIn = d
+      .prepare(
+        "SELECT count(*) FROM tracks WHERE id NOT IN (SELECT rowid FROM tracks_vec)",
+      )
+      .pluck()
+      .get();
+    expect(emb.pendingEmbedCount()).toBe(notIn);
+  });
+
+  // 백필은 몇 시간 걸리는 배경 작업이고 검색·재생은 사용자가 기다리는 작업이다. 사용자가
+  // 뭔가 한 직후에는 백필이 새 배치를 시작하면 안 된다 — 이게 "검색·재생할 때마다 렉"의
+  // 원인이었다. (배치를 실제로 돌리려면 모델이 필요해 테스트에 못 태운다. 판정 조건만 본다.)
+  it("검색 직후에는 백필이 비켜준다", () => {
+    const now = Date.now();
+    emb.noteUserActivity();
+    expect(emb.shouldYieldToUser(now)).toBe(true);
+    // 조용해지면 다시 진행한다 — 아니면 백필이 영영 안 끝난다
+    expect(emb.shouldYieldToUser(now + 3000)).toBe(false);
+  });
+
+  // 재생은 IPC가 돌아간 뒤부터가 진짜다 — 렌더러가 파일을 디코딩해 웨이브폼을 그린다.
+  // 그 구간이 메인에서 안 보이므로 검색보다 길게 비켜줘야 한다.
+  it("재생은 검색보다 오래 비켜준다 (웨이브폼 디코딩 구간)", () => {
+    const now = Date.now();
+    emb.noteUserPlayback();
+    // 검색용 유휴(1.5초)를 지나서도 아직 비켜주고 있어야 한다
+    expect(emb.shouldYieldToUser(now + 3000)).toBe(true);
+    expect(emb.shouldYieldToUser(now + 6000)).toBe(false);
+  });
 });

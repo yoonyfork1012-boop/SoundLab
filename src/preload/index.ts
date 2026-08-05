@@ -178,6 +178,9 @@ const api = {
   updateLastPlayed: (trackId: number): void =>
     ipcRenderer.send("track:updateLastPlayed", trackId),
 
+  // 목록 스크롤 중에는 백그라운드 임베딩이 CPU를 양보하도록 알린다.
+  noteListScroll: (): void => ipcRenderer.send("renderer:listScroll"),
+
   updateTrackMetadata: (
     trackId: number,
     patch: TrackMetadataPatch,

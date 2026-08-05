@@ -1,5 +1,6 @@
 import { app } from "electron";
 import { join } from "path";
+import { cpus } from "os";
 import { getDb } from "./db";
 import { translateKoreanQuery } from "../shared/koreanTerms";
 
@@ -27,10 +28,55 @@ function modelRoot(): string {
     : join(__dirname, "../../build/models");
 }
 
-// 배치가 클수록 처리량이 좋지만 메모리도 는다. 실측 130건/초는 이 크기 기준이다.
-const BATCH = 64;
+// 배치가 클수록 처리량이 좋지만, 한 배치가 도는 동안은 CPU가 그쪽에 묶여 검색이 밀린다.
+// 64건이면 한 덩어리가 0.5초쯤이라 그 사이에 친 검색어가 눈에 띄게 늦게 반응했다.
+// 16으로 줄여 최악 대기를 1/4로 만든다 — 처리량은 조금 손해지만 백그라운드 작업이므로
+// 총 시간보다 "쓰는 동안 안 걸리는 것"이 중요하다.
+const BATCH = 16;
 // 한 번에 다 돌리지 않고 끊어서 진행한다 — 그 사이 검색/재생 IPC가 처리되어야 한다.
 const CHUNK_PAUSE_MS = 8;
+
+// 모델 추론에 쓸 스레드 수. 기본값은 코어를 전부 쓰는데, 그러면 백필이 도는 동안
+// 이 앱뿐 아니라 시스템 전체가 느려진다(실측: 다른 프로그램까지 버벅였다).
+// 절반만 쓰게 해서 나머지를 UI와 다른 프로그램에 남긴다.
+const INFERENCE_THREADS = Math.max(1, Math.floor(cpus().length / 2));
+
+// 사용자가 앱을 쓰는 동안에는 백필을 멈춘다 ----------------------------------
+//
+// 백필은 몇 시간에 걸쳐 도는 배경 작업이고(51만 건), 검색·재생은 사용자가 지금 기다리는
+// 작업이다. 둘이 같은 CPU를 놓고 다투면 항상 사용자 쪽이 이겨야 한다. 상호작용 IPC가
+// 들어오면 "언제까지 조용히 있을지"를 찍어두고, 백필은 그때까지 새 배치를 시작하지
+// 않는다. 이미 시작한 배치는 끝까지 간다 — 그래서 BATCH를 작게 잡았다.
+//
+// 조용히 있을 시간은 작업마다 다르다. 검색은 IPC가 끝나면 사실상 끝나지만, 재생은
+// IPC가 돌려준 뒤부터가 진짜다 — 렌더러가 파일을 디코딩해 웨이브폼을 그리는 동안
+// CPU를 많이 쓰는데 그건 메인 프로세스에서 보이지 않는다. 그래서 더 길게 잡는다.
+const QUIET_AFTER_SEARCH_MS = 1500;
+const QUIET_AFTER_PLAYBACK_MS = 5000;
+
+let busyUntil = 0;
+
+/** 사용자가 뭔가 하고 있음을 알린다. 백필이 이걸 보고 비켜준다. */
+export function noteUserActivity(quietMs = QUIET_AFTER_SEARCH_MS): void {
+  busyUntil = Math.max(busyUntil, Date.now() + quietMs);
+}
+
+/** 재생·웨이브폼처럼 IPC가 끝난 뒤에도 렌더러가 한참 일하는 작업용. */
+export function noteUserPlayback(): void {
+  noteUserActivity(QUIET_AFTER_PLAYBACK_MS);
+}
+
+/** 지금 백필이 비켜줘야 하는가. 루프가 이걸 보고 배치 시작을 미룬다. */
+export function shouldYieldToUser(now = Date.now()): boolean {
+  return now < busyUntil;
+}
+
+async function waitUntilUserIsIdle(shouldStop?: () => boolean): Promise<void> {
+  while (shouldYieldToUser()) {
+    if (shouldStop?.()) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
 
 type Extractor = (
   texts: string | string[],
@@ -51,6 +97,11 @@ function getExtractor(): Promise<Extractor> {
       env.localModelPath = modelRoot();
       return (await pipeline("feature-extraction", MODEL_ID, {
         dtype: "q8",
+        // session_options는 onnxruntime의 InferenceSession.create()로 그대로 넘어간다.
+        session_options: {
+          intraOpNumThreads: INFERENCE_THREADS,
+          interOpNumThreads: 1,
+        },
       })) as unknown as Extractor;
     })();
   }
@@ -105,13 +156,17 @@ export interface EmbedProgress {
 
 let running = false;
 
+// "벡터가 없는 트랙"을 고르는 조건. NOT IN (SELECT rowid FROM tracks_vec)로 쓰면
+// tracks_vec을 매번 통째로 훑어 배치마다 35ms가 든다(51만 건 실측). rowid로 LEFT JOIN하면
+// 인덱스를 타서 1ms다 — 배치가 수만 번 도는 작업이라 이 차이가 그대로 쌓인다.
+const MISSING_VECTOR_JOIN = `
+  FROM tracks t LEFT JOIN tracks_vec v ON v.rowid = t.id
+  WHERE v.rowid IS NULL`;
+
 /** 임베딩이 아직 없는 트랙 수 */
 export function pendingEmbedCount(): number {
   return getDb()
-    .prepare(
-      `SELECT count(*) FROM tracks
-       WHERE id NOT IN (SELECT rowid FROM tracks_vec)`,
-    )
+    .prepare(`SELECT count(*) ${MISSING_VECTOR_JOIN}`)
     .pluck()
     .get() as number;
 }
@@ -132,8 +187,8 @@ export async function backfillEmbeddings(
     if (total === 0) return;
 
     const pick = d.prepare(
-      `SELECT id, filename, category, subcategory FROM tracks
-       WHERE id NOT IN (SELECT rowid FROM tracks_vec) LIMIT ?`,
+      `SELECT t.id, t.filename, t.category, t.subcategory
+       ${MISSING_VECTOR_JOIN} LIMIT ?`,
     );
     const insert = d.prepare(
       "INSERT INTO tracks_vec(rowid, embedding) VALUES (?, vec_int8(?))",
@@ -141,6 +196,9 @@ export async function backfillEmbeddings(
 
     let done = 0;
     for (;;) {
+      if (shouldStop?.()) return;
+      // 사용자가 검색을 치고 있으면 조용해질 때까지 비켜준다.
+      await waitUntilUserIsIdle(shouldStop);
       if (shouldStop?.()) return;
       const rows = pick.all(BATCH) as {
         id: number;

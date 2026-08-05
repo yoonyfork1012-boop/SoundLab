@@ -250,13 +250,18 @@ export function sortTracks(
   if (!col) return tracks;
   const getValue = col.sortValue ?? col.value;
   const dir = sortDir === "asc" ? 1 : -1;
-  return [...tracks].sort((a, b) => {
-    const va = getValue(a, ctx);
-    const vb = getValue(b, ctx);
-    if (va < vb) return -1 * dir;
-    if (va > vb) return 1 * dir;
-    return 0;
-  });
+  // 비교할 때마다 키를 다시 계산하지 않도록 트랙당 한 번만 만든다. 동률은 입력 순서를
+  // 명시적으로 유지해 기존 안정 정렬과 같은 결과를 보장한다.
+  return tracks
+    .map((track, index) => ({ track, index, value: getValue(track, ctx) }))
+    .sort((a, b) => {
+      const va = a.value;
+      const vb = b.value;
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return a.index - b.index;
+    })
+    .map(({ track }) => track);
 }
 
 function hashInt(n: number): number {

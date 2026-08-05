@@ -83,6 +83,7 @@ declare const api: {
   onWatchStatus: (callback: (status: WatchStatus) => void) => () => void;
   toggleStar: (trackId: number) => Promise<boolean>;
   updateLastPlayed: (trackId: number) => void;
+  noteListScroll: () => void;
   searchTrackIds: (query: string) => Promise<number[]>;
   suggestSearchTerms: (prefix: string) => Promise<string[]>;
   semanticSearchIds: (query: string, limit: number) => Promise<number[]>;

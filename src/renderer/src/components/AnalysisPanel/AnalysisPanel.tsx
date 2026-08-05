@@ -19,6 +19,13 @@ const GONIO_H = 128;
 const GONIO_STRIDE = 4; // 샘플을 매번 다 찍지 않고 몇 개 건너뛰며 찍어 프레임당 연산을 줄임
 const GONIO_FADE = 0.14; // 잔상(트레일) 지속 정도 — 클수록 빨리 사라짐
 
+// 표시 변화가 0.5px보다 작으면 눈에 띄지 않는다. Width 0.2%와 Correlation 0.005는
+// 각각 240px 폭에서 약 0.5px, 0.6px 이동이며, peak은 다음 감쇠 프레임보다 작다.
+const PEAK_SETTLE_DB = 0.25;
+const WIDTH_SETTLE_PCT = 0.2;
+const CORRELATION_SETTLE = 0.005;
+const GONIO_IDLE_FADE_FRAMES = 24;
+
 function clampPct(v: number): number {
   return Math.max(0, Math.min(100, v));
 }
@@ -78,10 +85,12 @@ export default function AnalysisPanel({
     correlation: 1,
     lastFrameTs: 0,
   });
+  const wakeAnalysisRef = useRef<() => void>(() => {});
 
   function resetPeakHold(): void {
     meterState.current.holdL = -Infinity;
     meterState.current.holdR = -Infinity;
+    wakeAnalysisRef.current();
   }
 
   // Stereo Width 반원(Soundminer 스타일) 배경 그리드는 값이 안 바뀌므로 한 번만 그려서
@@ -132,16 +141,23 @@ export default function AnalysisPanel({
     st.holdR = -Infinity;
     st.widthPct = 0;
     st.correlation = 1;
+    st.lastFrameTs = 0;
+    wakeAnalysisRef.current();
   }, [track?.id]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      wakeAnalysisRef.current = () => {};
+      return;
+    }
 
     function applyBarWidth(el: HTMLDivElement | null, pct: number): void {
-      if (el) el.style.width = `${pct}%`;
+      const width = `${pct}%`;
+      if (el && el.style.width !== width) el.style.width = width;
     }
     function applyHoldLeft(el: HTMLDivElement | null, pct: number): void {
-      if (el) el.style.left = `${pct}%`;
+      const left = `${pct}%`;
+      if (el && el.style.left !== left) el.style.left = left;
     }
     function setText(el: HTMLSpanElement | null, text: string): void {
       if (el && el.textContent !== text) el.textContent = text;
@@ -184,54 +200,31 @@ export default function AnalysisPanel({
     }
     function applyCorrelation(corr: number): void {
       const pct = clampPct(((corr + 1) / 2) * 100);
-      if (corrNeedleRef.current) corrNeedleRef.current.style.left = `${pct}%`;
-      if (corrValRef.current)
+      const left = `${pct}%`;
+      if (corrNeedleRef.current && corrNeedleRef.current.style.left !== left)
+        corrNeedleRef.current.style.left = left;
+      const corrText = isFinite(corr)
+        ? corr.toFixed(2)
+        : String.fromCharCode(0x2014);
+      if (corrValRef.current && corrValRef.current.textContent !== corrText)
         corrValRef.current.textContent = isFinite(corr) ? corr.toFixed(2) : "—";
     }
-    function renderIdle(): void {
-      if (peakOn) {
-        applyBarWidth(barLRef.current, 0);
-        applyBarWidth(barRRef.current, 0);
-        // 정지/무음 상태에서도 Peak Hold 숫자는 그대로 유지(감쇠하지 않음)
-        setText(
-          valLRef.current,
-          fmtDb(
-            isFinite(meterState.current.holdL)
-              ? meterState.current.holdL
-              : null,
-          ),
-        );
-        setText(
-          valRRef.current,
-          fmtDb(
-            isFinite(meterState.current.holdR)
-              ? meterState.current.holdR
-              : null,
-          ),
-        );
-      }
-      if (widthOn) {
-        fadeGonio();
-        applyCorrelation(1);
-        setText(widthValRef.current, "—");
-      }
-    }
-
-    let raf = 0;
+    let raf: number | null = null;
+    let gonioFadeFrames = 0;
     const bufL = new Float32Array(2048);
     const bufR = new Float32Array(2048);
 
+    function startLoop(): void {
+      if (raf === null) raf = requestAnimationFrame(tick);
+    }
+
     function tick(ts: number): void {
-      raf = requestAnimationFrame(tick);
+      raf = null;
       const tap = playerRef.current?.getMeterTap();
       const st = meterState.current;
       const dt = st.lastFrameTs ? ts - st.lastFrameTs : 16;
       st.lastFrameTs = ts;
-
-      if (!tap) {
-        renderIdle();
-        return;
-      }
+      const isPlaying = tap?.isPlaying ?? false;
 
       if (peakOn) {
         // AnalyserNode는 재생이 멈춰도 마지막으로 받은 샘플을 계속 돌려주므로(새 데이터가
@@ -239,7 +232,7 @@ export default function AnalysisPanel({
         // 으로 취급한다. 이렇게 해야 정지 후 막대가 마지막 값에 얼어붙지 않고 바닥으로 감쇠한다.
         let dbL = -Infinity;
         let dbR = -Infinity;
-        if (tap.isPlaying) {
+        if (isPlaying && tap) {
           tap.analyserL.getFloatTimeDomainData(bufL);
           let maxL = 0;
           for (let i = 0; i < bufL.length; i++) {
@@ -289,12 +282,15 @@ export default function AnalysisPanel({
       }
 
       if (widthOn) {
-        if (!tap.isPlaying) {
+        if (!isPlaying || !tap) {
           // 정지 중에는 새 오디오 데이터가 없으므로 폭/위상을 중립값(0%, +1)으로 서서히
           // 되돌리고, 잔상 트레일도 지워 이미저가 "멈춘 그림에 얼어붙는" 대신 초기화되게 한다.
           st.widthPct += (0 - st.widthPct) * WIDTH_SMOOTHING;
           st.correlation += (1 - st.correlation) * CORRELATION_SMOOTHING;
-          fadeGonio();
+          if (gonioFadeFrames > 0) {
+            fadeGonio();
+            gonioFadeFrames--;
+          }
           applyCorrelation(st.correlation);
           setText(widthValRef.current, "—");
         } else {
@@ -337,6 +333,7 @@ export default function AnalysisPanel({
             (instantCorr - st.correlation) * CORRELATION_SMOOTHING;
 
           drawGonio(bufL, bufR);
+          gonioFadeFrames = GONIO_IDLE_FADE_FRAMES;
           applyCorrelation(st.correlation);
           setText(
             widthValRef.current,
@@ -344,10 +341,25 @@ export default function AnalysisPanel({
           );
         }
       }
+      const peakSettled =
+        !peakOn ||
+        (st.peakL <= DISPLAY_FLOOR_DB + PEAK_SETTLE_DB &&
+          st.peakR <= DISPLAY_FLOOR_DB + PEAK_SETTLE_DB);
+      const widthSettled =
+        !widthOn ||
+        (Math.abs(st.widthPct) <= WIDTH_SETTLE_PCT &&
+          Math.abs(1 - st.correlation) <= CORRELATION_SETTLE);
+      if (isPlaying || !peakSettled || !widthSettled || gonioFadeFrames > 0)
+        startLoop();
     }
 
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    wakeAnalysisRef.current = startLoop;
+    startLoop();
+    return () => {
+      if (raf !== null) cancelAnimationFrame(raf);
+      if (wakeAnalysisRef.current === startLoop)
+        wakeAnalysisRef.current = () => {};
+    };
   }, [open, peakOn, widthOn, playerRef]);
 
   function toggle(

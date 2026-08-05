@@ -46,6 +46,7 @@ const COL_WIDTHS_KEY = "soundlib.columnWidths";
 const COL_ORDER_KEY = "soundlib.columnOrder";
 const COL_VISIBLE_KEY = "soundlib.columnVisible";
 const FONT_SIZE_KEY = "soundlib.listFontSize";
+const SCROLL_ACTIVITY_INTERVAL_MS = 500;
 
 // Set은 JSON으로 직렬화되지 않으므로 배열로 저장한다. 복원 시에는 저장된 뒤 삭제/이름변경된
 // 컬럼 키를 걸러내고, 숨길 수 없는 Name 컬럼은 항상 되살린다.
@@ -378,6 +379,9 @@ function ResultList({
   const hoverBoxRef = useRef<HTMLDivElement>(null);
   const scrollOffsetRef = useRef(0);
   const mouseYRef = useRef<number | null>(null);
+  const wrapTopRef = useRef<number | null>(null);
+  const hoverFrameRef = useRef<number | null>(null);
+  const lastScrollActivityRef = useRef(0);
   const tracksRef = useRef(tracks);
   tracksRef.current = tracks;
   // 드래그 시작 시점의 최신 선택을 읽기 위한 ref — 행 클로저에 selectedIds를 담으면
@@ -568,12 +572,19 @@ function ResultList({
   // scrollTo를 호출하면 정렬 방향이 바뀔 때마다 그 아이템의 절대 위치가 크게 달라져
   // 스크롤바가 오히려 위아래로 크게 움직이는 결과가 된다).
 
-  function indexAtY(clientY: number): number {
+  // 목록의 화면상 시작 위치는 스크롤과 무관하다. 포인터가 목록에 들어오거나
+  // 크기가 바뀔 때만 캐시해서, 스크롤 프레임에서 강제 레이아웃을 피한다.
+  function cacheWrapTop(): void {
     const wrap = wrapRef.current;
-    if (!wrap) return -1;
-    const rect = wrap.getBoundingClientRect();
+    if (wrap) wrapTopRef.current = wrap.getBoundingClientRect().top;
+  }
+
+  function indexAtY(clientY: number): number {
+    if (wrapTopRef.current === null) cacheWrapTop();
+    const wrapTop = wrapTopRef.current;
+    if (wrapTop === null) return -1;
     const idx = Math.floor(
-      (clientY - rect.top + scrollOffsetRef.current) / rowHeight,
+      (clientY - wrapTop + scrollOffsetRef.current) / rowHeight,
     );
     return idx >= 0 && idx < tracksRef.current.length ? idx : -1;
   }
@@ -588,13 +599,48 @@ function ResultList({
       return;
     }
     box.style.display = "block";
-    box.style.top = `${idx * rowHeight - scrollOffsetRef.current}px`;
+    // top 변경은 레이아웃을 다시 계산할 수 있으므로 합성 단계의 transform만 갱신한다.
+    box.style.transform = `translate3d(0, ${idx * rowHeight - scrollOffsetRef.current}px, 0)`;
+  }
+
+  function scheduleHoverBoxUpdate(): void {
+    if (hoverFrameRef.current !== null) return;
+    hoverFrameRef.current = requestAnimationFrame(() => {
+      hoverFrameRef.current = null;
+      updateHoverBox();
+    });
+  }
+
+  function handleListScroll(scrollOffset: number): void {
+    scrollOffsetRef.current = scrollOffset;
+    scheduleHoverBoxUpdate();
+
+    // 스크롤 프레임마다 IPC를 보내지 않고, 백필이 양보할 만큼만 활동을 알린다.
+    const now = performance.now();
+    if (now - lastScrollActivityRef.current < SCROLL_ACTIVITY_INTERVAL_MS)
+      return;
+    lastScrollActivityRef.current = now;
+    window.api?.noteListScroll();
   }
 
   useEffect(() => {
     updateHoverBox();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracks]);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    cacheWrapTop();
+    const observer = new ResizeObserver(cacheWrapTop);
+    observer.observe(wrap);
+    return () => {
+      observer.disconnect();
+      if (hoverFrameRef.current !== null) {
+        cancelAnimationFrame(hoverFrameRef.current);
+      }
+    };
+  }, []);
 
   function toggleColumn(key: string): void {
     if (key === "name") return; // Name은 항상 표시
@@ -770,9 +816,13 @@ function ResultList({
             <div
               ref={wrapRef}
               style={{ flex: 1, position: "relative" }}
+              onMouseEnter={() => {
+                cacheWrapTop();
+              }}
               onMouseDown={(e) => {
                 if (e.button !== 0) return;
                 const rect = wrapRef.current!.getBoundingClientRect();
+                wrapTopRef.current = rect.top;
                 if (rect.right - e.clientX < SCROLLBAR_GUARD) return;
                 const idx = indexAtY(e.clientY);
                 if (idx < 0) return;
@@ -816,13 +866,14 @@ function ResultList({
               }}
               onMouseMove={(e) => {
                 mouseYRef.current = e.clientY;
-                updateHoverBox();
+                scheduleHoverBoxUpdate();
               }}
               onMouseLeave={() => {
                 mouseYRef.current = null;
-                updateHoverBox();
+                scheduleHoverBoxUpdate();
               }}
               onContextMenu={(e) => {
+                cacheWrapTop();
                 const idx = indexAtY(e.clientY);
                 if (idx < 0) return;
                 e.preventDefault();
@@ -857,10 +908,9 @@ function ResultList({
                     itemKey={(index, data) => data.tracks[index].id}
                     overscanCount={12}
                     style={{ overflowX: "hidden" }}
-                    onScroll={({ scrollOffset }) => {
-                      scrollOffsetRef.current = scrollOffset;
-                      updateHoverBox();
-                    }}
+                    onScroll={({ scrollOffset }) =>
+                      handleListScroll(scrollOffset)
+                    }
                   >
                     {Row}
                   </FixedSizeList>
