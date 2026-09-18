@@ -64,9 +64,18 @@ export function registerUpdaterIpc(): void {
   // 렌더러가 나중에 붙어도(새로고침 등) 현재 상태를 알 수 있게 한다.
   ipcMain.handle("update:getState", () => lastState);
 
-  ipcMain.handle("update:check", () => {
-    if (!app.isPackaged) return { status: "none" } as UpdateState;
-    void autoUpdater.checkForUpdates().catch(() => {});
+  // 메뉴에서 부르는 수동 확인 — 결과를 토스트로 알려야 하므로 확인이 끝날 때까지 기다렸다가
+  // 최종 상태를 돌려준다. checkForUpdates()가 resolve된 시점엔 update-available /
+  // update-not-available 이벤트가 이미 lastState를 갱신해 둔 뒤다.
+  ipcMain.handle("update:check", async (): Promise<UpdateState> => {
+    if (!app.isPackaged)
+      return { status: "error", message: "개발 모드에서는 확인할 수 없습니다" };
+    try {
+      await autoUpdater.checkForUpdates();
+    } catch (err) {
+      // error 이벤트에서 lastState가 이미 error로 바뀌지만, 이벤트가 오지 않는 경로도 있다.
+      return { status: "error", message: (err as Error)?.message ?? String(err) };
+    }
     return lastState;
   });
 

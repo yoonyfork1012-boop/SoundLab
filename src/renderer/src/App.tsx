@@ -798,6 +798,23 @@ export default function App(): JSX.Element {
     }
   }
 
+  // Help ▸ Check for updates — 자동 확인(시작 10초 후 + 6시간 주기)을 기다리지 않고 지금 확인한다.
+  // 진행/설치 UI는 UpdateBanner가 담당하므로 여기서는 결과만 토스트로 알린다.
+  const handleCheckForUpdate = useStableCallback(async (): Promise<void> => {
+    if (!window.api) return;
+    showToast("업데이트 확인 중…");
+    const state = await window.api.checkForUpdate();
+    if (state.status === "available")
+      showToast(`새 버전 ${state.version} 내려받는 중…`);
+    else if (state.status === "downloading")
+      showToast(`새 버전 내려받는 중… ${state.percent}%`);
+    else if (state.status === "ready")
+      showToast(`새 버전 ${state.version} 준비 완료 — 상단 배너에서 설치하세요`);
+    else if (state.status === "error")
+      showToast(`업데이트 확인 실패: ${state.message}`);
+    else showToast("최신 버전입니다");
+  });
+
   async function handleShowInExplorer(library: Library): Promise<void> {
     await window.api?.showInExplorer(library.rootPath);
   }
@@ -1951,6 +1968,7 @@ export default function App(): JSX.Element {
         onShowShortcuts={() => setShowShortcuts(true)}
         onOpenPublisherSettings={() => setPublisherSettingsOpen(true)}
         onFindDuplicates={() => setDuplicatesOpen(true)}
+        onCheckForUpdate={handleCheckForUpdate}
         dockMode={dockMode}
         onUndock={handleToggleDockMode}
       />
