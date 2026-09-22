@@ -153,6 +153,7 @@ declare const api: {
   windowIsMaximized: () => Promise<boolean>;
   onWindowMaximized: (callback: (maximized: boolean) => void) => () => void;
   setDockMode: (on: boolean) => Promise<void>;
+  getAppVersion: () => Promise<string>;
   getUpdateState: () => Promise<UpdateState>;
   checkForUpdate: () => Promise<UpdateState>;
   installUpdate: () => void;

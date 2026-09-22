@@ -61,6 +61,9 @@ export function setupAutoUpdater(win: BrowserWindow): void {
 }
 
 export function registerUpdaterIpc(): void {
+  // 정보 창에 표시할 현재 버전. 패키징 전(dev)에는 package.json의 값이 그대로 온다.
+  ipcMain.handle("app:getVersion", () => app.getVersion());
+
   // 렌더러가 나중에 붙어도(새로고침 등) 현재 상태를 알 수 있게 한다.
   ipcMain.handle("update:getState", () => lastState);
 
@@ -74,7 +77,10 @@ export function registerUpdaterIpc(): void {
       await autoUpdater.checkForUpdates();
     } catch (err) {
       // error 이벤트에서 lastState가 이미 error로 바뀌지만, 이벤트가 오지 않는 경로도 있다.
-      return { status: "error", message: (err as Error)?.message ?? String(err) };
+      return {
+        status: "error",
+        message: (err as Error)?.message ?? String(err),
+      };
     }
     return lastState;
   });

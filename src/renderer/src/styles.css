@@ -3224,3 +3224,32 @@ button {
   background: var(--accent);
   color: var(--on-accent);
 }
+
+/* SoundLib 정보 창 — 버전과 업데이트 상태를 한 줄씩 */
+.about {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.about__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.about__row:last-child {
+  border-bottom: none;
+}
+.about__label {
+  flex-shrink: 0;
+  min-width: 80px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-bright);
+}
+.about__value {
+  font-size: 12px;
+  color: var(--text-dim);
+}

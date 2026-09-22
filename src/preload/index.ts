@@ -304,6 +304,7 @@ const api = {
     ipcRenderer.invoke("window:setDockMode", on),
 
   // 자동 업데이트
+  getAppVersion: (): Promise<string> => ipcRenderer.invoke("app:getVersion"),
   getUpdateState: (): Promise<UpdateState> =>
     ipcRenderer.invoke("update:getState"),
   checkForUpdate: (): Promise<UpdateState> =>

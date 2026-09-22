@@ -17,6 +17,7 @@ interface MenuBarProps {
   onOpenPublisherSettings: () => void;
   onFindDuplicates: () => void;
   onCheckForUpdate: () => void;
+  onShowAbout: () => void;
   dockMode?: boolean;
   onUndock?: () => void;
 }
@@ -30,6 +31,7 @@ export default function MenuBar({
   onOpenPublisherSettings,
   onFindDuplicates,
   onCheckForUpdate,
+  onShowAbout,
   dockMode = false,
   onUndock,
 }: MenuBarProps): JSX.Element {
@@ -153,7 +155,7 @@ export default function MenuBar({
       { separator: true },
       // 자동 확인은 6시간 주기라, 방금 올린 릴리스를 바로 받고 싶을 때 쓰는 수동 확인.
       { label: "Check for updates…", action: onCheckForUpdate },
-      { label: "SoundLib info", disabled: true },
+      { label: "SoundLib info", action: onShowAbout },
     ],
   };
 

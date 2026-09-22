@@ -14,6 +14,7 @@ import ColorPickerPopover from "./components/ColorPickerPopover/ColorPickerPopov
 import Toast from "./components/Toast/Toast";
 import UpdateBanner from "./components/UpdateBanner/UpdateBanner";
 import ShortcutsModal from "./components/ShortcutsModal/ShortcutsModal";
+import AboutModal from "./components/AboutModal/AboutModal";
 import PublisherSettingsModal from "./components/PublisherSettingsModal/PublisherSettingsModal";
 import BatchEditModal from "./components/BatchEditModal/BatchEditModal";
 import DuplicatesModal from "./components/DuplicatesModal/DuplicatesModal";
@@ -362,6 +363,7 @@ export default function App(): JSX.Element {
   const [playerHeight, setPlayerHeight] = useState(() =>
     loadNumber("soundlib.playerHeight", 140),
   );
+  const [showAbout, setShowAbout] = useState(false);
   const [sort, setSort] = useState<{ key: string | null; dir: "asc" | "desc" }>(
     () => loadJSON("soundlib.sort", { key: null, dir: "asc" }),
   );
@@ -809,7 +811,9 @@ export default function App(): JSX.Element {
     else if (state.status === "downloading")
       showToast(`새 버전 내려받는 중… ${state.percent}%`);
     else if (state.status === "ready")
-      showToast(`새 버전 ${state.version} 준비 완료 — 상단 배너에서 설치하세요`);
+      showToast(
+        `새 버전 ${state.version} 준비 완료 — 상단 배너에서 설치하세요`,
+      );
     else if (state.status === "error")
       showToast(`업데이트 확인 실패: ${state.message}`);
     else showToast("최신 버전입니다");
@@ -1652,6 +1656,16 @@ export default function App(): JSX.Element {
     !deferredFolder &&
     rootFolders.length > 0;
 
+  // 목록이 "다른 결과 집합"으로 바뀌었는지 판별하는 키. 검색어·폴더·컬렉션·별표 필터가
+  // 바뀌면 ResultList가 스크롤을 맨 위로 되돌린다. 정렬·셔플은 순서만 바꾸는 것이라 뺀다.
+  const resultScopeKey = [
+    deferredSearch.trim(),
+    deferredSubSearch.trim(),
+    deferredFolder ?? "",
+    deferredActiveCollection?.id ?? "",
+    showStarredOnly ? "starred" : "",
+  ].join(" ");
+
   const visibleTracks = useMemo(() => {
     // 탭이 없는 빈 워크스페이스에서는 아무 트랙도 없다. 렌더뿐 아니라 여기서 막아야
     // 재생 큐(next/prev)와 전체 선택(Ctrl+A)도 전체 라이브러리를 훑지 않는다.
@@ -1969,6 +1983,7 @@ export default function App(): JSX.Element {
         onOpenPublisherSettings={() => setPublisherSettingsOpen(true)}
         onFindDuplicates={() => setDuplicatesOpen(true)}
         onCheckForUpdate={handleCheckForUpdate}
+        onShowAbout={() => setShowAbout(true)}
         dockMode={dockMode}
         onUndock={handleToggleDockMode}
       />
@@ -2300,6 +2315,7 @@ export default function App(): JSX.Element {
                     sortKey={sort.key}
                     sortDir={sort.dir}
                     onSort={handleSort}
+                    resultScopeKey={resultScopeKey}
                     publisherRule={publisherRule}
                     previewedIds={previewedIds}
                     starredIds={starredIds}
@@ -2554,6 +2570,7 @@ export default function App(): JSX.Element {
         />
       )}
 
+      {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
       {showShortcuts && (
         <ShortcutsModal onClose={() => setShowShortcuts(false)} />
       )}
