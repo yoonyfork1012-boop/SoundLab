@@ -204,8 +204,11 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
+    // 종료 중에 아이콘을 다시 누르면 여기로 들어오는데, 그때 mainWindowRef는 이미 파괴된
+    // 창을 가리키고 있다(참조만 남는다). isDestroyed를 보지 않으면 그 창에 손대는 순간
+    // "Object has been destroyed"가 메인 프로세스에서 잡히지 않은 예외로 터진다.
     const win = mainWindowRef;
-    if (win) {
+    if (win && !win.isDestroyed()) {
       if (win.isMinimized()) win.restore();
       win.focus();
     }
@@ -238,6 +241,10 @@ if (!gotLock) {
       return;
     }
     mainWindowRef = mainWindow;
+    // 창이 닫히면 참조도 버린다. 남겨두면 second-instance/activate가 파괴된 창을 잡는다.
+    mainWindow.on("closed", () => {
+      if (mainWindowRef === mainWindow) mainWindowRef = null;
+    });
     registerUpdaterIpc();
     setupAutoUpdater(mainWindow);
 
