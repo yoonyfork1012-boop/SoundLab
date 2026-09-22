@@ -38,6 +38,9 @@ interface ResultListProps {
   onRemoveTrack?: (track: Track) => void;
   onNotify?: (message: string) => void;
   onBatchEdit?: () => void;
+  // 결과 집합 자체가 바뀌었음을 알리는 키(검색어·폴더·컬렉션). 값이 달라지면 목록을
+  // 맨 위로 되돌린다 — 정렬·셔플로 순서만 바뀌는 경우와 구분하기 위해 App이 만들어 준다.
+  resultScopeKey?: string;
 }
 
 const SCROLLBAR_GUARD = 14;
@@ -372,6 +375,7 @@ function ResultList({
   onRemoveTrack,
   onNotify,
   onBatchEdit,
+  resultScopeKey,
 }: ResultListProps): JSX.Element {
   const listRef = useRef<FixedSizeList>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -565,6 +569,15 @@ function ResultList({
     if (idx >= 0) listRef.current?.scrollToItem(idx, "smart");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTrackId]);
+
+  // 검색어·폴더·컬렉션이 바뀌면 결과가 통째로 다른 목록이므로 맨 위로 되돌린다.
+  // 이게 없으면 20,577건짜리 검색 결과의 한가운데에 스크롤이 남아, 관련도 1위가 화면
+  // 밖에 있는 채로 "검색이 엉뚱한 걸 찾아왔다"처럼 보인다(아래 주석의 정렬/셔플과 달리
+  // 여기서는 "화면에 보이던 행 위치"를 지킬 이유가 없다 — 그 행 자체가 사라졌다).
+  useEffect(() => {
+    listRef.current?.scrollTo(0);
+    scrollOffsetRef.current = 0;
+  }, [resultScopeKey]);
 
   // 정렬/셔플로 tracks 순서가 바뀌어도 scrollTop은 건드리지 않는다 — react-window는
   // itemData만 바뀔 뿐 스크롤 위치를 스스로 초기화하지 않으므로, 화면에 보이던 "행 위치"는
