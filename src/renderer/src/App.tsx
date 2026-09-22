@@ -1123,26 +1123,30 @@ export default function App(): JSX.Element {
   const handleRefreshLocalClick = useStableCallback((): void => {
     void handleRefreshAllLibraries();
   });
+  // 사이드바에서 무언가를 고르는 것은 "지금 보는 범위를 바꾼다"는 뜻이다. 검색어가 탭에
+  // 남아 있으면 visibleTracks가 검색을 우선해(querying이면 폴더·컬렉션 범위를 무시한다)
+  // 클릭해도 목록이 그대로다 — 그래서 범위를 바꿀 때 검색어와 서브검색을 함께 비운다.
   const handleSelectFolderFromSidebar = useStableCallback((p: string): void => {
-    setSelectedFolder(p);
-    setSelectedCollection(null);
+    patchActiveTab({ folder: p, collection: null, search: "" });
     setShowStarredOnly(false);
+    setSubSearch("");
   });
   const handleSelectCollectionFromSidebar = useStableCallback(
     (id: number): void => {
-      setSelectedCollection(id);
-      setSelectedFolder(null);
+      patchActiveTab({ collection: id, folder: null, search: "" });
       setShowStarredOnly(false);
+      setSubSearch("");
     },
   );
   const handleToggleStarredView = useStableCallback((): void => {
     setShowStarredOnly((v) => !v);
     setSelectedCollection(null);
+    patchActiveTab({ search: "" });
+    setSubSearch("");
   });
   const handleSelectLocalRoot = useStableCallback((): void => {
     // Local 클릭 = 최상위 진입점. 모든 선택 해제 + 폴더 그리드 화면으로
-    setSelectedFolder(null);
-    setSelectedCollection(null);
+    patchActiveTab({ folder: null, collection: null, search: "" });
     setShowStarredOnly(false);
     setSubSearch("");
     setView("grid");
@@ -2248,8 +2252,12 @@ export default function App(): JSX.Element {
                   <span
                     className={`breadcrumb__link${!selectedFolder && !activeCollection ? " breadcrumb__link--current" : ""}`}
                     onClick={() => {
-                      setSelectedFolder(null);
-                      setSelectedCollection(null);
+                      // 사이드바와 같은 이유로 검색어까지 비운다(범위 이동).
+                      patchActiveTab({
+                        folder: null,
+                        collection: null,
+                        search: "",
+                      });
                     }}
                   >
                     Home
@@ -2267,7 +2275,9 @@ export default function App(): JSX.Element {
                       <span className="breadcrumb__sep">/</span>
                       <span
                         className={`breadcrumb__link${i === crumbs.length - 1 ? " breadcrumb__link--current" : ""}`}
-                        onClick={() => setSelectedFolder(c.path)}
+                        onClick={() =>
+                          patchActiveTab({ folder: c.path, search: "" })
+                        }
                       >
                         {c.label}
                       </span>
