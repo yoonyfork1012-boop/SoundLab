@@ -210,6 +210,45 @@ export function deleteTrackByPath(filePath: string): void {
 
 // rename/move로 판별된 트랙의 경로만 갱신 — 콘텐츠(길이/샘플레이트 등 메타데이터)는 동일하므로
 // 재파싱 없이 경로/파일명/mtime/size만 바꾼다. 카테고리·퍼블리셔는 그대로 유지(사용자 수정 보존).
+/**
+ * 폴더 하나의 직속 트랙들에 폴더 커버 경로를 반영한다. 바뀐 행 수를 돌려준다.
+ *
+ * 스캔은 오디오 파일이 그대로면 그 트랙을 다시 분석하지 않는데, 아트워크 경로는 분석할
+ * 때만 기록된다. 그래서 나중에 폴더에 cover.png를 넣어도 화면에는 영영 나오지 않았다.
+ * 이 함수는 분석을 건너뛴 트랙의 아트워크 경로만 따로 맞춰 준다.
+ *
+ * 임베디드 아트워크(artwork_source='embedded')는 건드리지 않는다 — 파일 자체에 든 그림이
+ * 폴더 커버보다 그 트랙을 잘 나타낸다.
+ */
+export function syncFolderArtwork(
+  libraryId: number,
+  dir: string,
+  coverPath: string | null,
+): number {
+  // 하위 폴더까지 휩쓸지 않도록 "이 폴더 직속"만 고른다. 경로 구분자는 저장된 값에서
+  // 그대로 가져온다(플랫폼을 가정하지 않는다).
+  const sep = dir.includes("\\") ? "\\" : "/";
+  const base = dir.endsWith(sep) ? dir : dir + sep;
+  return run(
+    `UPDATE tracks SET artwork_path = ?, artwork_source = ?
+      WHERE library_id = ?
+        AND file_path >= ? AND file_path < ?
+        AND instr(substr(file_path, ?), ?) = 0
+        AND COALESCE(artwork_source, '') <> 'embedded'
+        AND COALESCE(artwork_path, '') <> COALESCE(?, '')`,
+    [
+      coverPath,
+      coverPath ? "folder" : null,
+      libraryId,
+      base,
+      base + "￿",
+      base.length + 1,
+      sep,
+      coverPath,
+    ],
+  ).changes;
+}
+
 export function updateTrackPathOnly(
   trackId: number,
   filePath: string,
@@ -1014,13 +1053,39 @@ const COOCCUR_SAMPLE = 4000;
 // 동반 낱말로 쓰기에 의미 없는 것들 — 번호·버전 꼬리표, 채널 표기, 제작사 약어 등.
 // 파일명에 압도적으로 흔해서 빼지 않으면 제안이 전부 이것들로 채워진다.
 const COOCCUR_STOPWORDS = new Set([
-  "wav", "aif", "aiff", "mp3", "flac", "ogg",
-  "mono", "stereo", "surr", "surround",
-  "take", "mix", "master", "final", "edit", "new", "old", "copy",
-  "the", "and", "for", "with",
+  "wav",
+  "aif",
+  "aiff",
+  "mp3",
+  "flac",
+  "ogg",
+  "mono",
+  "stereo",
+  "surr",
+  "surround",
+  "take",
+  "mix",
+  "master",
+  "final",
+  "edit",
+  "new",
+  "old",
+  "copy",
+  "the",
+  "and",
+  "for",
+  "with",
   // 모음이 있어 아래 모음 규칙을 통과하지만 뜻이 없는 라이브러리 꼬리표들
-  "sfx", "esm", "designed", "source", "var", "alt",
-  "one", "two", "single", "multi",
+  "sfx",
+  "esm",
+  "designed",
+  "source",
+  "var",
+  "alt",
+  "one",
+  "two",
+  "single",
+  "multi",
   // UCS 하위분류 기본값 — 거의 모든 트랙에 붙어 있어 조합으로 의미가 없다
   "general",
 ]);

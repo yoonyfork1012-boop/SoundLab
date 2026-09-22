@@ -82,6 +82,48 @@ beforeAll(async () => {
   writeFileSync(join(libRoot, "FX", "pending.wav.tmp"), wavBytes(50));
 });
 
+// 팩 커버는 오디오와 따로 채워 넣는 일이 많다(제작사 사이트에서 받아 폴더에 복사).
+// 오디오가 그대로면 스캔은 그 트랙을 다시 분석하지 않으므로, 커버만 따로 맞춰 주지
+// 않으면 화면에 영영 나오지 않는다. 앞 테스트들이 파일을 넣고 지워 상태가 얽히지 않도록
+// 전용 라이브러리 폴더에서 확인한다.
+describe("나중에 넣은 폴더 커버", () => {
+  let coverRoot: string;
+
+  beforeAll(() => {
+    coverRoot = mkdtempSync(join(tmpdir(), "soundlib-cover-lib-"));
+    mkdirSync(join(coverRoot, "Pack"), { recursive: true });
+    writeFileSync(join(coverRoot, "Pack", "a.wav"), wavBytes(120));
+    writeFileSync(join(coverRoot, "Pack", "b.wav"), wavBytes(240));
+  });
+
+  it("재분석 없이 아트워크만 반영하고, 두 번째 스캔에서는 다시 쓰지 않는다", async () => {
+    const queries = await import("../db/queries");
+    const inPack = () =>
+      queries.getAllTracks().filter((t) => t.filePath.startsWith(coverRoot));
+
+    const first = await scanner.scanLibrary(coverRoot);
+    expect(first.summary.added).toBe(2);
+    expect(inPack().every((t) => t.artworkPath === null)).toBe(true);
+
+    writeFileSync(join(coverRoot, "Pack", "cover.png"), Buffer.alloc(4096, 1));
+    const second = await scanner.scanLibrary(coverRoot);
+
+    // 오디오는 하나도 다시 분석하지 않았는데 아트워크만 붙는다
+    expect(second.summary.added).toBe(0);
+    expect(second.summary.updated).toBe(0);
+    expect(second.summary.artwork).toBe(2);
+    expect(inPack().every((t) => t.artworkPath?.endsWith("cover.png"))).toBe(
+      true,
+    );
+    expect(inPack().every((t) => t.artworkSource === "folder")).toBe(true);
+
+    // 값이 이미 같으면 한 행도 건드리지 않는다 — 51만 트랙에서 매 스캔마다
+    // 쓸데없는 UPDATE가 쏟아지지 않게 하는 조건이다.
+    const third = await scanner.scanLibrary(coverRoot);
+    expect(third.summary.artwork).toBe(0);
+  });
+});
+
 describe("scanLibrary 증분 인덱싱", () => {
   it("최초 스캔은 지원 오디오 파일만 인덱싱한다", async () => {
     const { summary } = await scanner.scanLibrary(libRoot);

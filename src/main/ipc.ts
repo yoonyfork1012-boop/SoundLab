@@ -79,7 +79,12 @@ export interface ScanResult {
 
 function scanResult(summary: ScanSummary): ScanResult {
   const changed =
-    summary.added + summary.updated + summary.moved + summary.removed > 0;
+    summary.added +
+      summary.updated +
+      summary.moved +
+      summary.removed +
+      summary.artwork >
+    0;
   return {
     libraries: getAllLibraries(),
     tracks: changed ? getAllTracks() : null,
@@ -95,9 +100,18 @@ function mergeSummaries(list: ScanSummary[]): ScanSummary {
       moved: acc.moved + s.moved,
       removed: acc.removed + s.removed,
       skipped: acc.skipped + s.skipped,
+      artwork: acc.artwork + s.artwork,
       errors: [...acc.errors, ...s.errors].slice(0, 200),
     }),
-    { added: 0, updated: 0, moved: 0, removed: 0, skipped: 0, errors: [] },
+    {
+      added: 0,
+      updated: 0,
+      moved: 0,
+      removed: 0,
+      skipped: 0,
+      artwork: 0,
+      errors: [],
+    },
   );
 }
 
@@ -189,13 +203,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return { libraries: getAllLibraries(), tracks: getAllTracks() };
   });
 
-  handle(
-    "library:rename",
-    (_event, libraryId: number, name: string) => {
-      renameLibrary(libraryId, name);
-      return getAllLibraries();
-    },
-  );
+  handle("library:rename", (_event, libraryId: number, name: string) => {
+    renameLibrary(libraryId, name);
+    return getAllLibraries();
+  });
 
   // "Scan for new files" — 디스크에서 사라진 파일은 건드리지 않고 새 파일만 추가하는
   // 비파괴 스캔. 변경 없는 파일은 폴더 mtime 프루닝으로 stat조차 하지 않는다.
@@ -299,17 +310,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // 의미 검색: 뜻이 가까운 트랙 id를 거리순으로. 키워드 검색을 대체하지 않고 보완한다.
-  handle(
-    "search:semantic",
-    async (_event, query: string, limit: number) => {
-      try {
-        return semanticSearchIds(await embedQuery(query), limit);
-      } catch (err) {
-        console.error("의미 검색 실패:", (err as Error)?.message);
-        return [];
-      }
-    },
-  );
+  handle("search:semantic", async (_event, query: string, limit: number) => {
+    try {
+      return semanticSearchIds(await embedQuery(query), limit);
+    } catch (err) {
+      console.error("의미 검색 실패:", (err as Error)?.message);
+      return [];
+    }
+  });
 
   // 렌더러가 응답을 기다리지 않는 부수 기록이라 handle이 아니라 on으로 받는다.
   // 여기서 던진 예외는 렌더러로 전달되지 않으므로 이 자리에서 삼킨다.
@@ -462,13 +470,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     renameCollection(id, name);
     return getCollections();
   });
-  handle(
-    "collections:setColor",
-    (_event, id: number, color: string | null) => {
-      setCollectionColor(id, color);
-      return getCollections();
-    },
-  );
+  handle("collections:setColor", (_event, id: number, color: string | null) => {
+    setCollectionColor(id, color);
+    return getCollections();
+  });
   handle(
     "collections:addTrack",
     (_event, collectionId: number, trackId: number) => {
@@ -608,20 +613,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // Waveform에서 선택한 구간만 잘라 만든 임시 오디오를 DAW로 드래그 아웃.
   // 드래그 제스처가 끊기지 않도록 파일 쓰기부터 startDrag까지 전부 동기로 처리.
   const dragExportDir = join(app.getPath("temp"), "soundlib-dragexports");
-  on(
-    "drag:startFromBuffer",
-    (event, bytes: Uint8Array, filename: string) => {
-      try {
-        if (!existsSync(dragExportDir))
-          mkdirSync(dragExportDir, { recursive: true });
-        const filePath = join(dragExportDir, filename);
-        writeFileSync(filePath, Buffer.from(bytes));
-        event.sender.startDrag({ file: filePath, icon: dragIcon });
-      } catch (err) {
-        console.error("drag:startFromBuffer failed:", (err as Error)?.message);
-      }
-    },
-  );
+  on("drag:startFromBuffer", (event, bytes: Uint8Array, filename: string) => {
+    try {
+      if (!existsSync(dragExportDir))
+        mkdirSync(dragExportDir, { recursive: true });
+      const filePath = join(dragExportDir, filename);
+      writeFileSync(filePath, Buffer.from(bytes));
+      event.sender.startDrag({ file: filePath, icon: dragIcon });
+    } catch (err) {
+      console.error("drag:startFromBuffer failed:", (err as Error)?.message);
+    }
+  });
 
   // 커스텀 타이틀바 창 제어
   on("window:minimize", () => mainWindow.minimize());

@@ -19,6 +19,7 @@ import {
   getTrackStatsByLibrary,
   replaceDirSnapshot,
   rollbackScanBatch,
+  syncFolderArtwork,
   updateTrackPathOnly,
   upsertLibrary,
   upsertTrack,
@@ -354,7 +355,15 @@ async function parseAndUpsert(
 }
 
 function emptySummary(): ScanSummary {
-  return { added: 0, updated: 0, moved: 0, removed: 0, skipped: 0, errors: [] };
+  return {
+    added: 0,
+    updated: 0,
+    moved: 0,
+    removed: 0,
+    skipped: 0,
+    artwork: 0,
+    errors: [],
+  };
 }
 
 function yieldToEventLoop(): Promise<void> {
@@ -412,6 +421,7 @@ export async function scanLibrary(
       moved: summary.moved,
       removed: summary.removed,
       skipped: summary.skipped,
+      artwork: summary.artwork,
       errors: summary.errors.length,
       libraryName: library.name,
     });
@@ -587,7 +597,26 @@ export async function scanLibrary(
         );
       }
 
-      // ── 4) 다음 증분 스캔을 위한 디렉터리 스냅샷 저장 ──
+      // ── 4) 폴더 커버 반영 ──
+      // 오디오 파일이 그대로면 위에서 재분석을 건너뛰는데, 그 경로로는 아트워크가 절대
+      // 갱신되지 않는다. 팩 커버는 오디오와 따로(제작사 사이트에서 받아 폴더에 넣는 식으로)
+      // 나중에 채워지는 일이 많아, 폴더 단위로 커버만 맞춰 준다. 폴더 수는 파일 수보다
+      // 두 자릿수 적어(51만 파일 : 1.1만 폴더) 비용이 붙지 않는다.
+      const dirs = [...walk.dirs.keys()];
+      for (let i = 0; i < dirs.length; i++) {
+        const dir = dirs[i];
+        if (!dirCoverCache.has(dir)) dirCoverCache.set(dir, findCoverInDir(dir));
+        summary.artwork += syncFolderArtwork(
+          library.id,
+          dir,
+          dirCoverCache.get(dir) ?? null,
+        );
+        if (i % YIELD_EVERY === 0) await yieldToEventLoop();
+        if (i % (PROGRESS_EVERY * 4) === 0)
+          report("finalizing", i + 1, dirs.length, dir);
+      }
+
+      // ── 5) 다음 증분 스캔을 위한 디렉터리 스냅샷 저장 ──
       // 오류가 하나라도 있었으면 스냅샷을 남기지 않는다 — 실패한 폴더가 "변경 없음"으로
       // 굳어져 다음 스캔에서 영영 건너뛰어지는 것을 막기 위함.
       if (summary.errors.length === 0) {

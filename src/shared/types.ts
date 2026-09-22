@@ -79,6 +79,10 @@ export interface ScanSummary {
   removed: number;
   // 변경이 없어 재분석을 건너뛴 파일 수(디렉터리 프루닝으로 stat조차 생략한 것 포함)
   skipped: number;
+  // 폴더 커버 이미지가 새로 생기거나 바뀌어 아트워크 경로만 갱신된 트랙 수. 오디오 파일이
+  // 그대로여도 커버는 나중에 채워 넣는 일이 많아(제작사 사이트에서 받아 폴더에 넣는다)
+  // 재분석과 별개로 센다.
+  artwork: number;
   // 손상/읽기 실패로 건너뛴 파일. 전체 인덱싱을 중단시키지 않고 여기에만 모인다.
   errors: { filePath: string; message: string }[];
 }
