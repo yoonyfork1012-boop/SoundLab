@@ -136,4 +136,15 @@ describe("의미 검색 (sqlite-vec)", () => {
     expect(emb.shouldYieldToUser(now + 3000)).toBe(true);
     expect(emb.shouldYieldToUser(now + 6000)).toBe(false);
   });
+
+  // 백필은 배치마다 이 쿼리를 다시 돈다. 커서(t.id > ?)가 tracks의 기본키 범위 탐색으로
+  // 이어지지 않고 처음부터 훑으면, 51만 건에서 배치마다 1~2초씩 메인 스레드를 막는다.
+  it("백필 배치 조회는 id 커서로 기본키 범위를 탄다", () => {
+    const plan = db
+      .getDb()
+      .prepare(`EXPLAIN QUERY PLAN ${emb.PICK_MISSING_SQL}`)
+      .all(0, 16) as { detail: string }[];
+    const detail = plan.map((r) => r.detail).join(" | ");
+    expect(detail).toMatch(/SEARCH t USING INTEGER PRIMARY KEY \(rowid>\?\)/);
+  });
 });

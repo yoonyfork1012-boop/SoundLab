@@ -163,6 +163,13 @@ const MISSING_VECTOR_JOIN = `
   FROM tracks t LEFT JOIN tracks_vec v ON v.rowid = t.id
   WHERE v.rowid IS NULL`;
 
+// 백필 배치 고르기 — id 커서로 이어서 고른다. 커서 없이 매번 처음부터 고르면, 앞쪽의 이미
+// 임베딩된 수십만 행을 배치마다 vec0 가상 테이블로 하나씩 다시 확인하느라 한 번에 1~2초씩
+// 메인 스레드를 막는다(51만 건 DB 실측). 커서를 쓰면 그 건너뛰기는 첫 배치 한 번뿐이다.
+// 쿼리 플랜 테스트(semanticSearch.test.ts)로 고정돼 있다.
+export const PICK_MISSING_SQL = `SELECT t.id, t.filename, t.category, t.subcategory
+  ${MISSING_VECTOR_JOIN} AND t.id > ? ORDER BY t.id LIMIT ?`;
+
 /** 임베딩이 아직 없는 트랙 수 */
 export function pendingEmbedCount(): number {
   return getDb()
@@ -186,13 +193,7 @@ export async function backfillEmbeddings(
     const total = pendingEmbedCount();
     if (total === 0) return;
 
-    // id 커서로 이어서 고른다. 커서 없이 매번 처음부터 고르면, 앞쪽의 이미 임베딩된 수십만 행을
-    // 배치마다 vec0 가상 테이블로 하나씩 다시 확인하느라 한 번에 1~2초씩 메인 스레드를 막는다
-    // (51만 건 DB 실측). 커서를 쓰면 그 건너뛰기는 첫 배치 한 번뿐이다.
-    const pick = d.prepare(
-      `SELECT t.id, t.filename, t.category, t.subcategory
-       ${MISSING_VECTOR_JOIN} AND t.id > ? ORDER BY t.id LIMIT ?`,
-    );
+    const pick = d.prepare(PICK_MISSING_SQL);
     const insert = d.prepare(
       "INSERT INTO tracks_vec(rowid, embedding) VALUES (?, vec_int8(?))",
     );

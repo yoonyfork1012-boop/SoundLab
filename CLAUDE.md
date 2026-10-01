@@ -1,7 +1,6 @@
 이 프로젝트는 Soundly(getsoundly.com)를 벤치마킹한 1인용 로컬 사운드 라이브러리
 데스크탑 앱입니다. 클라우드/계정/구독 기능은 절대 추가하지 마세요.
 
-- 스택: Electron + React + TypeScript + SQLite(better-sqlite3), 빌드는 electron-vite
 - UI는 PROJECT_SPEC.md의 3단 레이아웃(좌측 사이드바/중앙 리스트/우측 메타데이터,
   하단 플레이어)을 그대로 따릅니다.
 - 다크 테마 기본, 카테고리별 색상 매핑 사용.
@@ -18,14 +17,28 @@
 
 ## 현재 상태
 
-- Phase 1 진행 중: 폴더 스캔 → SQLite 인덱싱 → 리스트뷰 → 클릭 재생 + 웨이브폼
+- PROJECT_SPEC 8절 로드맵 Phase 1~7 구현 완료. 현재는 성능·검색 품질 개선 단계.
 
-## 폴더 구조
+## 성능 유지 규칙 (2026-10 실측 기반, 53만 트랙·1.3만 폴더)
 
-```
-src/
-├── main/         # Electron main process (db, scanner, ipc)
-├── preload/      # contextBridge API
-├── renderer/     # React UI
-└── shared/       # 공통 타입, 상수 (UCS 카테고리 등)
-```
+시작 속도와 렉을 다시 나빠지게 만든 원인들이다. 관련 코드를 고칠 때 아래를 지키고,
+지키는지는 테스트(`npm test`)가 잡는다 — 테스트가 깨지면 고치지 말고 원인부터 본다.
+
+- **폴더 단위 쿼리는 `file_path` 범위 인덱스를 타야 한다.** `library_id`와 함께 쓰면 플래너가
+  `idx_tracks_library`를 골라 폴더마다 라이브러리 전체를 훑는다(폴더당 0.4초 → 시작 시 1시간 가까이
+  메인 스레드 점유). `+library_id`로 막는다. 플랜 테스트: `scanLibrary.test.ts`.
+- **임베딩 백필은 id 커서로 이어서 고른다**(`PICK_MISSING_SQL`). 매번 처음부터 고르면 배치마다
+  1~2초씩 막힌다. 플랜 테스트: `semanticSearch.test.ts`.
+- **시작 시 전체 트랙은 `app:loadAll`로 배열 행 JSON 문자열(shared/packedTracks) 하나로 넘긴다.**
+  객체 배열로 넘기면 IPC 복제 + contextBridge 재복사로 14초(지금 4초). 열을 추가하면
+  `PACKED_TRACK_COLUMNS`·`unpackTrack`도 같이 고친다 — 동등성 테스트가 잡는다.
+- **창은 `loadAll`이 끝나야 뜬다.** 그 앞에 메인 프로세스 동기 작업을 끼워 넣지 않는다
+  (`loadTree`는 `loadAll` 실패 시에만 부른다).
+- **quick_check는 비정상 종료 뒤에만 한다**(`clean-shutdown` 표시). 종료 경로(`closeDb`)에서
+  표시를 남기는 순서를 바꾸지 않는다. 종료 경로의 예외는 삼켜서 `app.quit()`에 반드시 닿게 한다
+  — 못 닿으면 창 없는 프로세스가 single-instance lock을 쥐고 남아 앱이 아예 안 켜진다.
+- **스캔은 폴더를 병렬로 훑고(`WALK_CONCURRENCY`), 커버는 훑으며 읽은 목록을 재사용한다.**
+  메인 프로세스에서 폴더마다 `readdirSync` 같은 동기 I/O를 다시 돌리지 않는다.
+- **새 기능이 시작 경로나 스캔 경로에 쿼리를 추가하면** 실제 DB(`~/.soundlib/soundlib.db`, 읽기
+  전용)로 `EXPLAIN QUERY PLAN`과 소요 시간을 확인하고, 행 수에 비례해 폴더/배치마다 반복되는
+  풀스캔이 없는지 본다. 느려짐이 의심되면 `--inspect`로 메인 프로세스를 프로파일링한다.
