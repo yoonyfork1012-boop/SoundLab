@@ -7,13 +7,15 @@ const { autoUpdater } = electronUpdater;
 
 // 앱을 켜둔 채로 며칠 쓰는 경우가 있어 시작 시 한 번만 보지 않고 주기적으로 다시 확인한다.
 const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-// 시작 직후는 인덱싱/스캔으로 가장 바쁜 구간이라 업데이트 확인은 조금 미룬다.
-const FIRST_CHECK_DELAY_MS = 10_000;
+// 첫 확인은 창이 실제로 보인 뒤(startUpdateChecks) 잠깐 있다가 한다 — 결과를 상단에 알리므로
+// 창이 뜨기 전에 확인이 끝나 버리면 사용자가 그 알림을 못 본다.
+const FIRST_CHECK_DELAY_MS = 3_000;
 
 let lastState: UpdateState = { status: "none" };
 let timer: NodeJS.Timeout | null = null;
 // 사용자가 상단 배너에서 "지금 업데이트"를 눌렀는가 — 그랬다면 다 받는 즉시 설치한다.
 let installWhenDownloaded = false;
+let check: (() => void) | null = null;
 
 function send(win: BrowserWindow, state: UpdateState): void {
   lastState = state;
@@ -49,7 +51,7 @@ export function setupAutoUpdater(win: BrowserWindow): void {
     send(win, { status: "error", message: err?.message ?? String(err) });
   });
 
-  const check = (): void => {
+  check = (): void => {
     // 받는 중이거나 다 받은 뒤에 다시 확인하면 상태가 checking으로 덮여 배너가 사라진다.
     if (lastState.status === "downloading" || lastState.status === "ready")
       return;
@@ -58,12 +60,18 @@ export function setupAutoUpdater(win: BrowserWindow): void {
     });
   };
 
-  setTimeout(check, FIRST_CHECK_DELAY_MS);
-  timer = setInterval(check, RECHECK_INTERVAL_MS);
   win.on("closed", () => {
     if (timer) clearInterval(timer);
     timer = null;
   });
+}
+
+/** 메인 창이 사용자에게 보인 뒤 부른다. 첫 확인 후 6시간마다 다시 확인한다. */
+export function startUpdateChecks(): void {
+  const run = check;
+  if (!run || timer) return; // 개발 모드이거나 이미 시작함
+  setTimeout(run, FIRST_CHECK_DELAY_MS);
+  timer = setInterval(run, RECHECK_INTERVAL_MS);
 }
 
 export function registerUpdaterIpc(): void {

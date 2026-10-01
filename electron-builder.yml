@@ -1,4 +1,8 @@
 appId: com.soundlib.app
+# 앱 표시 이름은 ULIM이지만 productName은 SoundLib로 둔다 — 설치 폴더(Program Files\SoundLib)·
+# 실행 파일 이름·사용자 데이터 위치가 여기서 정해져, 바꾸면 기존 설치본의 자동 업데이트가
+# 다른 경로로 깔리고 라이브러리 설정이 끊긴다. 사용자에게 보이는 이름은 아래 nsis/artifact와
+# 창 제목·메뉴바에서 ULIM으로 바꿨다.
 productName: SoundLib
 directories:
   output: release
@@ -45,7 +49,7 @@ win:
       arch:
         - x64
 portable:
-  artifactName: SoundLib-${version}-portable.exe
+  artifactName: ULIM-${version}-portable.exe
 nsis:
   # 클릭 한 번짜리 설치가 아니라 일반적인 설치 마법사(Next/Install/Finish) 형태
   oneClick: false
@@ -54,6 +58,6 @@ nsis:
   allowToChangeInstallationDirectory: false
   createDesktopShortcut: always
   createStartMenuShortcut: true
-  shortcutName: SoundLib
-  uninstallDisplayName: SoundLib
-  artifactName: SoundLib-${version}-setup.exe
+  shortcutName: ULIM
+  uninstallDisplayName: ULIM
+  artifactName: ULIM-${version}-setup.exe

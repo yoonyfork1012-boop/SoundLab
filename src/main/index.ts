@@ -6,7 +6,11 @@ import { registerIpcHandlers, runStartupReconcile } from "./ipc";
 import { closeDb, flushPersist, initDb } from "./db";
 import { getAllLibraries } from "./db/queries";
 import { startWatching, stopAllWatching } from "./watcher";
-import { registerUpdaterIpc, setupAutoUpdater } from "./updater";
+import {
+  registerUpdaterIpc,
+  setupAutoUpdater,
+  startUpdateChecks,
+} from "./updater";
 import { backfillEmbeddings } from "./embedder";
 
 // 클릭→IPC 파일읽기→디코딩 사이 비동기 대기로 사용자 제스처가 만료되어
@@ -29,6 +33,8 @@ const ICON_DATA_URL = (() => {
 
 // data: URL로 띄우는 최소 스플래시 창 — 별도 빌드 산출물 없이 메인 프로세스
 // 번들 안에만 존재해서, DB 로딩 등 무거운 초기화 작업 중에도 항상 즉시 뜬다.
+// 스피너·"Loading" 문구 없이 브랜드만 보여준다. 배경의 파동선은 로고 컨셉(울림의 파동)을
+// 옅게 흘려 멈춘 화면처럼 보이지 않게 하는 장식이다.
 const SPLASH_HTML = `<!doctype html>
 <html>
 <head>
@@ -36,58 +42,67 @@ const SPLASH_HTML = `<!doctype html>
 <style>
   html, body { margin: 0; height: 100%; background: transparent; }
   body {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    height: 100%; -webkit-app-region: drag;
-    background: #0e0f11; color: #e7e9ea;
-    font-family: -apple-system, "Segoe UI", sans-serif;
-    border: 1px solid #2a2c30; border-radius: 10px; overflow: hidden;
-    box-sizing: border-box;
+    position: relative; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; height: 100%; -webkit-app-region: drag; overflow: hidden;
+    box-sizing: border-box; border-radius: 14px; border: 1px solid rgba(148, 163, 184, 0.14);
+    background:
+      radial-gradient(70% 60% at 50% 38%, rgba(99, 102, 241, 0.28), transparent 70%),
+      radial-gradient(50% 40% at 64% 30%, rgba(34, 211, 238, 0.14), transparent 70%),
+      #0B0F1A;
+    color: #F8FAFC; font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif;
   }
-  .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
-  .brand-logo { width: 22px; height: 22px; border-radius: 6px; display: block; }
-  .brand-dot { width: 10px; height: 10px; border-radius: 50%; background: #a3e3c1; }
-  .brand-name { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
-  .spinner {
-    width: 26px; height: 26px; border-radius: 50%;
-    border: 2.5px solid rgba(163, 227, 193, 0.25); border-top-color: #a3e3c1;
-    animation: spin 0.8s linear infinite; margin-bottom: 14px;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .loading { font-size: 12px; color: #8a8f94; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 6px; }
-  .status { font-size: 12.5px; color: #c7cacd; min-height: 16px; text-align: center; padding: 0 24px; }
-  .error { display: none; flex-direction: column; align-items: center; padding: 0 24px; }
+  .waves { position: absolute; inset: auto -40% -6% -40%; height: 60%; opacity: 0.5; }
+  .waves path { fill: none; stroke-width: 1; animation: drift 9s ease-in-out infinite alternate; }
+  .waves path:nth-child(2) { animation-duration: 12s; }
+  .waves path:nth-child(3) { animation-duration: 15s; }
+  @keyframes drift { from { transform: translateX(-6%); } to { transform: translateX(6%); } }
+  .center { position: relative; display: flex; flex-direction: column; align-items: center;
+    animation: rise 0.7s cubic-bezier(.2,.7,.2,1) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  .logo { width: 64px; height: 64px; display: block; margin-bottom: 18px;
+    filter: drop-shadow(0 10px 28px rgba(99, 102, 241, 0.45)); }
+  .word { font-size: 26px; font-weight: 600; letter-spacing: 0.42em; margin-right: -0.42em; }
+  .tag { margin-top: 8px; font-size: 9.5px; letter-spacing: 0.36em; margin-right: -0.36em; color: #94A3B8; }
+  .ver { position: absolute; bottom: 14px; font-size: 10px; letter-spacing: 0.08em; color: rgba(148, 163, 184, 0.6); }
+  .error { display: none; flex-direction: column; align-items: center; padding: 0 28px; margin-top: 18px; }
   .error.show { display: flex; }
   .error-msg {
-    font-size: 12px; color: #e29a9a; white-space: pre-wrap; text-align: center;
-    max-height: 90px; overflow-y: auto; margin-bottom: 14px;
+    font-size: 11.5px; color: #FCA5A5; white-space: pre-wrap; text-align: center;
+    max-height: 70px; overflow-y: auto; margin-bottom: 12px;
   }
   .quit-btn {
     -webkit-app-region: no-drag;
-    background: #2a2c30; color: #e7e9ea; border: 1px solid #3a3d42; border-radius: 6px;
-    font-size: 12px; padding: 6px 16px; cursor: pointer;
+    background: rgba(148, 163, 184, 0.12); color: #F8FAFC; border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 6px; font-size: 12px; padding: 6px 16px; cursor: pointer;
   }
-  .quit-btn:hover { background: #34373c; }
-  .normal { display: flex; flex-direction: column; align-items: center; }
+  .quit-btn:hover { background: rgba(148, 163, 184, 0.2); }
 </style>
 </head>
 <body>
-  <div class="brand">${ICON_DATA_URL ? `<img class="brand-logo" src="${ICON_DATA_URL}" />` : '<span class="brand-dot"></span>'}<span class="brand-name">SoundLib</span></div>
-  <div class="normal" id="normal">
-    <div class="spinner"></div>
-    <div class="loading">Loading...</div>
-    <div class="status" id="status">Starting up...</div>
+  <svg class="waves" viewBox="0 0 800 200" preserveAspectRatio="none" aria-hidden="true">
+    <defs>
+      <linearGradient id="w" x1="0" x2="1">
+        <stop offset="0" stop-color="#6366F1" stop-opacity="0" />
+        <stop offset="0.5" stop-color="#6366F1" />
+        <stop offset="1" stop-color="#22D3EE" stop-opacity="0" />
+      </linearGradient>
+    </defs>
+    <path stroke="url(#w)" d="M0 120 C 120 60 220 180 400 110 S 680 50 800 120" />
+    <path stroke="url(#w)" opacity="0.7" d="M0 140 C 140 90 260 190 420 130 S 660 80 800 140" />
+    <path stroke="url(#w)" opacity="0.45" d="M0 100 C 160 40 240 160 380 95 S 700 30 800 100" />
+  </svg>
+  <div class="center">
+    ${ICON_DATA_URL ? `<img class="logo" src="${ICON_DATA_URL}" />` : ""}
+    <div class="word">ULIM</div>
+    <div class="tag">SOUND. TOGETHER.</div>
+    <div class="error" id="error">
+      <div class="error-msg" id="errorMsg"></div>
+      <button class="quit-btn" onclick="window.close()">Quit</button>
+    </div>
   </div>
-  <div class="error" id="error">
-    <div class="error-msg" id="errorMsg"></div>
-    <button class="quit-btn" onclick="window.close()">Quit</button>
-  </div>
+  <div class="ver">v${app.getVersion()}</div>
   <script>
-    window.__setStatus = function (text) {
-      var el = document.getElementById('status')
-      if (el) el.textContent = text
-    }
     window.__setError = function (message) {
-      document.getElementById('normal').style.display = 'none'
       document.getElementById('error').classList.add('show')
       var el = document.getElementById('errorMsg')
       if (el) el.textContent = message
@@ -103,8 +118,8 @@ let startupComplete = false;
 
 async function createSplashWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
-    width: 380,
-    height: 220,
+    width: 440,
+    height: 280,
     frame: false,
     resizable: false,
     movable: true,
@@ -125,15 +140,6 @@ async function createSplashWindow(): Promise<BrowserWindow> {
   );
   await shown;
   return win;
-}
-
-function setSplashStatus(text: string): void {
-  if (!splashWindow || splashWindow.isDestroyed()) return;
-  splashWindow.webContents
-    .executeJavaScript(
-      `window.__setStatus && window.__setStatus(${JSON.stringify(text)})`,
-    )
-    .catch(() => {});
 }
 
 function setSplashError(message: string): void {
@@ -227,7 +233,6 @@ if (!gotLock) {
     splashWindow = await createSplashWindow();
 
     try {
-      setSplashStatus("Loading metadata cache...");
       await initDb();
     } catch (err) {
       // 시작 실패(예: 패키지에 네이티브 리소스 누락)를 조용히 삼키지 않고 스플래시에 표시.
@@ -237,8 +242,6 @@ if (!gotLock) {
       );
       return;
     }
-
-    setSplashStatus("Loading sound library...");
 
     let mainWindow: BrowserWindow;
     try {
@@ -276,6 +279,7 @@ if (!gotLock) {
     ipcMain.once("app:renderer-ready", () => {
       rendererReady = true;
       tryReveal();
+      startUpdateChecks();
       // 앱이 꺼져 있는 동안 폴더에서 일어난 변경을 백그라운드로 따라잡는다. 창이 이미
       // 보인 뒤에 시작하므로 사용자는 기다리지 않고, 변경이 없으면 폴더 mtime 확인만
       // 하고 곧바로 끝난다(전체 재인덱싱이 아니다).
@@ -316,6 +320,7 @@ if (!gotLock) {
     setTimeout(() => {
       rendererReady = true;
       tryReveal();
+      startUpdateChecks();
     }, 120000);
 
     app.on("activate", () => {

@@ -430,9 +430,11 @@ export default function App(): JSX.Element {
   // 진행 ?�벤?��? ?�면(?�동 ?�캔?�든 백그?�운??감시 ?�스캔이?? ?�덱???�시�?켠다
   useEffect(() => {
     if (!window.api?.onScanProgress) return;
+    // 진행 표시(Indexing 링)는 사용자가 직접 시작한 스캔에서만 켠다 — 그쪽 핸들러가 먼저
+    // setScanning(true)를 한다. 시작 시 동기화·폴더 감시처럼 백그라운드에서 도는 스캔은
+    // 아이콘 없이 조용히 끝내고, 바뀐 게 있으면 완료 토스트로만 알린다.
     return window.api.onScanProgress((p) => {
       setScanProgress(p);
-      setScanning(true);
     });
   }, []);
 
@@ -685,9 +687,7 @@ export default function App(): JSX.Element {
     // 트리·컬렉션·전체 트랙이 모두 로드되고(→ 무거운 파생 인덱스 계산까지 이 렌더에 포함), 그
     // 렌더가 페인트된 뒤(double rAF)에만 창을 노출한다. 그래야 창이 열린 순간 이미 인덱싱이 끝나
     // 있어 버벅임이 없다. 어느 하나가 실패해도 finally로 반드시 노출한다(스플래시에 갇히지 않게).
-    Promise.all([loadCollectionsP, loadAllP]).finally(
-      notifyAfterPaint,
-    );
+    Promise.all([loadCollectionsP, loadAllP]).finally(notifyAfterPaint);
   }, []);
 
   const handleCreateCollection = useStableCallback((): void => {

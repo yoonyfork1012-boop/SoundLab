@@ -37,6 +37,11 @@ export default function MenuBar({
 }: MenuBarProps): JSX.Element {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [maximized, setMaximized] = useState(false);
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    void window.api?.getAppVersion().then(setVersion);
+  }, []);
   const barRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -61,7 +66,7 @@ export default function MenuBar({
       <div className="menubar menubar--dock">
         <div className="menubar__brand">
           <img className="menubar__brand-logo" src={logo} alt="" />
-          SoundLib
+          ULIM
         </div>
         <div className="menubar__spacer" />
         <button
@@ -155,7 +160,7 @@ export default function MenuBar({
       { separator: true },
       // 자동 확인은 6시간 주기라, 방금 올린 릴리스를 바로 받고 싶을 때 쓰는 수동 확인.
       { label: "Check for updates…", action: onCheckForUpdate },
-      { label: "SoundLib info", action: onShowAbout },
+      { label: "ULIM 정보", action: onShowAbout },
     ],
   };
 
@@ -169,7 +174,8 @@ export default function MenuBar({
     <div className="menubar" ref={barRef}>
       <div className="menubar__brand">
         <img className="menubar__brand-logo" src={logo} alt="" />
-        SoundLib
+        ULIM
+        {version && <span className="menubar__version">v{version}</span>}
       </div>
 
       <div className="menubar__menus">

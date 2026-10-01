@@ -60,7 +60,7 @@ export default function AboutModal({ onClose }: AboutModalProps): JSX.Element {
   return (
     <div className="modal-overlay" onMouseDown={onClose}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal__title">SoundLib 정보</div>
+        <div className="modal__title">ULIM 정보</div>
         <div className="about">
           <div className="about__row">
             <span className="about__label">버전</span>
