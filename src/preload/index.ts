@@ -31,8 +31,8 @@ const api = {
   scanLibrary: (rootPath: string): Promise<ScanResult> =>
     ipcRenderer.invoke("library:scan", rootPath),
 
-  loadAll: (): Promise<{ libraries: Library[]; tracks: Track[] }> =>
-    ipcRenderer.invoke("app:loadAll"),
+  // { libraries, tracks: PackedTrack[] }의 JSON 문자열 — 렌더러가 풀어 쓴다(main/ipc.ts 참고)
+  loadAllJson: (): Promise<string> => ipcRenderer.invoke("app:loadAll"),
 
   // 시작 시 사이드바 폴더 트리만 먼저 받아 즉시 그린다(전체 트랙은 loadAll로 백그라운드 로드).
   loadTree: (): Promise<{ libraries: Library[]; trees: LibraryTree[] }> =>
@@ -310,6 +310,7 @@ const api = {
   checkForUpdate: (): Promise<UpdateState> =>
     ipcRenderer.invoke("update:check"),
   installUpdate: (): void => ipcRenderer.send("update:install"),
+  downloadUpdate: (): void => ipcRenderer.send("update:download"),
   onUpdateState: (callback: (state: UpdateState) => void): (() => void) => {
     const listener = (
       _e: Electron.IpcRendererEvent,

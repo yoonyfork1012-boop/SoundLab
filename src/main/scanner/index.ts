@@ -28,7 +28,7 @@ import {
 import { runExclusive } from "../db/txLock";
 import { categoryFromFilename } from "../../shared/ucsCatId";
 import { classifySound } from "../../shared/soundTaxonomy";
-import { findCoverInDir } from "../artwork";
+import { findCoverInDir, pickCoverFromEntries } from "../artwork";
 import type {
   Library,
   ScanProgress,
@@ -89,7 +89,13 @@ interface WalkResult {
   dirs: Map<string, number>;
   /** 폴더 개수(진행 표시용) */
   dirCount: number;
+  /** 폴더별 커버 이미지 — 훑으며 읽은 목록에서 골라 둔다(다시 readdir하지 않게) */
+  covers: Map<string, string | null>;
 }
+
+// 폴더를 동시에 몇 개까지 읽을지. 하나씩 await하면 1만 3천 폴더에서 4~5초였고, 병렬로
+// 읽으면 1초 안쪽이다(NVMe 실측). 너무 높여도 libuv 스레드 풀(기본 4)에서 줄을 설 뿐이다.
+const WALK_CONCURRENCY = 16;
 
 // 폴더 트리를 훑으며 오디오 파일을 모은다.
 //
@@ -108,24 +114,22 @@ async function collectAudioFiles(
     prunedDirs: new Set(),
     dirs: new Map(),
     dirCount: 0,
+    covers: new Map(),
   };
 
-  async function walk(dir: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    result.dirCount++;
-
+  async function visit(dir: string, queue: string[]): Promise<void> {
     // 폴더당 stat 1회 — 파일당 1회에 비하면 무시할 수 있는 비용이다(폴더 수 ≪ 파일 수).
-    let dirMtime: number | null = null;
-    try {
-      dirMtime = (await stat(dir)).mtimeMs;
-    } catch {
-      /* mtime을 못 읽으면 프루닝하지 않고 정상 스캔한다(안전한 방향) */
-    }
+    // readdir과 동시에 건다. mtime을 못 읽으면 프루닝하지 않고 정상 스캔한다(안전한 방향).
+    const [entries, dirMtime] = await Promise.all([
+      readdir(dir, { withFileTypes: true }).catch(() => null),
+      stat(dir).then(
+        (s) => s.mtimeMs,
+        () => null,
+      ),
+    ]);
+    if (!entries) return;
+    result.dirCount++;
+    result.covers.set(dir, pickCoverFromEntries(dir, entries));
     if (dirMtime != null) result.dirs.set(dir, dirMtime);
     const pruned = prune && dirMtime != null && prevDirs.get(dir) === dirMtime;
     if (pruned) result.prunedDirs.add(dir);
@@ -133,7 +137,7 @@ async function collectAudioFiles(
     for (const entry of entries) {
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!isSkippedDir(entry.name)) await walk(fullPath);
+        if (!isSkippedDir(entry.name)) queue.push(fullPath);
       } else if (!pruned && isIndexableAudioFile(entry.name)) {
         result.files.push(fullPath);
       }
@@ -151,7 +155,32 @@ async function collectAudioFiles(
     }
   }
 
-  await walk(rootPath);
+  // 작업 큐 + 고정 개수 워커. 하위 폴더는 큐에 넣고, 워커는 큐가 빌 때까지 꺼내 읽는다.
+  // 큐가 비었어도 다른 워커가 아직 읽는 중이면 새 폴더가 더 생길 수 있으므로, 그 워커가
+  // 끝날 때까지 잠들었다가 다시 본다(돌면서 기다리면 CPU만 태운다).
+  const queue: string[] = [rootPath];
+  let active = 0;
+  let waiters: (() => void)[] = [];
+  async function worker(): Promise<void> {
+    for (;;) {
+      const dir = queue.pop();
+      if (dir === undefined) {
+        if (active === 0) return;
+        await new Promise<void>((resolve) => waiters.push(resolve));
+        continue;
+      }
+      active++;
+      try {
+        await visit(dir, queue);
+      } finally {
+        active--;
+        const wake = waiters;
+        waiters = [];
+        for (const w of wake) w();
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: WALK_CONCURRENCY }, worker));
   onProgress?.({
     phase: "discovering",
     scanned: result.files.length,
@@ -380,6 +409,7 @@ export interface ScanOptions {
   /** false면 디스크에서 사라진 파일을 인덱스에서 지우지 않는다("새 파일만 추가" 모드) */
   deleteMissing?: boolean;
   onProgress?: (progress: ScanProgress) => void;
+  shouldStop?: () => boolean;
 }
 
 /**
@@ -396,7 +426,16 @@ export async function scanLibrary(
   rootPath: string,
   options: ScanOptions = {},
 ): Promise<{ library: Library; summary: ScanSummary }> {
-  const { mode = "incremental", deleteMissing = true, onProgress } = options;
+  const {
+    mode = "incremental",
+    deleteMissing = true,
+    onProgress,
+    shouldStop,
+  } = options;
+  const stopIfRequested = (): void => {
+    if (shouldStop?.()) throw new Error("scan cancelled");
+  };
+  stopIfRequested();
   const name = rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
   const library = upsertLibrary(rootPath, name);
   const summary = emptySummary();
@@ -433,6 +472,7 @@ export async function scanLibrary(
     mode === "incremental",
     onProgress,
   );
+  stopIfRequested();
 
   // 이번에 실제로 검사한 파일 + 프루닝된 폴더에 있던 기존 파일 = "지금도 존재하는 파일".
   // 프루닝된 폴더의 것을 여기 넣지 않으면 아래 삭제 처리가 멀쩡한 트랙을 지워버린다.
@@ -464,6 +504,7 @@ export async function scanLibrary(
     } catch {
       /* stat 실패 시 변경 여부를 알 수 없으므로 항상 재분석 대상으로 둔다 */
     }
+    stopIfRequested();
     const prev = existingStats.get(filePath);
     const unchanged =
       mode === "incremental" &&
@@ -478,7 +519,10 @@ export async function scanLibrary(
     } else {
       toAdd.push({ filePath, fileStat });
     }
-    if (i % YIELD_EVERY === 0) await yieldToEventLoop();
+    if (i % YIELD_EVERY === 0) {
+      await yieldToEventLoop();
+      stopIfRequested();
+    }
     if (i % (PROGRESS_EVERY * 8) === 0)
       report("discovering", i + 1, walk.files.length, filePath);
   }
@@ -489,7 +533,7 @@ export async function scanLibrary(
     if (!present.has(filePath)) missing.set(filePath, row);
   }
 
-  const dirCoverCache = new Map<string, string | null>();
+  const dirCoverCache = new Map<string, string | null>(walk.covers);
   const onError = (filePath: string, message: string): void => {
     // 목록이 무한정 커지지 않도록 상한을 둔다(카운트는 errors.length가 아니라 별도 관리하지
     // 않고, 상한에 걸리면 그 이후 오류는 로그로만 남긴다).
@@ -527,6 +571,7 @@ export async function scanLibrary(
               matchedPath =
                 bucket.find((p) => missing.get(p)?.fileHash === hash) ?? null;
             }
+            stopIfRequested();
           }
           if (matchedPath) {
             const row = missing.get(matchedPath)!;
@@ -546,7 +591,10 @@ export async function scanLibrary(
           } else {
             stillNew.push(item);
           }
-          if (i % YIELD_EVERY === 0) await yieldToEventLoop();
+          if (i % YIELD_EVERY === 0) {
+            await yieldToEventLoop();
+            stopIfRequested();
+          }
         }
       } else {
         stillNew.push(...toAdd);
@@ -578,7 +626,11 @@ export async function scanLibrary(
           // 통째로 사라지면 안 되므로, 개별 파일 단위로 격리해 기록만 남기고 계속 진행한다.
           onError(filePath, (err as Error)?.message ?? "unknown error");
         }
-        if (i % YIELD_EVERY === 0) await yieldToEventLoop();
+        stopIfRequested();
+        if (i % YIELD_EVERY === 0) {
+          await yieldToEventLoop();
+          stopIfRequested();
+        }
         if (i % PROGRESS_EVERY === 0)
           report(
             "parsing",
@@ -605,13 +657,17 @@ export async function scanLibrary(
       const dirs = [...walk.dirs.keys()];
       for (let i = 0; i < dirs.length; i++) {
         const dir = dirs[i];
-        if (!dirCoverCache.has(dir)) dirCoverCache.set(dir, findCoverInDir(dir));
+        if (!dirCoverCache.has(dir))
+          dirCoverCache.set(dir, findCoverInDir(dir));
         summary.artwork += syncFolderArtwork(
           library.id,
           dir,
           dirCoverCache.get(dir) ?? null,
         );
-        if (i % YIELD_EVERY === 0) await yieldToEventLoop();
+        if (i % YIELD_EVERY === 0) {
+          await yieldToEventLoop();
+          stopIfRequested();
+        }
         if (i % (PROGRESS_EVERY * 4) === 0)
           report("finalizing", i + 1, dirs.length, dir);
       }

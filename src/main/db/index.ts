@@ -1,5 +1,12 @@
 import Database from "better-sqlite3";
-import { copyFileSync, existsSync, mkdirSync, renameSync } from "fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { open, type FileHandle } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
@@ -15,6 +22,9 @@ const DB_PATH = join(SOUNDLIB_DIR, "soundlib.db");
 // WAL 모드에서 DB는 세 파일이 한 세트다. 손상 파일을 치울 때 -wal/-shm을 남겨두면
 // 새로 만든 빈 DB에 옛 WAL이 그대로 붙어 다시 손상되거나 아예 열리지 않는다.
 const DB_SIDECARS = [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`];
+// 직전 실행이 DB를 정상적으로 닫았다는 표시. 있으면 시작 시 quick_check를 건너뛴다 —
+// 724MB DB에서 매번 3초가 걸렸고, 손상은 사실상 비정상 종료 뒤에만 생긴다.
+const CLEAN_SHUTDOWN_MARKER = join(SOUNDLIB_DIR, "clean-shutdown");
 
 let db: Database.Database | null = null;
 // sqlite-vec가 실제로 로드됐는가 — 실패해도 앱은 켜지고 키워드 검색은 그대로 동작한다.
@@ -34,10 +44,15 @@ function ensureDirs(): void {
 // quick_check는 integrity_check와 달리 인덱스 정합성을 건너뛰어 대용량 DB에서도 빠르다.
 function openWithRecovery(): Database.Database {
   let opened: Database.Database | null = null;
+  // 표시는 열자마자 지운다 — 이번 실행이 비정상 종료되면 다음 시작은 다시 검사한다.
+  const cleanLastTime = existsSync(CLEAN_SHUTDOWN_MARKER);
+  rmSync(CLEAN_SHUTDOWN_MARKER, { force: true });
   try {
     opened = new Database(DB_PATH);
-    const check = opened.pragma("quick_check", { simple: true });
-    if (check !== "ok") throw new Error(`quick_check: ${String(check)}`);
+    if (!cleanLastTime) {
+      const check = opened.pragma("quick_check", { simple: true });
+      if (check !== "ok") throw new Error(`quick_check: ${String(check)}`);
+    }
     return opened;
   } catch (err) {
     try {
@@ -447,14 +462,34 @@ export function schedulePersist(): void {
   // better-sqlite3는 매 UPDATE가 이미 WAL에 반영되어 있으므로 디바운스로 미룰 저장이 없다.
 }
 
+// 체크포인트는 WAL 크기를 줄이는 최적화일 뿐 데이터 보존과 무관하다(WAL 자체가 crash-safe).
+// 백그라운드 작업이 읽는 중이면 "database table is locked"로 실패하는데, 종료 경로에서 이
+// 예외가 새면 app.quit()에 못 닿아 창 없는 프로세스가 lock을 쥔 채 남는다 — 그래서 삼킨다.
 export function flushPersist(): void {
   if (!db) return;
-  db.pragma("wal_checkpoint(TRUNCATE)");
+  try {
+    db.pragma("wal_checkpoint(TRUNCATE)");
+  } catch (err) {
+    console.warn("WAL 체크포인트 건너뜀:", (err as Error)?.message);
+  }
 }
 
 export function closeDb(): void {
   if (!db) return;
+  const closing = db;
   flushPersist();
-  db.close();
-  db = null;
+  try {
+    closing.close();
+    db = null;
+    try {
+      writeFileSync(CLEAN_SHUTDOWN_MARKER, "");
+    } catch {
+      /* 표시를 못 남기면 다음 시작이 검사할 뿐이다 */
+    }
+  } catch (err) {
+    console.warn(
+      "DB 닫기 실패(프로세스 종료 시 OS가 정리):",
+      (err as Error)?.message,
+    );
+  }
 }

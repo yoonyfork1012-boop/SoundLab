@@ -54,6 +54,15 @@ export function findCoverInDir(dir: string): string | null {
   } catch {
     return null;
   }
+  return pickCoverFromEntries(dir, entries);
+}
+
+// 이미 읽어 둔 폴더 목록에서 커버를 고른다 — 스캔은 폴더를 훑으며 목록을 이미 갖고 있어,
+// 같은 폴더를 다시 readdirSync(메인 스레드 동기 I/O)하지 않으려고 따로 뺐다.
+export function pickCoverFromEntries(
+  dir: string,
+  entries: { name: string; isFile(): boolean }[],
+): string | null {
   const images = entries.filter(
     (e) => e.isFile() && IMG_EXT.has(extname(e.name).toLowerCase()),
   );

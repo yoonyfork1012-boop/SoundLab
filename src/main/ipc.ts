@@ -24,6 +24,7 @@ import {
 import {
   getAllLibraries,
   getAllTracks,
+  getAllTracksPacked,
   getTrackPathsByLibrary,
   getFolderTrackRows,
   removeTracksUnderFolder,
@@ -176,9 +177,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     } satisfies ScanResult;
   });
 
-  // 앱 시작 시 저장돼 있던 전체 라이브러리/트랙 로드
+  // 앱 시작 시 저장돼 있던 전체 라이브러리/트랙 로드. 객체 그대로 넘기면 53만 트랙에서
+  // IPC 구조화 복제 + contextBridge 재복사로 14초가 걸렸다 — 행을 배열(shared/packedTracks)로
+  // 담은 JSON 문자열 하나로 넘기고 렌더러가 풀어 쓴다(문자열은 두 경계를 사실상 복사 없이 통과한다).
   handle("app:loadAll", () => {
-    return { libraries: getAllLibraries(), tracks: getAllTracks() };
+    return JSON.stringify({
+      libraries: getAllLibraries(),
+      tracks: getAllTracksPacked(),
+    });
   });
 
   // 시작 시 사이드바를 즉시 그리기 위한 경량 로드 — 전체 트랙(모든 컬럼, 수백 MB)을 넘기지
@@ -669,16 +675,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 // 폴더 mtime 프루닝 덕에 변경이 없으면 폴더 stat만 하고 곧바로 끝난다.
 export async function runStartupReconcile(
   mainWindow: BrowserWindow,
+  shouldStop?: () => boolean,
 ): Promise<void> {
   const summaries: ScanSummary[] = [];
   for (const library of getAllLibraries()) {
-    if (mainWindow.isDestroyed()) return;
+    if (mainWindow.isDestroyed() || shouldStop?.()) return;
     try {
       const { summary } = await scanLibrary(library.rootPath, {
         onProgress: (progress) => {
           if (!mainWindow.isDestroyed())
             mainWindow.webContents.send("library:scanProgress", progress);
         },
+        shouldStop,
       });
       summaries.push(summary);
     } catch (err) {
@@ -689,7 +697,7 @@ export async function runStartupReconcile(
       );
     }
   }
-  if (mainWindow.isDestroyed()) return;
+  if (mainWindow.isDestroyed() || shouldStop?.()) return;
   const merged = mergeSummaries(summaries);
   const changed =
     merged.added + merged.updated + merged.moved + merged.removed > 0;

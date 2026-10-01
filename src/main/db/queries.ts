@@ -13,6 +13,10 @@ import type {
 } from "../../shared/types";
 import { SUPPORTED_EXTENSIONS } from "../../shared/audioFiles";
 import { UNCATEGORIZED } from "../../shared/soundTaxonomy";
+import {
+  PACKED_TRACK_COLUMNS,
+  type PackedTrack,
+} from "../../shared/packedTracks";
 import { synonymsOf, translateKoreanQuery } from "../../shared/koreanTerms";
 
 type SqlRow = Record<string, unknown>;
@@ -208,6 +212,16 @@ export function deleteTrackByPath(filePath: string): void {
   run("DELETE FROM tracks WHERE id = ?", [track.id]);
 }
 
+// `+library_id`: 단항 +로 idx_tracks_library를 못 쓰게 해 file_path 범위(UNIQUE 인덱스)를
+// 타게 한다. 안 그러면 플래너가 library_id 인덱스를 골라 폴더마다 라이브러리 전체를 훑는다
+// (47만 트랙·1만 폴더 실측: 폴더당 ~0.4초 → 시작 동기화가 메인 스레드를 한 시간 가까이 막음).
+export const SYNC_FOLDER_ARTWORK_SQL = `UPDATE tracks SET artwork_path = ?, artwork_source = ?
+  WHERE +library_id = ?
+    AND file_path >= ? AND file_path < ?
+    AND instr(substr(file_path, ?), ?) = 0
+    AND COALESCE(artwork_source, '') <> 'embedded'
+    AND COALESCE(artwork_path, '') <> COALESCE(?, '')`;
+
 // rename/move로 판별된 트랙의 경로만 갱신 — 콘텐츠(길이/샘플레이트 등 메타데이터)는 동일하므로
 // 재파싱 없이 경로/파일명/mtime/size만 바꾼다. 카테고리·퍼블리셔는 그대로 유지(사용자 수정 보존).
 /**
@@ -229,24 +243,16 @@ export function syncFolderArtwork(
   // 그대로 가져온다(플랫폼을 가정하지 않는다).
   const sep = dir.includes("\\") ? "\\" : "/";
   const base = dir.endsWith(sep) ? dir : dir + sep;
-  return run(
-    `UPDATE tracks SET artwork_path = ?, artwork_source = ?
-      WHERE library_id = ?
-        AND file_path >= ? AND file_path < ?
-        AND instr(substr(file_path, ?), ?) = 0
-        AND COALESCE(artwork_source, '') <> 'embedded'
-        AND COALESCE(artwork_path, '') <> COALESCE(?, '')`,
-    [
-      coverPath,
-      coverPath ? "folder" : null,
-      libraryId,
-      base,
-      base + "￿",
-      base.length + 1,
-      sep,
-      coverPath,
-    ],
-  ).changes;
+  return run(SYNC_FOLDER_ARTWORK_SQL, [
+    coverPath,
+    coverPath ? "folder" : null,
+    libraryId,
+    base,
+    base + "￿",
+    base.length + 1,
+    sep,
+    coverPath,
+  ]).changes;
 }
 
 export function updateTrackPathOnly(
@@ -364,6 +370,16 @@ export function getAllTracks(): Track[] {
   return selectRows(
     "SELECT * FROM tracks WHERE library_id IN (SELECT id FROM libraries) ORDER BY filename",
   ).map(rowToTrack);
+}
+
+// getAllTracks와 같은 행·순서를 객체 대신 배열(raw)로 — 시작 시 렌더러 전송용(shared/packedTracks).
+export function getAllTracksPacked(): PackedTrack[] {
+  return prep(
+    `SELECT ${PACKED_TRACK_COLUMNS.join(", ")} FROM tracks
+      WHERE library_id IN (SELECT id FROM libraries) ORDER BY filename`,
+  )
+    .raw()
+    .all() as PackedTrack[];
 }
 
 // 사이드바 폴더 트리 구성에만 필요한 최소 데이터(library_id, file_path)를 라이브러리별로

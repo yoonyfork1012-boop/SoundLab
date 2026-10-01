@@ -12,6 +12,8 @@ const FIRST_CHECK_DELAY_MS = 10_000;
 
 let lastState: UpdateState = { status: "none" };
 let timer: NodeJS.Timeout | null = null;
+// 사용자가 상단 배너에서 "지금 업데이트"를 눌렀는가 — 그랬다면 다 받는 즉시 설치한다.
+let installWhenDownloaded = false;
 
 function send(win: BrowserWindow, state: UpdateState): void {
   lastState = state;
@@ -22,9 +24,9 @@ export function setupAutoUpdater(win: BrowserWindow): void {
   // 개발 중에는 확인할 릴리스도, 교체할 설치본도 없다.
   if (!app.isPackaged) return;
 
-  // 다운로드는 자동으로 받되 설치는 사용자가 누를 때까지 미룬다 — 사운드를 듣고 있는
-  // 도중에 앱이 제멋대로 재시작하면 안 된다.
-  autoUpdater.autoDownload = true;
+  // 새 버전이 있으면 상단 배너로 알리기만 하고, 다운로드·설치는 사용자가 배너에서 누를 때
+  // 시작한다 — 사운드 작업 중에 대역폭을 쓰거나 앱이 제멋대로 재시작하면 안 된다.
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on("checking-for-update", () =>
@@ -37,9 +39,10 @@ export function setupAutoUpdater(win: BrowserWindow): void {
   autoUpdater.on("download-progress", (p) =>
     send(win, { status: "downloading", percent: Math.round(p.percent) }),
   );
-  autoUpdater.on("update-downloaded", (info) =>
-    send(win, { status: "ready", version: info.version }),
-  );
+  autoUpdater.on("update-downloaded", (info) => {
+    send(win, { status: "ready", version: info.version });
+    if (installWhenDownloaded) autoUpdater.quitAndInstall();
+  });
   autoUpdater.on("error", (err) => {
     // 네트워크가 없거나 릴리스가 아직 없을 때도 여기로 온다 — 앱 사용을 막을 이유는 없다.
     console.error("업데이트 확인 실패:", err?.message ?? String(err));
@@ -47,6 +50,9 @@ export function setupAutoUpdater(win: BrowserWindow): void {
   });
 
   const check = (): void => {
+    // 받는 중이거나 다 받은 뒤에 다시 확인하면 상태가 checking으로 덮여 배너가 사라진다.
+    if (lastState.status === "downloading" || lastState.status === "ready")
+      return;
     void autoUpdater.checkForUpdates().catch(() => {
       /* error 이벤트에서 이미 처리 */
     });
@@ -73,6 +79,8 @@ export function registerUpdaterIpc(): void {
   ipcMain.handle("update:check", async (): Promise<UpdateState> => {
     if (!app.isPackaged)
       return { status: "error", message: "개발 모드에서는 확인할 수 없습니다" };
+    if (lastState.status === "downloading" || lastState.status === "ready")
+      return lastState;
     try {
       await autoUpdater.checkForUpdates();
     } catch (err) {
@@ -83,6 +91,22 @@ export function registerUpdaterIpc(): void {
       };
     }
     return lastState;
+  });
+
+  // 상단 배너의 "지금 업데이트" — 받기 시작하고, 다 받으면 바로 재시작해 설치한다.
+  // 다운로드 실패(error 상태)에서 다시 누르는 경우도 같은 경로로 재시도한다.
+  ipcMain.on("update:download", () => {
+    if (!app.isPackaged) return;
+    if (lastState.status === "ready") {
+      autoUpdater.quitAndInstall();
+      return;
+    }
+    if (lastState.status !== "available" && lastState.status !== "error")
+      return;
+    installWhenDownloaded = true;
+    void autoUpdater.downloadUpdate().catch(() => {
+      installWhenDownloaded = false; // error 이벤트가 상태를 알린다
+    });
   });
 
   // 다운로드가 끝난 뒤에만 의미가 있다. perMachine 설치본이라 여기서 UAC 창이 뜬다.

@@ -23,10 +23,7 @@ declare const api: {
   isDirectory: (filePath: string) => Promise<boolean>;
   getPathForFile: (file: File) => string;
   scanLibrary: (rootPath: string) => Promise<ScanResult>;
-  loadAll: () => Promise<{
-    libraries: Library[];
-    tracks: Track[];
-  }>;
+  loadAllJson: () => Promise<string>;
   loadTree: () => Promise<{
     libraries: Library[];
     trees: LibraryTree[];
@@ -157,6 +154,7 @@ declare const api: {
   getUpdateState: () => Promise<UpdateState>;
   checkForUpdate: () => Promise<UpdateState>;
   installUpdate: () => void;
+  downloadUpdate: () => void;
   onUpdateState: (callback: (state: UpdateState) => void) => () => void;
 };
 export type SoundLibApi = typeof api;

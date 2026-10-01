@@ -45,6 +45,7 @@ import { applyAccent, loadAccent, saveAccent } from "./lib/theme";
 import { loadJSON, loadNumber, saveJSON, saveNumber } from "./lib/uiState";
 import { shuffleTracks, sortTracks } from "./components/ResultList/columns";
 import { DEFAULT_PUBLISHER_RULE } from "@shared/publisher";
+import { unpackTrack, type PackedTrack } from "@shared/packedTracks";
 import {
   buildSearchBlob,
   trackMatchesQuery,
@@ -646,20 +647,31 @@ export default function App(): JSX.Element {
     // 519k 트랙에서 파생되는 인덱스(trackKeys/searchBlobs/폴더트리)를 메인 스레드에서 한꺼번에
     // 동기 계산하면서 수 초간 프리즈(= 켜진 직후 "버벅임")가 발생했다. 이제는 아래 loadAll까지
     // 모두 끝나고 그 무거운 계산이 실제로 렌더·페인트된 뒤에야 창을 노출한다.
-    const loadTreeP = window.api
-      ?.loadTree()
-      .then(({ libraries, trees }) => {
-        setLibraries(libraries);
-        setServerTrees(trees);
-      })
-      .catch(() => {});
+    //
+    // 경량 트리(loadTree)는 loadAll이 실패했을 때만 받는다. 창은 어차피 loadAll이 끝나야
+    // 뜨므로 정상 경로에서는 화면에 보일 일이 없고, 메인이 그걸 먼저 처리하느라 loadAll이
+    // 1초 늦게 시작됐다(53만 트랙 실측).
+    const loadTree = (): Promise<void> | undefined =>
+      window.api
+        ?.loadTree()
+        .then(({ libraries, trees }) => {
+          setLibraries(libraries);
+          setServerTrees(trees);
+        })
+        .catch(() => {});
     const loadCollectionsP = window.api?.getCollections().then(setCollections);
 
     // 전체 트랙(리스트·검색·정렬용, 무거움)까지 로드해 tracks를 채우면, tracksLoaded가 true가
     // 되어 사이드바 트리가 tracks 파생 버전으로 전환되고 trackKeys/searchBlobs 인덱스가 만들어진다.
     const loadAllP = window.api
-      ?.loadAll()
-      .then(({ libraries, tracks }) => {
+      ?.loadAllJson()
+      .then((json) => {
+        const parsed = JSON.parse(json) as {
+          libraries: Library[];
+          tracks: PackedTrack[];
+        };
+        const { libraries } = parsed;
+        const tracks = parsed.tracks.map(unpackTrack);
         // 로드가 시작된 뒤 사용자가 라이브러리를 변경했다면(세대 != 0) 이 오래된 스냅샷은 버린다.
         // 트랙 리스트는 loadAll 완료 전까지 비어 있어 트랙 단위 변경은 이 구간에 불가능하므로,
         // 여기서 보호해야 하는 건 사이드바에서 일으킨 라이브러리 단위 변경뿐이다.
@@ -668,12 +680,12 @@ export default function App(): JSX.Element {
         setTracks(tracks);
         setTracksLoaded(true);
       })
-      .catch(() => {});
+      .catch(loadTree);
 
     // 트리·컬렉션·전체 트랙이 모두 로드되고(→ 무거운 파생 인덱스 계산까지 이 렌더에 포함), 그
     // 렌더가 페인트된 뒤(double rAF)에만 창을 노출한다. 그래야 창이 열린 순간 이미 인덱싱이 끝나
     // 있어 버벅임이 없다. 어느 하나가 실패해도 finally로 반드시 노출한다(스플래시에 갇히지 않게).
-    Promise.all([loadTreeP, loadCollectionsP, loadAllP]).finally(
+    Promise.all([loadCollectionsP, loadAllP]).finally(
       notifyAfterPaint,
     );
   }, []);
@@ -829,7 +841,9 @@ export default function App(): JSX.Element {
     showToast("업데이트 확인 중…");
     const state = await window.api.checkForUpdate();
     if (state.status === "available")
-      showToast(`새 버전 ${state.version} 내려받는 중…`);
+      showToast(
+        `새 버전 ${state.version} 이 있습니다 — 상단 배너에서 업데이트하세요`,
+      );
     else if (state.status === "downloading")
       showToast(`새 버전 내려받는 중… ${state.percent}%`);
     else if (state.status === "ready")

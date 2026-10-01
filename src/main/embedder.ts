@@ -186,31 +186,37 @@ export async function backfillEmbeddings(
     const total = pendingEmbedCount();
     if (total === 0) return;
 
+    // id 커서로 이어서 고른다. 커서 없이 매번 처음부터 고르면, 앞쪽의 이미 임베딩된 수십만 행을
+    // 배치마다 vec0 가상 테이블로 하나씩 다시 확인하느라 한 번에 1~2초씩 메인 스레드를 막는다
+    // (51만 건 DB 실측). 커서를 쓰면 그 건너뛰기는 첫 배치 한 번뿐이다.
     const pick = d.prepare(
       `SELECT t.id, t.filename, t.category, t.subcategory
-       ${MISSING_VECTOR_JOIN} LIMIT ?`,
+       ${MISSING_VECTOR_JOIN} AND t.id > ? ORDER BY t.id LIMIT ?`,
     );
     const insert = d.prepare(
       "INSERT INTO tracks_vec(rowid, embedding) VALUES (?, vec_int8(?))",
     );
 
     let done = 0;
+    let lastId = 0;
     for (;;) {
       if (shouldStop?.()) return;
       // 사용자가 검색을 치고 있으면 조용해질 때까지 비켜준다.
       await waitUntilUserIsIdle(shouldStop);
       if (shouldStop?.()) return;
-      const rows = pick.all(BATCH) as {
+      const rows = pick.all(lastId, BATCH) as {
         id: number;
         filename: string;
         category: string | null;
         subcategory: string | null;
       }[];
       if (rows.length === 0) return;
+      lastId = rows[rows.length - 1].id;
 
       const vecs = await embedBatch(
         rows.map((r) => "passage: " + embedText(r)),
       );
+      if (shouldStop?.()) return;
       // 배치 단위 트랜잭션 — 건건이 쓰면 51만 건에서 디스크가 병목이 된다.
       d.transaction(() => {
         rows.forEach((r, i) => {

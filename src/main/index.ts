@@ -98,6 +98,8 @@ const SPLASH_HTML = `<!doctype html>
 
 let splashWindow: BrowserWindow | null = null;
 let mainWindowRef: BrowserWindow | null = null;
+let isQuitting = false;
+let startupComplete = false;
 
 async function createSplashWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
@@ -207,11 +209,18 @@ if (!gotLock) {
     // 종료 중에 아이콘을 다시 누르면 여기로 들어오는데, 그때 mainWindowRef는 이미 파괴된
     // 창을 가리키고 있다(참조만 남는다). isDestroyed를 보지 않으면 그 창에 손대는 순간
     // "Object has been destroyed"가 메인 프로세스에서 잡히지 않은 예외로 터진다.
-    const win = mainWindowRef;
+    const win = mainWindowRef ?? splashWindow;
     if (win && !win.isDestroyed()) {
       if (win.isMinimized()) win.restore();
       win.focus();
+      return;
     }
+    // 시작 중(창 생성 전)이거나 이미 종료 중이면 그대로 둔다 — 여기서 quit하면 정상 기동 중인
+    // 앱을 꺼버린다. 기동을 마쳤는데 창이 하나도 없으면 창 없이 lock만 쥔 채 남은 상태라,
+    // 재시작해서 사용자가 누른 실행이 실제로 창을 띄우게 한다.
+    if (!startupComplete || isQuitting) return;
+    app.relaunch();
+    app.quit();
   });
 
   app.whenReady().then(async () => {
@@ -241,6 +250,7 @@ if (!gotLock) {
       return;
     }
     mainWindowRef = mainWindow;
+    startupComplete = true;
     // 창이 닫히면 참조도 버린다. 남겨두면 second-instance/activate가 파괴된 창을 잡는다.
     mainWindow.on("closed", () => {
       if (mainWindowRef === mainWindow) mainWindowRef = null;
@@ -270,7 +280,8 @@ if (!gotLock) {
       // 보인 뒤에 시작하므로 사용자는 기다리지 않고, 변경이 없으면 폴더 mtime 확인만
       // 하고 곧바로 끝난다(전체 재인덱싱이 아니다).
       setTimeout(() => {
-        if (!mainWindow.isDestroyed()) void runStartupReconcile(mainWindow);
+        if (!mainWindow.isDestroyed())
+          void runStartupReconcile(mainWindow, () => isQuitting);
       }, 1500);
 
       // 의미 검색용 임베딩을 백그라운드로 채운다. 스캔 따라잡기가 먼저 끝나도록 더
@@ -290,7 +301,7 @@ if (!gotLock) {
             if (!mainWindow.isDestroyed())
               mainWindow.webContents.send("embed:progress", p);
           },
-          () => mainWindow.isDestroyed(),
+          () => isQuitting || mainWindow.isDestroyed(),
         ).catch((err) => {
           // 임베딩이 실패해도 키워드 검색은 그대로 동작한다 — 앱을 막지 않는다.
           console.error("임베딩 생성 실패:", (err as Error)?.message);
@@ -317,11 +328,19 @@ if (!gotLock) {
 
   // 창이 없는 경로로 종료되더라도(트레이/강제 quit 등) 디바운스 대기 중인 DB 저장을 기록한다
   app.on("before-quit", () => {
+    isQuitting = true;
     flushPersist();
   });
 
   app.on("window-all-closed", () => {
-    stopAllWatching();
+    isQuitting = true;
+    // 정리 중 하나라도 예외가 나면 app.quit()에 못 닿아 창 없는 프로세스가 single-instance
+    // lock을 쥔 채 남고, 이후 실행이 전부 조용히 종료된다 — 정리는 실패해도 종료는 반드시 한다.
+    try {
+      stopAllWatching();
+    } catch (err) {
+      console.error("감시 중지 실패:", (err as Error)?.message);
+    }
     closeDb();
     // Waveform 구간 드래그로 만든 임시 오디오 파일 정리 (실패해도 무시)
     void rm(join(app.getPath("temp"), "soundlib-dragexports"), {

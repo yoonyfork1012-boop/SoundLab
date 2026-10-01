@@ -12,7 +12,7 @@ function describe(state: UpdateState): string {
     case "checking":
       return "확인 중…";
     case "available":
-      return `새 버전 ${state.version} — 내려받는 중…`;
+      return `새 버전 ${state.version} 사용 가능`;
     case "downloading":
       return `새 버전 내려받는 중… ${state.percent}%`;
     case "ready":
@@ -76,8 +76,9 @@ export default function AboutModal({ onClose }: AboutModalProps): JSX.Element {
           </div>
         </div>
         <div className="modal__desc">
-          업데이트는 앱을 켤 때와 6시간마다 자동으로 확인합니다. 새 버전을 다
-          받으면 상단 배너의 &quot;재시작하고 설치&quot;로 적용됩니다.
+          업데이트는 앱을 켤 때와 6시간마다 자동으로 확인합니다. 새 버전이
+          있으면 상단 배너의 &quot;지금 업데이트&quot;로 내려받고, 다 받으면
+          재시작해 설치합니다.
         </div>
         <div className="modal__actions">
           {state.status === "ready" ? (
@@ -86,6 +87,13 @@ export default function AboutModal({ onClose }: AboutModalProps): JSX.Element {
               onClick={() => window.api?.installUpdate()}
             >
               재시작하고 설치
+            </button>
+          ) : state.status === "available" ? (
+            <button
+              className="modal__btn modal__btn--primary"
+              onClick={() => window.api?.downloadUpdate()}
+            >
+              지금 업데이트
             </button>
           ) : (
             <button

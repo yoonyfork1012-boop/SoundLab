@@ -122,6 +122,42 @@ describe("나중에 넣은 폴더 커버", () => {
     const third = await scanner.scanLibrary(coverRoot);
     expect(third.summary.artwork).toBe(0);
   });
+
+  // 결과는 같아도 플래너가 library_id 인덱스를 고르면 폴더마다 라이브러리 전체를 훑는다
+  // (47만 트랙에서 시작 동기화가 한 시간 가까이 메인 스레드를 막았다). 플랜으로 고정한다.
+  it("폴더 커버 동기화는 file_path 범위 인덱스를 탄다", async () => {
+    const queries = await import("../db/queries");
+    const plan = db
+      .getDb()
+      .prepare(`EXPLAIN QUERY PLAN ${queries.SYNC_FOLDER_ARTWORK_SQL}`)
+      .all(null, null, 1, "/a/", "/a/￿", 4, "/", null) as {
+      detail: string;
+    }[];
+    const detail = plan.map((r) => r.detail).join(" | ");
+    expect(detail).toMatch(/file_path>\? AND file_path<\?/);
+    expect(detail).not.toMatch(/idx_tracks_library/);
+  });
+});
+
+// 폴더 훑기는 여러 폴더를 동시에 읽는다. 깊고 넓은 트리에서도 빠짐없이 모으고 끝나야 한다.
+describe("병렬 폴더 훑기", () => {
+  it("깊이·폭이 섞인 트리의 파일을 모두 찾는다", async () => {
+    const root = mkdtempSync(join(tmpdir(), "soundlib-walk-lib-"));
+    let expected = 0;
+    for (let a = 0; a < 5; a++)
+      for (let b = 0; b < 4; b++) {
+        const dir = join(root, `A${a}`, `B${b}`, "deep", "deeper");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, `s${a}${b}.wav`), wavBytes(64 + a * 4 + b));
+        expected++;
+      }
+    mkdirSync(join(root, "empty", "nested"), { recursive: true });
+    writeFileSync(join(root, "top.wav"), wavBytes(90));
+    expected++;
+
+    const { summary } = await scanner.scanLibrary(root);
+    expect(summary.added).toBe(expected);
+  });
 });
 
 describe("scanLibrary 증분 인덱싱", () => {
@@ -272,5 +308,31 @@ describe("오디오가 아닌 파일 걸러내기", () => {
     // 확장자대로 WAV로 다루면 여기가 통째로 null이 된다
     expect(row.sample_rate).toBe(44100);
     expect(row.channels).toBe(1);
+  });
+});
+
+// 시작 시 전송용 압축 형식(shared/packedTracks)은 getAllTracks와 똑같은 Track을 되살려야 한다.
+// 한쪽에만 열을 추가하면 여기서 깨진다.
+describe("압축 트랙 전송 형식", () => {
+  it("getAllTracksPacked + unpackTrack == getAllTracks", async () => {
+    const queries = await import("../db/queries");
+    const { unpackTrack } = await import("../../shared/packedTracks");
+    const [first, second] = queries.getAllTracks();
+    // JSON/불리언 필드가 빈 값이 아닐 때도 같아야 한다
+    queries.updateTrackMetadata(first.id, {
+      tags: ["impact", "metal"],
+      description: "desc",
+    });
+    queries.updateTrackMarkers(first.id, [0.25, 1.5]);
+    queries.toggleStarred(second.id);
+
+    const expected = queries.getAllTracks();
+    // 전송 경로 그대로 JSON 왕복까지 거친다
+    const packed = JSON.parse(JSON.stringify(queries.getAllTracksPacked()));
+    expect(packed.map(unpackTrack)).toEqual(expected);
+    expect(expected.find((t) => t.id === first.id)?.tags).toEqual([
+      "impact",
+      "metal",
+    ]);
   });
 });

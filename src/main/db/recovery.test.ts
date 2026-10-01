@@ -6,6 +6,7 @@ import {
   openSync,
   writeSync,
   closeSync,
+  existsSync,
 } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -72,5 +73,18 @@ describe("손상된 DB 복구", () => {
     // SQLite가 열기/닫기 과정에서 스스로 정리해 버려 무엇이 남는지가 타이밍을 탄다.
     // 그 코드가 실제로 필요한 상황은 프로세스가 죽어 -wal만 남은 경우인데,
     // 인프로세스 테스트로는 재현할 수 없다.
+  });
+
+  // 정상 종료 표시가 있으면 시작 시 quick_check(대용량 DB에서 수 초)를 건너뛴다. 표시는
+  // 열자마자 지워져, 이번 실행이 비정상 종료되면 다음 시작은 다시 검사한다.
+  it("정상 종료 표시를 남기고, 다음 시작에서 소비한다", async () => {
+    const dbModule = await import("./index");
+    const marker = join(SOUNDLIB_DIR, "clean-shutdown");
+    expect(existsSync(marker)).toBe(true); // 앞 테스트의 closeDb가 남긴 표시
+
+    await dbModule.initDb();
+    expect(existsSync(marker)).toBe(false);
+    dbModule.closeDb();
+    expect(existsSync(marker)).toBe(true);
   });
 });
