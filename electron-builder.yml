@@ -58,6 +58,8 @@ nsis:
   allowToChangeInstallationDirectory: false
   createDesktopShortcut: always
   createStartMenuShortcut: true
+  # 설치 후 아이콘 캐시 갱신(build/installer.nsh) — 바로가기에 옛 아이콘이 남지 않게
+  include: build/installer.nsh
   shortcutName: ULIM
   uninstallDisplayName: ULIM
   artifactName: ULIM-${version}-setup.exe
