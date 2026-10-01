@@ -23,6 +23,15 @@ const ICON_PATH = app.isPackaged
   ? join(process.resourcesPath, "icon.png")
   : join(__dirname, "../../build/icon.png");
 
+// 창 아이콘. Windows에서는 여러 크기 프레임이 든 ico를 쓴다 — 1024px PNG 하나로는 작업
+// 표시줄용 작은 아이콘이 제대로 만들어지지 않아 빈 아이콘으로 보였다.
+const WINDOW_ICON_PATH =
+  process.platform === "win32"
+    ? app.isPackaged
+      ? join(process.resourcesPath, "icon.ico")
+      : join(__dirname, "../../build/icon.ico")
+    : ICON_PATH;
+
 const ICON_DATA_URL = (() => {
   try {
     return `data:image/png;base64,${readFileSync(ICON_PATH).toString("base64")}`;
@@ -126,7 +135,7 @@ async function createSplashWindow(): Promise<BrowserWindow> {
     show: false,
     transparent: true,
     backgroundColor: "#00000000",
-    icon: ICON_PATH,
+    icon: WINDOW_ICON_PATH,
     webPreferences: { sandbox: true },
   });
   const shown = new Promise<void>((resolve) => {
@@ -165,7 +174,7 @@ function createWindow(): BrowserWindow {
     show: false,
     frame: false,
     backgroundColor: "#0e0f11",
-    icon: ICON_PATH,
+    icon: WINDOW_ICON_PATH,
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,

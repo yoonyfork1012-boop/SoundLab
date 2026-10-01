@@ -35,12 +35,16 @@ icon: build/icon.png
 extraResources:
   - from: build/icon.png
     to: icon.png
+  - from: build/icon.ico
+    to: icon.ico
   # 의미 검색용 임베딩 모델(약 130MB). 동봉하지 않으면 첫 검색이 네트워크에 묶이는데
   # 이 앱은 오프라인 전용이다.
   - from: build/models
     to: models
 win:
-  icon: build/icon.png
+  # 16~256px 프레임을 모두 담은 ico(build/icon.ico). PNG 하나만 주면 electron-builder가 256px
+  # 프레임 하나짜리 ico를 만들어, 작업 표시줄(작은 크기)에 빈 아이콘이 떴다.
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:
