@@ -1,4 +1,11 @@
-import { memo, useCallback, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   Collection,
   Library,
@@ -8,7 +15,13 @@ import type {
 import { saveBool, saveJSON } from "../../lib/uiState";
 import FolderTree from "./FolderTree";
 import IndexingIndicator from "../IndexingIndicator/IndexingIndicator";
-import type { FolderNode, LibraryTree } from "../../lib/folderTree";
+import {
+  flattenFolders,
+  searchFolders,
+  type FolderNode,
+  type FolderSearchHit,
+  type LibraryTree,
+} from "../../lib/folderTree";
 
 // 트리 타입은 메인/렌더러 공유 모듈에서 온다 — 기존 임포트 호환을 위해 재-export.
 export type { LibraryTree };
@@ -204,6 +217,29 @@ function Sidebar({
   );
   // 시작 시 항상 Local을 펼쳐 보여준다(무조건 로컬로 시작).
   const [localOpen, setLocalOpen] = useState(true);
+  // 폴더 검색 — 트랙 검색(상단)과 별개로 사이드바 트리의 폴더 이름만 찾는다.
+  // 평면 목록은 트리가 바뀔 때만 만들고, 입력은 deferred로 걸러 타이핑이 막히지 않게 한다.
+  const [folderQuery, setFolderQuery] = useState("");
+  const deferredFolderQuery = useDeferredValue(folderQuery);
+  const flatFolders = useMemo(() => flattenFolders(trees), [trees]);
+  const folderHits = useMemo(
+    () => searchFolders(flatFolders, deferredFolderQuery),
+    [flatFolders, deferredFolderQuery],
+  );
+  const folderSearching = folderQuery.trim().length > 0;
+  // 결과를 고르면 그 폴더를 열고, 검색을 지웠을 때 트리에서도 보이도록 조상을 펼쳐 둔다.
+  function pickFolderHit(hit: FolderSearchHit): void {
+    if (hit.ancestors.length > 0) {
+      setExpandedMap((prev) => {
+        const updated = { ...prev };
+        for (const a of hit.ancestors) updated[a] = true;
+        saveJSON(EXPANDED_KEY, updated);
+        return updated;
+      });
+    }
+    setLocalOpen(true);
+    onSelectFolder(hit.node.path);
+  }
   function toggleLocal(): void {
     setLocalOpen((v) => {
       const next = !v;
@@ -230,78 +266,155 @@ function Sidebar({
           </span>
         </div>
 
-        {/* Local = 전체 로컬 라이브러리 최상위 진입점. 행 클릭 시 루트 폴더 그리드로 이동하고,
-          화살표(chevron)로만 하위 트리를 펼치거나 접는다. */}
-        <div
-          className={`ftree__row${atLocalRoot ? " ftree__row--active" : ""}`}
-          style={{ paddingLeft: 10 }}
-          onClick={onSelectLocalRoot}
-        >
-          <span
-            className="ftree__toggle"
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleLocal();
-            }}
-          >
-            <Chevron open={localOpen} />
-          </span>
-          <span className="ftree__name">Local</span>
-          <button
-            type="button"
-            className="ftree__refresh"
-            title="변경분 인덱싱 — 새로 추가·변경·삭제된 것만 찾습니다 (전체 재인덱싱은 라이브러리 우클릭 메뉴)"
-            onClick={(e) => {
-              e.stopPropagation();
-              onRefreshLocal();
-            }}
-          >
+        {trees.length > 0 && (
+          <div className="sidebar__search-wrap">
             <svg
-              width="13"
-              height="13"
+              className="sidebar__search-icon"
+              width="12"
+              height="12"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth="2"
+              strokeWidth="2.2"
               strokeLinecap="round"
-              strokeLinejoin="round"
             >
-              <path d="M21 12a9 9 0 0 1-15.5 6.3L3 16" />
-              <path d="M3 21v-5h5" />
-              <path d="M3 12a9 9 0 0 1 15.5-6.3L21 8" />
-              <path d="M21 3v5h-5" />
+              <circle cx="11" cy="11" r="7" />
+              <path d="M20 20l-3.5-3.5" />
             </svg>
-          </button>
-        </div>
+            <input
+              className="sidebar__search"
+              placeholder="폴더 검색"
+              value={folderQuery}
+              spellCheck={false}
+              onChange={(e) => setFolderQuery(e.target.value)}
+              onKeyDown={(e) => {
+                // 앱 전역 단축키(스페이스 재생 등)로 새지 않게 막는다.
+                e.stopPropagation();
+                if (e.key === "Escape") setFolderQuery("");
+                else if (e.key === "Enter" && folderHits.length > 0)
+                  pickFolderHit(folderHits[0]);
+              }}
+            />
+            {folderQuery && (
+              <span
+                className="sidebar__search-clear"
+                title="검색 지우기"
+                onClick={() => setFolderQuery("")}
+              >
+                ✕
+              </span>
+            )}
+          </div>
+        )}
 
-        {localOpen &&
-          (trees.length > 0 ? (
-            trees.map(({ library, node }) => (
-              <LibraryFolderTree
-                key={library.id}
-                library={library}
-                node={node}
-                selectedFolder={selectedFolder}
-                expandedMap={expandedMap}
-                onToggleExpand={toggleExpand}
-                defaultExpanded={trees.length === 1}
-                onSelectFolder={stableSelectFolder}
-                onRemoveNode={stableRemoveNode}
-                onNodeContextMenu={stableNodeContextMenu}
-              />
+        {folderSearching ? (
+          folderHits.length > 0 ? (
+            folderHits.map((hit) => (
+              <div
+                key={hit.node.path}
+                className={`ftree__row fsearch__row${selectedFolder === hit.node.path ? " ftree__row--active" : ""}`}
+                style={{ paddingLeft: 16 }}
+                title={hit.node.path}
+                onClick={() => pickFolderHit(hit)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  const lib = trees.find((t) =>
+                    (hit.node.path + "/").startsWith(t.node.path + "/"),
+                  )?.library;
+                  if (lib) onNodeContextMenu?.(e, hit.node, lib);
+                }}
+              >
+                <span className="fsearch__text">
+                  <span className="ftree__name">{hit.node.name}</span>
+                  {hit.parentLabel && (
+                    <span className="fsearch__parent">{hit.parentLabel}</span>
+                  )}
+                </span>
+                <span className="ftree__count">{hit.node.trackCount}</span>
+              </div>
             ))
           ) : (
+            <div className="fsearch__empty">일치하는 폴더가 없습니다</div>
+          )
+        ) : (
+          <>
+            {/* Local = 전체 로컬 라이브러리 최상위 진입점. 행 클릭 시 루트 폴더 그리드로 이동하고,
+          화살표(chevron)로만 하위 트리를 펼치거나 접는다. */}
             <div
-              className="ftree__row"
-              style={{ paddingLeft: 24 }}
-              onClick={() => onOpenFolder()}
+              className={`ftree__row${atLocalRoot ? " ftree__row--active" : ""}`}
+              style={{ paddingLeft: 10 }}
+              onClick={onSelectLocalRoot}
             >
-              <span className="ftree__toggle" />
-              <span className="ftree__name" style={{ color: "var(--accent)" }}>
-                ＋ 폴더 추가
+              <span
+                className="ftree__toggle"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleLocal();
+                }}
+              >
+                <Chevron open={localOpen} />
               </span>
+              <span className="ftree__name">Local</span>
+              <button
+                type="button"
+                className="ftree__refresh"
+                title="변경분 인덱싱 — 새로 추가·변경·삭제된 것만 찾습니다 (전체 재인덱싱은 라이브러리 우클릭 메뉴)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRefreshLocal();
+                }}
+              >
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M21 12a9 9 0 0 1-15.5 6.3L3 16" />
+                  <path d="M3 21v-5h5" />
+                  <path d="M3 12a9 9 0 0 1 15.5-6.3L21 8" />
+                  <path d="M21 3v5h-5" />
+                </svg>
+              </button>
             </div>
-          ))}
+
+            {localOpen &&
+              (trees.length > 0 ? (
+                trees.map(({ library, node }) => (
+                  <LibraryFolderTree
+                    key={library.id}
+                    library={library}
+                    node={node}
+                    selectedFolder={selectedFolder}
+                    expandedMap={expandedMap}
+                    onToggleExpand={toggleExpand}
+                    defaultExpanded={trees.length === 1}
+                    onSelectFolder={stableSelectFolder}
+                    onRemoveNode={stableRemoveNode}
+                    onNodeContextMenu={stableNodeContextMenu}
+                  />
+                ))
+              ) : (
+                <div
+                  className="ftree__row"
+                  style={{ paddingLeft: 24 }}
+                  onClick={() => onOpenFolder()}
+                >
+                  <span className="ftree__toggle" />
+                  <span
+                    className="ftree__name"
+                    style={{ color: "var(--accent)" }}
+                  >
+                    ＋ 폴더 추가
+                  </span>
+                </div>
+              ))}
+          </>
+        )}
 
         {/* COLLECTIONS */}
         <div className="sidebar__section">

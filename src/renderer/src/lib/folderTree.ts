@@ -5,6 +5,9 @@ import { normPath } from "@shared/folderTree";
 // "./lib/folderTree"에서 가져다 쓸 수 있도록 여기서 재-export 한다.
 export {
   buildFolderTree,
+  flattenFolders,
+  searchFolders,
+  type FolderSearchHit,
   type FolderNode,
   type LibraryTree,
 } from "@shared/folderTree";

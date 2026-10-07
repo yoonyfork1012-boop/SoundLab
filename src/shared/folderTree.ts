@@ -76,3 +76,75 @@ export function buildFolderTree(
 
   return root;
 }
+
+export interface FolderSearchHit {
+  node: FolderNode;
+  // 라이브러리 루트부터 부모까지 — 같은 이름 폴더를 구분하도록 결과 줄에 흐리게 보여준다.
+  parentLabel: string;
+  // 결과를 고른 뒤 트리에서도 보이도록 펼쳐 줄 조상 경로들(라이브러리 루트 포함).
+  ancestors: string[];
+}
+
+interface FlatFolder extends FolderSearchHit {
+  nameLower: string;
+  relLower: string;
+  depth: number;
+}
+
+/** 트리를 검색용 평면 목록으로 편다 — 트리가 바뀔 때 한 번만 만든다. */
+export function flattenFolders(
+  trees: ReadonlyArray<{ node: FolderNode }>,
+): FlatFolder[] {
+  const out: FlatFolder[] = [];
+  const walk = (n: FolderNode, names: string[], paths: string[]): void => {
+    out.push({
+      node: n,
+      parentLabel: names.join(" / "),
+      ancestors: paths,
+      nameLower: n.name.toLowerCase(),
+      relLower: [...names, n.name].join("/").toLowerCase(),
+      depth: names.length,
+    });
+    const nextNames = [...names, n.name];
+    const nextPaths = [...paths, n.path];
+    for (const c of n.children) walk(c, nextNames, nextPaths);
+  };
+  for (const t of trees) walk(t.node, [], []);
+  return out;
+}
+
+/**
+ * 공백으로 나눈 단어가 모두 "라이브러리 기준 경로"에 들어 있고, 그중 하나 이상이 폴더 이름
+ * 자체에 들어 있는 폴더를 찾는다 — "explosion metal"로 Explosion/Metal을 찾되, 이름이
+ * 안 맞는 하위 폴더 전체가 줄줄이 딸려 나오지 않게 한다.
+ * 정렬: 이름 정확 일치 → 이름 접두 일치 → 얕은 폴더 → 이름순.
+ */
+export function searchFolders(
+  flat: ReadonlyArray<FlatFolder>,
+  query: string,
+  limit = 200,
+): FolderSearchHit[] {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return [];
+  const q = terms.join(" ");
+  const matched = flat.filter(
+    (f) =>
+      terms.every((t) => f.relLower.includes(t)) &&
+      terms.some((t) => f.nameLower.includes(t)),
+  );
+  const rank = (f: FlatFolder): number =>
+    f.nameLower === q ? 0 : f.nameLower.startsWith(terms[0]) ? 1 : 2;
+  matched.sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      a.depth - b.depth ||
+      a.node.name.localeCompare(b.node.name),
+  );
+  return matched
+    .slice(0, limit)
+    .map(({ node, parentLabel, ancestors }) => ({
+      node,
+      parentLabel,
+      ancestors,
+    }));
+}
