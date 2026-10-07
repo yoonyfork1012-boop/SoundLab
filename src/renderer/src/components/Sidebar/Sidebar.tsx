@@ -58,6 +58,9 @@ interface SidebarProps {
     node: FolderNode,
     library: Library,
   ) => void;
+  // 즐겨찾기한 폴더 경로(추가한 순서) — 상단 Favorites 섹션에 따로 모아 보여준다.
+  favoriteFolders: string[];
+  onToggleFavoriteFolder: (path: string) => void;
   scanning?: boolean;
   scanProgress?: ScanProgress | null;
   watchStatus?: WatchStatus | null;
@@ -122,6 +125,8 @@ interface LibraryFolderTreeProps {
     node: FolderNode,
     library: Library,
   ) => void;
+  favoriteSet: ReadonlySet<string>;
+  onToggleFavorite: (path: string) => void;
 }
 
 const LibraryFolderTree = memo(function LibraryFolderTree({
@@ -134,6 +139,8 @@ const LibraryFolderTree = memo(function LibraryFolderTree({
   onSelectFolder,
   onRemoveNode,
   onNodeContextMenu,
+  favoriteSet,
+  onToggleFavorite,
 }: LibraryFolderTreeProps): JSX.Element {
   const handleRemove = useCallback(
     (n: FolderNode) => onRemoveNode(n, library),
@@ -158,6 +165,8 @@ const LibraryFolderTree = memo(function LibraryFolderTree({
         defaultExpanded={defaultExpanded}
         onRemoveNode={handleRemove}
         onContextMenu={handleContextMenu}
+        favoriteSet={favoriteSet}
+        onToggleFavorite={onToggleFavorite}
       />
     </div>
   );
@@ -181,6 +190,8 @@ function Sidebar({
   onSelectLocalRoot,
   onCollectionContextMenu,
   onNodeContextMenu,
+  favoriteFolders,
+  onToggleFavoriteFolder,
   scanning = false,
   scanProgress = null,
   watchStatus = null,
@@ -192,8 +203,18 @@ function Sidebar({
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
   // App이 넘기는 콜백은 매 렌더 새 참조라, 그대로 트리에 내리면 memo가 매번 깨진다.
   // 최신 콜백을 ref에 담아두고, 트리에는 참조가 고정된(useCallback([])) 래퍼만 내려보낸다.
-  const cbRef = useRef({ onSelectFolder, onRemoveNode, onNodeContextMenu });
-  cbRef.current = { onSelectFolder, onRemoveNode, onNodeContextMenu };
+  const cbRef = useRef({
+    onSelectFolder,
+    onRemoveNode,
+    onNodeContextMenu,
+    onToggleFavoriteFolder,
+  });
+  cbRef.current = {
+    onSelectFolder,
+    onRemoveNode,
+    onNodeContextMenu,
+    onToggleFavoriteFolder,
+  };
   const toggleExpand = useCallback((path: string, next: boolean): void => {
     setExpandedMap((prev) => {
       const updated = { ...prev, [path]: next };
@@ -208,6 +229,10 @@ function Sidebar({
   const stableRemoveNode = useCallback(
     (node: FolderNode, library: Library) =>
       cbRef.current.onRemoveNode(node, library),
+    [],
+  );
+  const stableToggleFavorite = useCallback(
+    (p: string) => cbRef.current.onToggleFavoriteFolder(p),
     [],
   );
   const stableNodeContextMenu = useCallback(
@@ -227,6 +252,27 @@ function Sidebar({
     [flatFolders, deferredFolderQuery],
   );
   const folderSearching = folderQuery.trim().length > 0;
+  const favoriteSet = useMemo(
+    () => new Set(favoriteFolders),
+    [favoriteFolders],
+  );
+  // 즐겨찾기는 현재 트리에 있는 폴더만 보여준다 — 제거·이동된 폴더는 숨겼다가 돌아오면 다시 뜬다.
+  const favoriteHits = useMemo(() => {
+    const byPath = new Map(flatFolders.map((f) => [f.node.path, f]));
+    return favoriteFolders.flatMap((p) => {
+      const f = byPath.get(p);
+      return f
+        ? [{ node: f.node, parentLabel: f.parentLabel, ancestors: f.ancestors }]
+        : [];
+    });
+  }, [flatFolders, favoriteFolders]);
+  function openNodeMenu(e: React.MouseEvent, node: FolderNode): void {
+    e.preventDefault();
+    const lib = trees.find((t) =>
+      (node.path + "/").startsWith(t.node.path + "/"),
+    )?.library;
+    if (lib) onNodeContextMenu?.(e, node, lib);
+  }
   // 결과를 고르면 그 폴더를 열고, 검색을 지웠을 때 트리에서도 보이도록 조상을 펼쳐 둔다.
   function pickFolderHit(hit: FolderSearchHit): void {
     if (hit.ancestors.length > 0) {
@@ -255,7 +301,47 @@ function Sidebar({
     <aside className="sidebar">
       <div className="sidebar__scroll">
         {/* LIBRARIES */}
+        {/* FAVORITES — 즐겨찾기한 폴더를 트리 깊이와 상관없이 한곳에 모아 바로 연다. */}
         <div className="sidebar__section sidebar__section--top">
+          <span>Favorites</span>
+        </div>
+        {favoriteHits.length > 0 ? (
+          favoriteHits.map((hit) => (
+            <div
+              key={hit.node.path}
+              className={`ftree__row fsearch__row${selectedFolder === hit.node.path ? " ftree__row--active" : ""}`}
+              style={{ paddingLeft: 16 }}
+              title={hit.node.path}
+              onClick={() => pickFolderHit(hit)}
+              onContextMenu={(e) => openNodeMenu(e, hit.node)}
+            >
+              <span className="ffav__icon">★</span>
+              <span className="fsearch__text">
+                <span className="ftree__name">{hit.node.name}</span>
+                {hit.parentLabel && (
+                  <span className="fsearch__parent">{hit.parentLabel}</span>
+                )}
+              </span>
+              <span
+                className="ftree__remove"
+                title="즐겨찾기에서 해제"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleFavoriteFolder(hit.node.path);
+                }}
+              >
+                ✕
+              </span>
+              <span className="ftree__count">{hit.node.trackCount}</span>
+            </div>
+          ))
+        ) : (
+          <div className="fsearch__empty">
+            폴더에 마우스를 올려 ☆를 누르면 여기에 모입니다
+          </div>
+        )}
+
+        <div className="sidebar__section">
           <span>Libraries</span>
           <span
             className="sidebar__section-btn"
@@ -288,10 +374,12 @@ function Sidebar({
               spellCheck={false}
               onChange={(e) => setFolderQuery(e.target.value)}
               onKeyDown={(e) => {
-                // 앱 전역 단축키(스페이스 재생 등)로 새지 않게 막는다.
-                e.stopPropagation();
-                if (e.key === "Escape") setFolderQuery("");
-                else if (e.key === "Enter" && folderHits.length > 0)
+                // 일반 키는 앱 단축키가 입력창에서 알아서 무시한다. Esc만 막아 재생 정지로
+                // 새지 않게 하고, Ctrl 조합(Ctrl+F·Ctrl+R 등)은 그대로 앱에 보낸다.
+                if (e.key === "Escape") {
+                  e.stopPropagation();
+                  setFolderQuery("");
+                } else if (e.key === "Enter" && folderHits.length > 0)
                   pickFolderHit(folderHits[0]);
               }}
             />
@@ -316,13 +404,7 @@ function Sidebar({
                 style={{ paddingLeft: 16 }}
                 title={hit.node.path}
                 onClick={() => pickFolderHit(hit)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  const lib = trees.find((t) =>
-                    (hit.node.path + "/").startsWith(t.node.path + "/"),
-                  )?.library;
-                  if (lib) onNodeContextMenu?.(e, hit.node, lib);
-                }}
+                onContextMenu={(e) => openNodeMenu(e, hit.node)}
               >
                 <span className="fsearch__text">
                   <span className="ftree__name">{hit.node.name}</span>
@@ -396,6 +478,8 @@ function Sidebar({
                     onSelectFolder={stableSelectFolder}
                     onRemoveNode={stableRemoveNode}
                     onNodeContextMenu={stableNodeContextMenu}
+                    favoriteSet={favoriteSet}
+                    onToggleFavorite={stableToggleFavorite}
                   />
                 ))
               ) : (

@@ -54,6 +54,8 @@ import {
 } from "./lib/searchIndex";
 import { useStableCallback } from "./lib/useStableCallback";
 
+const FAVORITE_FOLDERS_KEY = "soundlib.favoriteFolders";
+
 function norm(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
@@ -296,6 +298,10 @@ export default function App(): JSX.Element {
     node: FolderNode;
     library: Library;
   } | null>(null);
+  // 폴더 즐겨찾기 — 경로 목록을 트리 펼침 상태처럼 localStorage에 둔다(DB 스키마 변경 없음).
+  const [favoriteFolders, setFavoriteFolders] = useState<string[]>(() =>
+    loadJSON<string[]>(FAVORITE_FOLDERS_KEY, []),
+  );
   const [colorPicker, setColorPicker] = useState<{
     x: number;
     y: number;
@@ -1049,6 +1055,11 @@ export default function App(): JSX.Element {
           setTabs((prev) =>
             prev.map((t) => (t.folder ? { ...t, folder: remap(t.folder) } : t)),
           );
+          setFavoriteFolders((prev) => {
+            const next = prev.map(remap);
+            saveJSON(FAVORITE_FOLDERS_KEY, next);
+            return next;
+          });
           showToast(`Renamed folder (${res.renamed.toLocaleString()} sounds)`);
         } catch (err) {
           showToast(
@@ -1166,6 +1177,15 @@ export default function App(): JSX.Element {
     patchActiveTab({ folder: p, collection: null, search: "" });
     setShowStarredOnly(false);
     setSubSearch("");
+  });
+  const handleToggleFavoriteFolder = useStableCallback((p: string): void => {
+    setFavoriteFolders((prev) => {
+      const next = prev.includes(p)
+        ? prev.filter((f) => f !== p)
+        : [...prev, p];
+      saveJSON(FAVORITE_FOLDERS_KEY, next);
+      return next;
+    });
   });
   const handleSelectCollectionFromSidebar = useStableCallback(
     (id: number): void => {
@@ -1905,9 +1925,14 @@ export default function App(): JSX.Element {
         selectAllVisible();
         return;
       }
+      // Ctrl+R: 셔플(입력창 안에서도 동작) / Ctrl+Shift+R: 현재 라이브러리 새 파일 스캔
       if (mod && (e.key === "r" || e.key === "R")) {
         e.preventDefault();
-        if (shortcutLibrary) void handleScanNewFiles(shortcutLibrary);
+        if (e.shiftKey) {
+          if (shortcutLibrary) void handleScanNewFiles(shortcutLibrary);
+        } else {
+          handleShuffleClick();
+        }
         return;
       }
       if (mod && (e.key === "o" || e.key === "O")) {
@@ -2246,6 +2271,8 @@ export default function App(): JSX.Element {
             onSelectLocalRoot={handleSelectLocalRoot}
             onCollectionContextMenu={handleCollectionContextMenu}
             onNodeContextMenu={handleNodeContextMenu}
+            favoriteFolders={favoriteFolders}
+            onToggleFavoriteFolder={handleToggleFavoriteFolder}
             scanning={scanning}
             scanProgress={scanProgress}
             watchStatus={watchStatus}
@@ -2525,6 +2552,16 @@ export default function App(): JSX.Element {
               onClick: () => handleCheckOnlyLibrary(libraryMenu.library),
             },
             {
+              key: "favorite",
+              label: favoriteFolders.includes(
+                norm(libraryMenu.library.rootPath),
+              )
+                ? "즐겨찾기에서 해제"
+                : "즐겨찾기에 추가",
+              onClick: () =>
+                handleToggleFavoriteFolder(norm(libraryMenu.library.rootPath)),
+            },
+            {
               key: "scannew",
               label: "새 파일만 검사",
               onClick: () => void handleScanNewFiles(libraryMenu.library),
@@ -2586,6 +2623,13 @@ export default function App(): JSX.Element {
               key: "as-collection",
               label: "Register as collection",
               onClick: () => handleRegisterFolderAsCollection(folderMenu.node),
+            },
+            {
+              key: "favorite",
+              label: favoriteFolders.includes(folderMenu.node.path)
+                ? "즐겨찾기에서 해제"
+                : "즐겨찾기에 추가",
+              onClick: () => handleToggleFavoriteFolder(folderMenu.node.path),
             },
             { key: "sep0", separator: true },
             {

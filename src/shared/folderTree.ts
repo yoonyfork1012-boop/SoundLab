@@ -140,11 +140,9 @@ export function searchFolders(
       a.depth - b.depth ||
       a.node.name.localeCompare(b.node.name),
   );
-  return matched
-    .slice(0, limit)
-    .map(({ node, parentLabel, ancestors }) => ({
-      node,
-      parentLabel,
-      ancestors,
-    }));
+  return matched.slice(0, limit).map(({ node, parentLabel, ancestors }) => ({
+    node,
+    parentLabel,
+    ancestors,
+  }));
 }

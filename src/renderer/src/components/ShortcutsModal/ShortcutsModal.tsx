@@ -18,7 +18,8 @@ const SHORTCUTS: Array<{ keys: string; desc: string }> = [
   { keys: "Ctrl + A", desc: "현재 리스트 전체 선택" },
   { keys: "Delete", desc: "컬렉션에서 선택 항목 제거" },
   { keys: "F2", desc: "선택 컬렉션 / 라이브러리 이름 변경" },
-  { keys: "Ctrl + R", desc: "현재 라이브러리 새 파일 스캔" },
+  { keys: "Ctrl + R", desc: "리스트 즉시 셔플" },
+  { keys: "Ctrl + Shift + R", desc: "현재 라이브러리 새 파일 스캔" },
   { keys: "Ctrl + O", desc: "현재 폴더 탐색기에서 열기" },
 ];
 

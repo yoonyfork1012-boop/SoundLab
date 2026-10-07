@@ -14,6 +14,9 @@ interface FolderTreeProps {
   // 라이브러리 루트(depth===1)의 기본 펼침 여부 — 라이브러리가 하나뿐일 때만 기본 펼침
   // (여러 개면 사이드바가 과도하게 길어지지 않도록 기본 접힘). 하위 폴더는 항상 기본 접힘.
   defaultExpanded?: boolean;
+  // 즐겨찾기한 폴더 경로 — 행에 ★를 켜 두고, hover 시 ☆로 추가/해제한다.
+  favoriteSet?: ReadonlySet<string>;
+  onToggleFavorite?: (path: string) => void;
 }
 
 function Chevron({ open }: { open: boolean }): JSX.Element {
@@ -49,12 +52,15 @@ const FolderTree = memo(function FolderTree({
   onRemoveNode,
   onContextMenu,
   defaultExpanded = false,
+  favoriteSet,
+  onToggleFavorite,
 }: FolderTreeProps): JSX.Element {
   // 저장된 펼침상태가 있으면 그걸 우선, 없으면 depth===1(라이브러리 루트)일 때만 defaultExpanded 적용
   const expanded =
     expandedMap[node.path] ?? (depth === 1 ? defaultExpanded : false);
   const hasChildren = node.children.length > 0;
   const isSelected = selectedPath === node.path;
+  const isFavorite = favoriteSet?.has(node.path) ?? false;
 
   return (
     <div className="ftree__node">
@@ -83,6 +89,18 @@ const FolderTree = memo(function FolderTree({
           )}
         </span>
         <span className="ftree__name">{node.name}</span>
+        {onToggleFavorite && (
+          <span
+            className={`ftree__fav${isFavorite ? " ftree__fav--on" : ""}`}
+            title={isFavorite ? "즐겨찾기에서 해제" : "즐겨찾기에 추가"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFavorite(node.path);
+            }}
+          >
+            {isFavorite ? "★" : "☆"}
+          </span>
+        )}
         {onRemoveNode && (
           <span
             className="ftree__remove"
@@ -110,6 +128,8 @@ const FolderTree = memo(function FolderTree({
             onToggleExpand={onToggleExpand}
             onRemoveNode={onRemoveNode}
             onContextMenu={onContextMenu}
+            favoriteSet={favoriteSet}
+            onToggleFavorite={onToggleFavorite}
           />
         ))}
     </div>
