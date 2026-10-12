@@ -12,7 +12,7 @@ import type {
   ScanProgress,
   WatchStatus,
 } from "@shared/types";
-import { saveBool, saveJSON } from "../../lib/uiState";
+import { loadBool, saveBool, saveJSON } from "../../lib/uiState";
 import FolderTree from "./FolderTree";
 import IndexingIndicator from "../IndexingIndicator/IndexingIndicator";
 import {
@@ -28,6 +28,7 @@ export type { LibraryTree };
 
 const EXPANDED_KEY = "soundlib.tree.expanded";
 const LOCAL_OPEN_KEY = "soundlib.localOpen";
+const FAV_OPEN_KEY = "soundlib.favFoldersOpen";
 
 interface SidebarProps {
   trees: LibraryTree[];
@@ -125,8 +126,6 @@ interface LibraryFolderTreeProps {
     node: FolderNode,
     library: Library,
   ) => void;
-  favoriteSet: ReadonlySet<string>;
-  onToggleFavorite: (path: string) => void;
 }
 
 const LibraryFolderTree = memo(function LibraryFolderTree({
@@ -139,8 +138,6 @@ const LibraryFolderTree = memo(function LibraryFolderTree({
   onSelectFolder,
   onRemoveNode,
   onNodeContextMenu,
-  favoriteSet,
-  onToggleFavorite,
 }: LibraryFolderTreeProps): JSX.Element {
   const handleRemove = useCallback(
     (n: FolderNode) => onRemoveNode(n, library),
@@ -165,8 +162,6 @@ const LibraryFolderTree = memo(function LibraryFolderTree({
         defaultExpanded={defaultExpanded}
         onRemoveNode={handleRemove}
         onContextMenu={handleContextMenu}
-        favoriteSet={favoriteSet}
-        onToggleFavorite={onToggleFavorite}
       />
     </div>
   );
@@ -203,18 +198,8 @@ function Sidebar({
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
   // App이 넘기는 콜백은 매 렌더 새 참조라, 그대로 트리에 내리면 memo가 매번 깨진다.
   // 최신 콜백을 ref에 담아두고, 트리에는 참조가 고정된(useCallback([])) 래퍼만 내려보낸다.
-  const cbRef = useRef({
-    onSelectFolder,
-    onRemoveNode,
-    onNodeContextMenu,
-    onToggleFavoriteFolder,
-  });
-  cbRef.current = {
-    onSelectFolder,
-    onRemoveNode,
-    onNodeContextMenu,
-    onToggleFavoriteFolder,
-  };
+  const cbRef = useRef({ onSelectFolder, onRemoveNode, onNodeContextMenu });
+  cbRef.current = { onSelectFolder, onRemoveNode, onNodeContextMenu };
   const toggleExpand = useCallback((path: string, next: boolean): void => {
     setExpandedMap((prev) => {
       const updated = { ...prev, [path]: next };
@@ -229,10 +214,6 @@ function Sidebar({
   const stableRemoveNode = useCallback(
     (node: FolderNode, library: Library) =>
       cbRef.current.onRemoveNode(node, library),
-    [],
-  );
-  const stableToggleFavorite = useCallback(
-    (p: string) => cbRef.current.onToggleFavoriteFolder(p),
     [],
   );
   const stableNodeContextMenu = useCallback(
@@ -252,10 +233,6 @@ function Sidebar({
     [flatFolders, deferredFolderQuery],
   );
   const folderSearching = folderQuery.trim().length > 0;
-  const favoriteSet = useMemo(
-    () => new Set(favoriteFolders),
-    [favoriteFolders],
-  );
   // 즐겨찾기는 현재 트리에 있는 폴더만 보여준다 — 제거·이동된 폴더는 숨겼다가 돌아오면 다시 뜬다.
   const favoriteHits = useMemo(() => {
     const byPath = new Map(flatFolders.map((f) => [f.node.path, f]));
@@ -286,6 +263,13 @@ function Sidebar({
     setLocalOpen(true);
     onSelectFolder(hit.node.path);
   }
+  const [favOpen, setFavOpen] = useState(() => loadBool(FAV_OPEN_KEY, true));
+  function toggleFavOpen(): void {
+    setFavOpen((v) => {
+      saveBool(FAV_OPEN_KEY, !v);
+      return !v;
+    });
+  }
   function toggleLocal(): void {
     setLocalOpen((v) => {
       const next = !v;
@@ -301,47 +285,7 @@ function Sidebar({
     <aside className="sidebar">
       <div className="sidebar__scroll">
         {/* LIBRARIES */}
-        {/* FAVORITES — 즐겨찾기한 폴더를 트리 깊이와 상관없이 한곳에 모아 바로 연다. */}
         <div className="sidebar__section sidebar__section--top">
-          <span>Favorites</span>
-        </div>
-        {favoriteHits.length > 0 ? (
-          favoriteHits.map((hit) => (
-            <div
-              key={hit.node.path}
-              className={`ftree__row fsearch__row${selectedFolder === hit.node.path ? " ftree__row--active" : ""}`}
-              style={{ paddingLeft: 16 }}
-              title={hit.node.path}
-              onClick={() => pickFolderHit(hit)}
-              onContextMenu={(e) => openNodeMenu(e, hit.node)}
-            >
-              <span className="ffav__icon">★</span>
-              <span className="fsearch__text">
-                <span className="ftree__name">{hit.node.name}</span>
-                {hit.parentLabel && (
-                  <span className="fsearch__parent">{hit.parentLabel}</span>
-                )}
-              </span>
-              <span
-                className="ftree__remove"
-                title="즐겨찾기에서 해제"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleFavoriteFolder(hit.node.path);
-                }}
-              >
-                ✕
-              </span>
-              <span className="ftree__count">{hit.node.trackCount}</span>
-            </div>
-          ))
-        ) : (
-          <div className="fsearch__empty">
-            폴더에 마우스를 올려 ☆를 누르면 여기에 모입니다
-          </div>
-        )}
-
-        <div className="sidebar__section">
           <span>Libraries</span>
           <span
             className="sidebar__section-btn"
@@ -478,8 +422,6 @@ function Sidebar({
                     onSelectFolder={stableSelectFolder}
                     onRemoveNode={stableRemoveNode}
                     onNodeContextMenu={stableNodeContextMenu}
-                    favoriteSet={favoriteSet}
-                    onToggleFavorite={stableToggleFavorite}
                   />
                 ))
               ) : (
@@ -561,6 +503,39 @@ function Sidebar({
             <span className="sidebar__coll-count">{col.trackIds.length}</span>
           </div>
         ))}
+        {/* 즐겨찾기한 폴더 — 컬렉션 목록 아래 드롭다운. 트리 깊이와 상관없이 바로 연다. */}
+        <div className="sidebar__coll" onClick={toggleFavOpen}>
+          <span className="sidebar__coll-icon ffav__toggle">
+            <Chevron open={favOpen} />
+          </span>
+          <span className="sidebar__coll-label">Favorite Folders</span>
+          <span className="sidebar__coll-count">{favoriteHits.length}</span>
+        </div>
+        {favOpen &&
+          favoriteHits.map((hit) => (
+            <div
+              key={hit.node.path}
+              className={`ftree__row${selectedFolder === hit.node.path ? " ftree__row--active" : ""}`}
+              style={{ paddingLeft: 34 }}
+              title={hit.node.path}
+              onClick={() => pickFolderHit(hit)}
+              onContextMenu={(e) => openNodeMenu(e, hit.node)}
+            >
+              <span className="ffav__icon">★</span>
+              <span className="ftree__name">{hit.node.name}</span>
+              <span
+                className="ftree__remove"
+                title="Remove from Favorites"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleFavoriteFolder(hit.node.path);
+                }}
+              >
+                ✕
+              </span>
+              <span className="ftree__count">{hit.node.trackCount}</span>
+            </div>
+          ))}
       </div>
       {scanErrorCount > 0 && (
         <button

@@ -2556,8 +2556,8 @@ export default function App(): JSX.Element {
               label: favoriteFolders.includes(
                 norm(libraryMenu.library.rootPath),
               )
-                ? "즐겨찾기에서 해제"
-                : "즐겨찾기에 추가",
+                ? "Remove from Favorites"
+                : "Add to Favorites",
               onClick: () =>
                 handleToggleFavoriteFolder(norm(libraryMenu.library.rootPath)),
             },
@@ -2627,8 +2627,8 @@ export default function App(): JSX.Element {
             {
               key: "favorite",
               label: favoriteFolders.includes(folderMenu.node.path)
-                ? "즐겨찾기에서 해제"
-                : "즐겨찾기에 추가",
+                ? "Remove from Favorites"
+                : "Add to Favorites",
               onClick: () => handleToggleFavoriteFolder(folderMenu.node.path),
             },
             { key: "sep0", separator: true },
