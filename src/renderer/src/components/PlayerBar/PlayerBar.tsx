@@ -970,12 +970,26 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
     // Waveform 구간 선택(드래그로 생성/리사이즈) — 선택 구간만 DAW로 드래그 내보내기 위한 기반
     const regions = ws.registerPlugin(RegionsPlugin.create());
     regionsPluginRef.current = regions;
-    regions.enableDragSelection({ color: "rgba(255, 255, 255, 0.22)" });
+    // drag: false — 구간 자체를 옮기는 대신, 구간 안을 잡아 끌면 선택 구간을 DAW로 내보낸다(Soundly 방식).
+    regions.enableDragSelection({
+      color: "rgba(255, 255, 255, 0.22)",
+      drag: false,
+    });
     regions.on("region-created", (region) => {
       // 한 번에 하나의 구간만 유지 (새로 그리면 이전 선택은 제거)
       for (const r of regions.getRegions()) {
         if (r.id !== region.id) r.remove();
       }
+      // 구간 안쪽(양 끝 리사이즈 핸들 6px 제외)을 네이티브 드래그 면으로 덮는다.
+      // pointerdown을 막아야 래퍼의 enableDragSelection이 새 구간 그리기를 시작하지 않는다
+      // (네이티브 드래그가 시작되면 pointercancel이 와서 그리던 구간이 기존 구간을 대체해버림).
+      const surface = document.createElement("div");
+      surface.className = "player__region-surface";
+      surface.draggable = true;
+      surface.title = "Drag to export selection";
+      surface.addEventListener("pointerdown", (e) => e.stopPropagation());
+      surface.addEventListener("dragstart", handleRegionDragStart);
+      region.setContent(surface);
       activeRegionRef.current = region;
       setRegionBounds({ start: region.start, end: region.end });
       void ensureFullBuffer();
@@ -1479,10 +1493,11 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
   }
 
   // Waveform에서 선택 구간을 DAW로 드래그 — 구간이 없거나 너무 짧으면 아무 것도 하지 않음(안전 폴백)
-  function handleRegionDragStart(e: React.DragEvent): void {
+  // 구간 내부의 네이티브 dragstart 리스너(WaveSurfer 생성 effect)에서 불리므로 ref만 읽는다.
+  function handleRegionDragStart(e: DragEvent): void {
     e.preventDefault();
     const t = trackRef.current;
-    const bounds = regionBounds;
+    const bounds = regionBoundsRef.current;
     if (!t || !window.api || !bounds) return;
     if (bounds.end - bounds.start < MIN_REGION_SEC) return;
     const buf = rawBufferRef.current;
@@ -2161,54 +2176,6 @@ const PlayerBar = forwardRef<PlayerHandle, PlayerBarProps>(function PlayerBar(
             ⚠ 재생 불가: {loadError}
           </div>
         )}
-        {regionBounds &&
-          duration > 0 &&
-          regionBounds.end - regionBounds.start >= MIN_REGION_SEC && (
-            <div
-              className="player__region-drag"
-              style={{
-                left: `${((regionBounds.start + regionBounds.end) / 2 / duration) * 100}%`,
-              }}
-              draggable
-              onDragStart={handleRegionDragStart}
-              title="Drag selected range"
-            >
-              <svg
-                width="11"
-                height="11"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M8 6h13M8 12h13M8 18h13" />
-                <circle
-                  cx="3"
-                  cy="6"
-                  r="1.5"
-                  fill="currentColor"
-                  stroke="none"
-                />
-                <circle
-                  cx="3"
-                  cy="12"
-                  r="1.5"
-                  fill="currentColor"
-                  stroke="none"
-                />
-                <circle
-                  cx="3"
-                  cy="18"
-                  r="1.5"
-                  fill="currentColor"
-                  stroke="none"
-                />
-              </svg>
-              Drag range
-            </div>
-          )}
         {duration > 0 &&
           markers.map((m) => (
             <div
